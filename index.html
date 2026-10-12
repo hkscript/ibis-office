@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ibisOffice Playground — open Word, Excel and PowerPoint files in your browser</title>
+  <meta name="description" content="Try ibisOffice, the office suite built with Rust and the GPU, right in your browser. Open the sample documents, or your own .docx, .xlsx and .pptx files — they never leave your device.">
+  <meta property="og:title" content="ibisOffice Playground">
+  <meta property="og:description" content="Open Word, Excel and PowerPoint files in your browser with WebAssembly and WebGPU. Your files are never uploaded.">
+  <meta property="og:image" content="asset/screenshots.png">
+  <link rel="icon" href="asset/ibisOffice_svg_logo_for_light.svg">
+  <style>
+    :root {
+      --ink: #1d2433;
+      --sub: #5b6475;
+      --line: #e3e7ee;
+      --bg: #ffffff;
+      --soft: #f5f7fb;
+      --accent: #1a5fd6;
+      --accent-ink: #ffffff;
+      --docx: #2b5797;
+      --xlsx: #1e7145;
+      --pptx: #c43e1c;
+    }
+    * { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 16px/1.65 system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif;
+    }
+    a { color: var(--accent); }
+    .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+
+    header { border-bottom: 1px solid var(--line); }
+    header .wrap { display: flex; align-items: center; justify-content: space-between; height: 64px; gap: 16px; }
+    header img { height: 32px; display: block; }
+    .header-right { display: flex; align-items: center; gap: 16px; font-size: 14px; }
+    .header-right a { color: var(--sub); text-decoration: none; }
+    .header-right a:hover { color: var(--ink); }
+    #lang {
+      font: inherit; font-size: 14px; color: var(--ink);
+      padding: 6px 28px 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg);
+      appearance: none; -webkit-appearance: none; cursor: pointer;
+      background-image: linear-gradient(45deg, transparent 50%, var(--sub) 50%), linear-gradient(135deg, var(--sub) 50%, transparent 50%);
+      background-position: calc(100% - 15px) 55%, calc(100% - 10px) 55%;
+      background-size: 5px 5px; background-repeat: no-repeat;
+    }
+
+    .hero { text-align: center; padding: 56px 0 32px; }
+    .hero h1 { font-size: clamp(28px, 4.2vw, 44px); line-height: 1.25; margin: 0 0 16px; letter-spacing: -0.01em; }
+    .hero p { color: var(--sub); font-size: 18px; margin: 0 auto 28px; max-width: 760px; }
+    .hero p.formats { color: var(--ink); font-size: 20px; font-weight: 600; margin-bottom: 12px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }
+    .button {
+      display: inline-flex; align-items: center; gap: 8px; font: inherit; font-weight: 600;
+      padding: 12px 22px; border-radius: 10px; border: 1px solid var(--accent);
+      background: var(--accent); color: var(--accent-ink); text-decoration: none; cursor: pointer;
+    }
+    .button.secondary { background: var(--bg); color: var(--accent); }
+    .button:hover { filter: brightness(1.05); }
+    .shot { margin: 32px auto 28px; }
+    .shot img { width: 100%; height: auto; display: block; border-radius: 10px; box-shadow: 0 12px 40px rgba(20, 30, 60, .15); }
+
+    section { padding: 48px 0; }
+    section.soft { background: var(--soft); }
+    h2 { font-size: 26px; margin: 0 0 8px; }
+    .lead { color: var(--sub); margin: 0 0 28px; }
+
+    .samples { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px; }
+    .card {
+      display: flex; flex-direction: column; gap: 6px; padding: 22px; border-radius: 12px;
+      background: var(--bg); border: 1px solid var(--line); color: var(--ink); text-decoration: none;
+      transition: box-shadow .15s, transform .15s;
+    }
+    .card:hover { box-shadow: 0 8px 24px rgba(20, 30, 60, .12); transform: translateY(-2px); }
+    .card img.thumb { width: 128px; height: 80px; object-fit: cover; object-position: top; border: 1px solid var(--line); border-radius: 6px; background: #fff; display: block; margin-bottom: 6px; }
+    .card { overflow: hidden; }
+    .badge { align-self: flex-start; font-size: 12px; font-weight: 700; color: #fff; padding: 2px 8px; border-radius: 6px; }
+    .badge.docx { background: var(--docx); }
+    .badge.xlsx { background: var(--xlsx); }
+    .badge.pptx { background: var(--pptx); }
+    .card strong { font-size: 18px; }
+    .card span.meta { color: var(--sub); font-size: 14px; }
+    .card span.go { margin-top: auto; padding-top: 8px; color: var(--accent); font-weight: 600; }
+
+    #drop {
+      border: 2px dashed #b9c3d6; border-radius: 14px; padding: 40px 24px; text-align: center; background: var(--bg);
+      transition: border-color .15s, background .15s;
+    }
+    #drop.over { border-color: var(--accent); background: #eef4ff; }
+    #drop p { margin: 0 0 16px; color: var(--sub); }
+    .privacy { display: flex; gap: 12px; align-items: flex-start; margin-top: 20px; padding: 16px 18px; border-radius: 10px; background: #eaf6ee; color: #1e5631; }
+    .privacy b { display: block; }
+    .desktop { margin-top: 16px; }
+
+    .notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; }
+    .notes div { padding: 4px 0; }
+    .notes h3 { font-size: 17px; margin: 0 0 4px; }
+    .notes p { margin: 0; color: var(--sub); font-size: 15px; }
+
+    #gpu-warning { display: none; margin: 0 auto 24px; max-width: 760px; padding: 12px 16px; border-radius: 10px; background: #fff4e5; color: #8a4b00; }
+
+    footer { border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--sub); font-size: 14px; }
+    footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: space-between; }
+    footer a { color: var(--sub); }
+    footer .trademarks { flex-basis: 100%; margin: 12px 0 0; font-size: 12px; line-height: 1.6; color: #8a93a3; }
+
+    @media (max-width: 640px) {
+      .wrap { padding: 0 16px; }
+      .hero { padding: 36px 0 24px; }
+      .hero p { font-size: 16px; }
+      .header-right a.hide-narrow { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <a href="./" aria-label="ibisOffice"><img src="asset/ibisOffice_svg_logo_for_light.svg" alt="ibisOffice"></a>
+      <div class="header-right" id="header-right">
+        <a class="hide-narrow" href="https://github.com/ibisjp/ibis-office">GitHub</a>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div class="hero wrap">
+      <h1 data-i18n="hero.title">docx, xlsx and pptx — right in your browser</h1>
+      <p class="formats" data-i18n="hero.formats">Open Word files (.docx), Excel files (.xlsx) and PowerPoint files (.pptx) as they look in Microsoft Office.</p>
+      <div class="shot">
+        <img src="asset/screenshots.png" alt="Word, Excel and PowerPoint documents open in ibisOffice" data-i18n-alt="shot.alt" width="3906" height="995">
+      </div>
+      <p data-i18n="hero.lead">ibisOffice is an office suite built with Rust and the GPU. This playground runs it with WebAssembly and WebGPU: open the sample documents below, or your own files. Nothing is installed, and nothing is uploaded.</p>
+      <div id="gpu-warning" data-i18n="gpu.warning">This browser does not support WebGPU. Please use the latest Chrome, Edge or Safari (26 or later).</div>
+      <div class="actions">
+        <a class="button" href="#samples" data-i18n="hero.samples">Try the sample documents</a>
+        <a class="button secondary" href="#open" data-i18n="hero.open">Open your own file</a>
+      </div>
+    </div>
+
+    <section id="samples" class="soft">
+      <div class="wrap">
+        <h2 data-i18n="samples.title">Sample documents</h2>
+        <p class="lead" data-i18n="samples.lead">The same three files we use for our speed benchmarks. Click one to open it in ibisOffice.</p>
+        <div class="samples">
+          <a class="card" href="app/?open=../samples/securities-registration-statement.docx" target="_blank" rel="noopener">
+            <img class="thumb" src="thumbs/securities-registration-statement.jpg" alt="A page of the securities registration statement, drawn by ibisOffice" data-i18n-alt="sample.docx.alt" width="680" height="425" loading="lazy">
+            <span class="badge docx">DOCX</span>
+            <strong data-i18n="sample.docx.title">Securities registration statement</strong>
+            <span class="meta" data-i18n="sample.docx.meta">140–154 pages in English, 0.12 MB</span>
+            <span class="go" data-i18n="sample.go">Open →</span>
+          </a>
+          <a class="card" href="app/?open=../samples/coffee-chain-sales-report.xlsx" target="_blank" rel="noopener">
+            <img class="thumb" src="thumbs/coffee-chain-sales-report.jpg" alt="The first sheet of the coffee chain sales report, drawn by ibisOffice" data-i18n-alt="sample.xlsx.alt" width="800" height="500" loading="lazy">
+            <span class="badge xlsx">XLSX</span>
+            <strong data-i18n="sample.xlsx.title">Coffee chain sales report</strong>
+            <span class="meta" data-i18n="sample.xlsx.meta">22 sheets, 29 charts, 589,000 formulas, 13.7 MB</span>
+            <span class="go" data-i18n="sample.go">Open →</span>
+          </a>
+          <a class="card" href="app/?open=../samples/earnings-presentation.pptx" target="_blank" rel="noopener">
+            <img class="thumb" src="thumbs/earnings-presentation.jpg" alt="The first slide of the earnings presentation, drawn by ibisOffice" data-i18n-alt="sample.pptx.alt" width="800" height="450" loading="lazy">
+            <span class="badge pptx">PPTX</span>
+            <strong data-i18n="sample.pptx.title">Earnings presentation</strong>
+            <span class="meta" data-i18n="sample.pptx.meta">31 slides, 35.9 MB</span>
+            <span class="go" data-i18n="sample.go">Open →</span>
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <section id="open">
+      <div class="wrap">
+        <h2 data-i18n="open.title">Open your own file</h2>
+        <p class="lead" data-i18n="open.lead">Open a .docx, .xlsx or .pptx file from your computer.</p>
+        <div id="drop">
+          <p data-i18n="open.drop">Drop a file here, or</p>
+          <button class="button" id="pick" type="button" data-i18n="open.pick">Choose a file</button>
+          <noscript><p data-i18n="open.nojs">JavaScript is required to open files.</p></noscript>
+        </div>
+        <div class="privacy">
+          <span aria-hidden="true">🔒</span>
+          <div>
+            <b data-i18n="privacy.title">Your file never leaves your device.</b>
+            <span data-i18n="privacy.body">ibisOffice reads and draws the file entirely inside your browser. It is not sent to any server.</span>
+          </div>
+        </div>
+        <p class="desktop"><span data-i18n="desktop.label">Desktop app:</span> <a href="https://github.com/ibisjp/ibis-office/releases/latest" data-i18n="desktop.download">Download</a></p>
+      </div>
+    </section>
+
+    <section class="soft">
+      <div class="wrap">
+        <h2 data-i18n="notes.title">About this playground</h2>
+        <div class="notes">
+          <div>
+            <h3 data-i18n="notes.browser.title">Browsers</h3>
+            <p data-i18n="notes.browser.body">Needs WebGPU: the latest Chrome or Edge, or Safari 26 or later.</p>
+          </div>
+          <div>
+            <h3 data-i18n="notes.load.title">First load</h3>
+            <p data-i18n="notes.load.body">The app is downloaded the first time you open a document, so it may take a moment. After that it opens from your browser's cache.</p>
+          </div>
+          <div>
+            <h3 data-i18n="notes.desktop.title">Desktop app</h3>
+            <p data-i18n="notes.desktop.body">Some features, such as PDF export and video playback, are available only in the desktop app.</p>
+          </div>
+          <div>
+            <h3 data-i18n="notes.source.title">Source code</h3>
+            <p><span data-i18n="notes.source.body">ibisOffice is open source under AGPL-3.0, with a commercial license also available.</span> <a href="https://github.com/ibisjp/ibis-office">github.com/ibisjp/ibis-office</a></p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <span>© ibis inc.</span>
+      <span>
+        <a href="https://github.com/ibisjp/ibis-office" data-i18n="footer.source">Source code (AGPL-3.0)</a> ·
+        <a href="https://github.com/ibisjp/ibis-office/blob/main/COMMERCIAL-LICENSE.md" data-i18n="footer.commercial">Commercial license</a> ·
+        <a href="app/license.md" data-i18n="footer.notices">Third-party notices</a>
+      </span>
+      <p class="trademarks" data-i18n="footer.trademarks">Microsoft, Microsoft Office, Microsoft 365, Word, Excel and PowerPoint are registered trademarks or trademarks of Microsoft Corporation in the United States and other countries. ibisOffice is not affiliated with, endorsed by or sponsored by Microsoft Corporation. The ibisOffice name and logo are trademarks of ibis inc.</p>
+    </div>
+  </footer>
+
+  <script>
+  (() => {
+    const JA = {
+      'hero.title': 'docx・xlsx・pptx を、ブラウザでそのまま',
+      'hero.formats': 'Word ファイル（.docx）、Excel ファイル（.xlsx）、PowerPoint ファイル（.pptx）を、Microsoft Office と同じ見た目で開けます。',
+      'hero.lead': 'ibisOffice は、Rust と GPU で作ったオフィス スイートです。このプレイグラウンドでは、WebAssembly と WebGPU でブラウザの中で動かします。下のサンプルの文書や、お手元のファイルを開いてみてください。インストールは不要で、ファイルはどこにも送られません。',
+      'gpu.warning': 'このブラウザは WebGPU に対応していません。最新の Chrome、Edge、Safari（26 以降）をお使いください。',
+      'hero.samples': 'サンプルの文書を開く',
+      'hero.open': '手元のファイルを開く',
+      'shot.alt': 'ibisOffice で開いた Word・Excel・PowerPoint の文書',
+      'samples.title': 'サンプルの文書',
+      'samples.lead': '速さの計測に使っている 3 つのファイルです。クリックすると ibisOffice で開きます。',
+      'sample.docx.title': '有価証券届出書（英文）',
+      'sample.docx.meta': '英文 140〜154 ページ、0.12MB',
+      'sample.xlsx.title': 'コーヒー チェーンの売上報告',
+      'sample.xlsx.meta': '22 シート、グラフ 29 個、数式 58.9 万個、13.7MB',
+      'sample.pptx.title': '決算説明会資料',
+      'sample.pptx.meta': '31 スライド、35.9MB',
+      'sample.docx.alt': '有価証券届出書の本文のページ（ibisOffice で描いたもの）',
+      'sample.xlsx.alt': 'コーヒー チェーンの売上報告の 1 シート目（ibisOffice で描いたもの）',
+      'sample.pptx.alt': '決算説明会資料の 1 枚目（ibisOffice で描いたもの）',
+      'sample.go': '開く →',
+      'open.title': '手元のファイルを開く',
+      'open.lead': 'お使いのコンピューターにある .docx・.xlsx・.pptx のファイルを開けます。',
+      'open.drop': 'ここにファイルをドロップするか',
+      'open.pick': 'ファイルを選ぶ',
+      'open.nojs': 'ファイルを開くには JavaScript が必要です。',
+      'privacy.title': 'ファイルは、お使いの端末から出ません。',
+      'privacy.body': 'ibisOffice は、ファイルの読み込みも描画も、すべてブラウザの中で行います。ファイルはどのサーバーにも送られません。',
+      'desktop.label': 'デスクトップアプリ版：',
+      'desktop.download': 'ダウンロード',
+      'notes.title': 'このプレイグラウンドについて',
+      'notes.browser.title': '対応ブラウザ',
+      'notes.browser.body': 'WebGPU が必要です。最新の Chrome・Edge、または Safari 26 以降をお使いください。',
+      'notes.load.title': '最初の読み込み',
+      'notes.load.body': '最初に文書を開くときにアプリを読み込むので、少し時間がかかります。2 回目からは、ブラウザのキャッシュから開きます。',
+      'notes.desktop.title': 'デスクトップ アプリ',
+      'notes.desktop.body': 'PDF への書き出しや動画の再生など、デスクトップ アプリだけの機能があります。',
+      'notes.source.title': 'ソースコード',
+      'notes.source.body': 'ibisOffice は AGPL-3.0 のオープンソースで、商用ライセンスもあります。',
+      'footer.source': 'ソースコード（AGPL-3.0）',
+      'footer.commercial': '商用ライセンス',
+      'footer.notices': '使っている部品のライセンス',
+      'footer.trademarks': 'Microsoft、Microsoft Office、Microsoft 365、Word、Excel、PowerPoint は、米国 Microsoft Corporation の米国およびその他の国における登録商標または商標です。ibisOffice は Microsoft Corporation とは関係がなく、承認や後援を受けたものではありません。「ibisOffice」の名前とロゴは株式会社アイビスの商標です。',
+    };
+    const TITLE = { en: document.title, ja: 'ibisOffice プレイグラウンド — Word・Excel・PowerPoint をブラウザで開く' };
+    const KEY = 'ibisoffice-lang';
+    const english = {};
+    document.querySelectorAll('[data-i18n]').forEach((el) => { english[el.dataset.i18n] = el.textContent; });
+    document.querySelectorAll('[data-i18n-alt]').forEach((el) => { english[el.dataset.i18nAlt] = el.alt; });
+
+    function apply(lang) {
+      const table = lang === 'ja' ? JA : english;
+      document.documentElement.lang = lang;
+      document.title = TITLE[lang];
+      document.querySelectorAll('[data-i18n]').forEach((el) => {
+        const text = table[el.dataset.i18n];
+        if (text !== undefined) el.textContent = text;
+      });
+      document.querySelectorAll('[data-i18n-alt]').forEach((el) => {
+        const text = table[el.dataset.i18nAlt];
+        if (text !== undefined) el.alt = text;
+      });
+    }
+
+    let lang = 'en';
+    try { lang = localStorage.getItem(KEY) || ''; } catch { lang = ''; }
+    if (lang !== 'en' && lang !== 'ja') lang = navigator.language.toLowerCase().startsWith('ja') ? 'ja' : 'en';
+
+    // The language menu needs JavaScript, so it is added here: without
+    // JavaScript (search engines' crawlers) the page stays in English.
+    const select = document.createElement('select');
+    select.id = 'lang';
+    select.setAttribute('aria-label', 'Language / 言語');
+    for (const [value, label] of [['en', 'English'], ['ja', '日本語']]) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      select.append(option);
+    }
+    select.value = lang;
+    select.addEventListener('change', () => {
+      try { localStorage.setItem(KEY, select.value); } catch { /* storage blocked */ }
+      apply(select.value);
+    });
+    document.getElementById('header-right').append(select);
+    apply(lang);
+
+    if (!('gpu' in navigator)) document.getElementById('gpu-warning').style.display = 'block';
+
+    // A file picked here is handed to the app page through the browser's own
+    // IndexedDB (never a server), and the app page deletes it after reading.
+    const ACCEPT = /\.(docx|xlsx|pptx|docm|xlsm|pptm)$/i;
+    function store(file) {
+      return file.arrayBuffer().then((bytes) => new Promise((resolve, reject) => {
+        const open = indexedDB.open('ibisoffice-playground', 1);
+        open.onupgradeneeded = () => open.result.createObjectStore('files');
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const tx = open.result.transaction('files', 'readwrite');
+          tx.objectStore('files').put({ name: file.name, bytes: new Uint8Array(bytes) }, 'picked');
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        };
+      }));
+    }
+    function openFile(file) {
+      if (!file) return;
+      if (!ACCEPT.test(file.name)) {
+        alert(document.documentElement.lang === 'ja'
+          ? '.docx・.xlsx・.pptx のファイルを選んでください。'
+          : 'Please choose a .docx, .xlsx or .pptx file.');
+        return;
+      }
+      store(file).then(() => { location.href = 'app/?local=1'; }, (error) => console.error(error));
+    }
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.docx,.xlsx,.pptx,.docm,.xlsm,.pptm';
+    input.addEventListener('change', () => openFile(input.files[0]));
+    document.getElementById('pick').addEventListener('click', () => input.click());
+    const drop = document.getElementById('drop');
+    drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
+    drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+    drop.addEventListener('drop', (e) => {
+      e.preventDefault();
+      drop.classList.remove('over');
+      openFile(e.dataTransfer.files[0]);
+    });
+  })();
+  </script>
+</body>
+</html>
