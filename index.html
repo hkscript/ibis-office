@@ -92,8 +92,22 @@
     #drop.over { border-color: var(--accent); background: #eef4ff; }
     #drop p { margin: 0 0 16px; color: var(--sub); }
     .privacy { display: flex; gap: 12px; align-items: flex-start; margin-top: 20px; padding: 16px 18px; border-radius: 10px; background: #eaf6ee; color: #1e5631; }
-    .privacy b { display: block; }
-    .desktop { margin-top: 16px; }
+    .privacy ul { margin: 0; padding-left: 18px; }
+    .privacy li { margin-bottom: 8px; }
+    .privacy li:last-child { margin-bottom: 0; }
+    .privacy b { display: inline; }
+    .desktop-downloads { margin-top: 32px; text-align: center; }
+    .desktop-downloads h3 { font-size: 18px; margin: 0 0 16px; color: var(--ink); }
+    .download-cards { display: flex; flex-wrap: wrap; gap: 20px; justify-content: center; }
+    .download-card { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+    .download-card a { display: block; }
+    .download-card img { height: 48px; border-radius: 8px; transition: transform .15s, filter .15s; }
+    .download-card img:hover { transform: translateY(-2px); filter: brightness(1.05); }
+    .download-card code { font-size: 12px; color: var(--sub); background: var(--soft); padding: 3px 8px; border-radius: 4px; border: 1px solid var(--line); }
+    .desktop-changelog { margin-top: 14px; font-size: 14px; color: var(--sub); }
+    .desktop-changelog a { color: var(--accent); font-weight: 500; }
+    .desktop-changelog a:hover { text-decoration: underline; }
+    .sample-note { margin-top: 16px; color: var(--sub); font-size: 14px; }
 
     .notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; }
     .notes div { padding: 4px 0; }
@@ -167,6 +181,7 @@
             <span class="go" data-i18n="sample.go">Open →</span>
           </a>
         </div>
+        <p class="sample-note"><span data-i18n="samples.note">Sample file: ibis inc. (TSE: 9343) FY2026 Q2 Earnings Presentation (August 10, 2026). Official version available on </span><a href="https://www.ibis.ne.jp/en/ir/" target="_blank" rel="noopener" data-i18n="samples.note.link" data-i18n-href="samples.note.url">our IR website</a><span data-i18n="samples.note.end">.</span></p>
       </div>
     </section>
 
@@ -180,13 +195,47 @@
           <noscript><p data-i18n="open.nojs">JavaScript is required to open files.</p></noscript>
         </div>
         <div class="privacy">
-          <span aria-hidden="true">🔒</span>
+          <span aria-hidden="true" style="font-size: 20px; line-height: 1.4;">🔒</span>
           <div>
-            <b data-i18n="privacy.title">Your file never leaves your device.</b>
-            <span data-i18n="privacy.body">ibisOffice reads and draws the file entirely inside your browser. It is not sent to any server.</span>
+            <ul>
+              <li>
+                <b data-i18n="privacy.title">Your file never leaves your device:</b>
+                <span data-i18n="privacy.body">ibisOffice reads and draws the file entirely inside your browser. It is not sent to any server.</span>
+              </li>
+              <li>
+                <b data-i18n="privacy.cloud.title">For cloud service developers:</b>
+                <span data-i18n="privacy.cloud.body">Easily integrate fast docx, xlsx, and pptx in-browser preview capabilities into your own services without server-side rendering.</span>
+              </li>
+            </ul>
           </div>
         </div>
-        <p class="desktop"><span data-i18n="desktop.label">Desktop app:</span> <a href="https://github.com/ibisjp/ibis-office/releases/latest" data-i18n="desktop.download">Download</a></p>
+
+        <div class="desktop-downloads">
+          <h3 data-i18n="desktop.title">Download the desktop app</h3>
+          <div class="download-cards">
+            <div class="download-card">
+              <a href="https://github.com/ibisjp/ibis-office/releases/download/v0.8.1/ibisOffice-0.8.1-Windows.zip">
+                <img src="asset/download-windows.svg" alt="Download for Windows" height="48">
+              </a>
+              <code>ibisOffice-0.8.1-Windows.zip</code>
+            </div>
+            <div class="download-card">
+              <a href="https://github.com/ibisjp/ibis-office/releases/download/v0.8.2/ibisOffice-0.8.2-macOS.zip">
+                <img src="asset/download-mac.svg" alt="Download for Mac" height="48">
+              </a>
+              <code>ibisOffice-0.8.2-macOS.zip</code>
+            </div>
+            <div class="download-card">
+              <a href="https://github.com/ibisjp/ibis-office/releases/download/v0.8.2/ibisOffice-0.8.2-Linux.AppImage">
+                <img src="asset/download-linux.svg" alt="Download for Linux" height="48">
+              </a>
+              <code>ibisOffice-0.8.2-Linux.AppImage</code>
+            </div>
+          </div>
+          <p class="desktop-changelog">
+            <span data-i18n="desktop.changelog.lead">See release notes in </span><a href="https://github.com/ibisjp/ibis-office/blob/main/CHANGELOG.md" target="_blank" rel="noopener">CHANGELOG.md</a><span data-i18n="desktop.changelog.trail">.</span>
+          </p>
+        </div>
       </div>
     </section>
 
@@ -245,6 +294,10 @@
       'sample.xlsx.meta': '22 シート、グラフ 29 個、数式 58.9 万個、13.7MB',
       'sample.pptx.title': '決算説明会資料',
       'sample.pptx.meta': '31 スライド、35.9MB',
+      'samples.note': 'サンプルファイル： 株式会社アイビス(東証G: 9343) FY2026 2Q決算説明会資料(2026/08/10) 正式版は',
+      'samples.note.link': '弊社会社ホームページ',
+      'samples.note.url': 'https://www.ibis.ne.jp/ir/',
+      'samples.note.end': 'にあります。',
       'sample.docx.alt': '有価証券届出書の本文のページ（ibisOffice で描いたもの）',
       'sample.xlsx.alt': 'コーヒー チェーンの売上報告の 1 シート目（ibisOffice で描いたもの）',
       'sample.pptx.alt': '決算説明会資料の 1 枚目（ibisOffice で描いたもの）',
@@ -256,8 +309,11 @@
       'open.nojs': 'ファイルを開くには JavaScript が必要です。',
       'privacy.title': 'ファイルは、お使いの端末から出ません。',
       'privacy.body': 'ibisOffice は、ファイルの読み込みも描画も、すべてブラウザの中で行います。ファイルはどのサーバーにも送られません。',
-      'desktop.label': 'デスクトップアプリ版：',
-      'desktop.download': 'ダウンロード',
+      'privacy.cloud.title': 'クラウドサービス開発者の方へ：',
+      'privacy.cloud.body': 'あなたのサービス上で、docx・xlsx・pptx をプレビューする機能を簡単に実装できます。',
+      'desktop.title': 'デスクトップ アプリ版のダウンロード',
+      'desktop.changelog.lead': '各バージョンの変更内容は ',
+      'desktop.changelog.trail': ' をご覧ください。',
       'notes.title': 'このプレイグラウンドについて',
       'notes.browser.title': '対応ブラウザ',
       'notes.browser.body': 'WebGPU が必要です。最新の Chrome・Edge、または Safari 26 以降をお使いください。',
@@ -276,6 +332,7 @@
     const KEY = 'ibisoffice-lang';
     const english = {};
     document.querySelectorAll('[data-i18n]').forEach((el) => { english[el.dataset.i18n] = el.textContent; });
+    document.querySelectorAll('[data-i18n-href]').forEach((el) => { english[el.dataset.i18nHref] = el.getAttribute('href'); });
     document.querySelectorAll('[data-i18n-alt]').forEach((el) => { english[el.dataset.i18nAlt] = el.alt; });
 
     function apply(lang) {
@@ -285,6 +342,10 @@
       document.querySelectorAll('[data-i18n]').forEach((el) => {
         const text = table[el.dataset.i18n];
         if (text !== undefined) el.textContent = text;
+      });
+      document.querySelectorAll('[data-i18n-href]').forEach((el) => {
+        const url = table[el.dataset.i18nHref];
+        if (url !== undefined) el.href = url;
       });
       document.querySelectorAll('[data-i18n-alt]').forEach((el) => {
         const text = table[el.dataset.i18nAlt];
