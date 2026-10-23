@@ -24,7 +24,7 @@ pub(crate) const LINE_HEIGHT: f32 = crate::render::font_metrics::POWERPOINT_SING
 
 /// Decoded pictures and the fonts available to draw with, for one presentation.
 /// Identifies one rotated drawing of a picture.
-type RotatedKey = (MediaId, i32, bool, bool, ibis_doc_model::Crop, i64, i64);
+type RotatedKey = (MediaId, u64);
 
 /// Color and contrast rendering mode for presentations and accessibility (表示 > カラー/白黒).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -52,6 +52,9 @@ pub(crate) struct Resources {
     /// Those SVG pictures (rotated, cut and recoloured) rasterized ahead,
     /// by the image's id: see `rasterize_svg_pictures`.
     rasters: std::cell::RefCell<HashMap<u64, Arc<RenderImage>>>,
+    /// Pictures scaled down to their drawn pixel size so GPUI's bilinear
+    /// sampler does not alias fine lines (`m1_downscaled_picture_is_averaged`).
+    downscaled: std::cell::RefCell<HashMap<(MediaId, u32, u32), Arc<RenderImage>>>,
     /// Decoding the pictures and fonts, on other threads.
     pub(crate) preload: crate::render::preload::Preload,
     /// Formats of all media, for labelling pictures that cannot be drawn.
@@ -86,6 +89,9 @@ pub(crate) struct Resources {
     /// The scale a printed sheet is drawn at on its paper (for where Excel
     /// starts its dashed borders), set by the export before each sheet.
     pub(crate) print_scale: std::cell::Cell<f64>,
+    /// Where each printed page of the sheet starts (row tops and column lefts in EMU of the sheet),
+    /// set by the export with the scale: a fill does not reach back over the page's edge.
+    pub(crate) print_breaks: std::cell::RefCell<Arc<(Vec<i64>, Vec<i64>)>>,
     /// Draw shapes where they are meant to be, as a PDF rasterizer draws
     /// them (the export's pictures, which the coverage tests compare with
     /// PowerPoint's PDF rasterized): level and upright edges are not moved
@@ -99,6 +105,13 @@ pub(crate) struct Resources {
     live: std::cell::RefCell<HashMap<MediaId, crate::media_player::Frame>>,
     /// Worksheets in the workbook by sheet name (original and lower-case).
     pub(crate) sheets: HashMap<String, Arc<ibis_doc_model::Sheet>>,
+    /// Word documents: the text box currently being edited, its recorded `TextPositions`,
+    /// and its composing `TextBody` when IME marked text is active.
+    pub(crate) edited_box: Option<(
+        ibis_doc_model::ShapeId,
+        crate::render::rich_text::TextPositions,
+        Option<ibis_doc_model::TextBody>,
+    )>,
 }
 
 impl Resources {
@@ -165,6 +178,7 @@ impl Resources {
             clipped: Default::default(),
             duotones: Default::default(),
             rasters: Default::default(),
+            downscaled: Default::default(),
             formats,
             sizes,
             fonts,
@@ -181,10 +195,12 @@ impl Resources {
             collapsed_headings: Default::default(),
             merge_values: None,
             print_scale: std::cell::Cell::new(1.0),
+            print_breaks: Default::default(),
             exact: false,
             theme_fonts: presentation.theme_fonts.as_ref().map(|t| t.minor.clone()),
             live: Default::default(),
             sheets,
+            edited_box: None,
         }
     }
 
@@ -272,6 +288,40 @@ impl Resources {
         }
     }
 
+    /// `picture(media)`, averaged down to the drawn size `(w, h)` (logical pixels) when the image is more than twice as
+    /// large, so GPUI's 2×2 bilinear sampler does not drop thin lines between samples.
+    pub(crate) fn picture_at_size(&self, media: MediaId, w: f32, h: f32) -> Option<ImageSource> {
+        let base = self.picture(media)?;
+        let ImageSource::Render(render) = &base else { return Some(base) };
+        if render.frame_count() != 1 {
+            return Some(base);
+        }
+        let size = render.size(0);
+        let (sw, sh) = (u32::from(size.width.0.max(0) as u32), u32::from(size.height.0.max(0) as u32));
+        // Account for up to 2× Retina scale factor so the texture fed to the 2×2 bilinear sampler is at most ~2× the device pixel size.
+        let tw = (w * 2.0).round().max(1.0) as u32;
+        let th = (h * 2.0).round().max(1.0) as u32;
+        if sw <= tw * 2 && sh <= th * 2 {
+            return Some(base);
+        }
+        let key = (media, tw, th);
+        if let Some(found) = self.downscaled.borrow().get(&key) {
+            return Some(ImageSource::Render(found.clone()));
+        }
+        // The browser version has no `image` crate (not a dependency for wasm): drawn as it is there.
+        #[cfg(target_family = "wasm")]
+        return Some(base);
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let bytes = render.as_bytes(0)?;
+            let buf = image::RgbaImage::from_raw(sw, sh, bytes.to_vec())?;
+            let resized = image::imageops::resize(&buf, tw, th, image::imageops::FilterType::Triangle);
+            let out = Arc::new(RenderImage::new([image::Frame::new(resized)]));
+            self.downscaled.borrow_mut().insert(key, out.clone());
+            Some(ImageSource::Render(out))
+        }
+    }
+
     /// An SVG picture (rotated, cut or recoloured) to draw: rasterized
     /// ahead, or left to GPUI to rasterize.
     pub(crate) fn svg_picture(&self, image: Arc<Image>) -> ImageSource {
@@ -337,6 +387,11 @@ impl Resources {
         (a, d)
     }
 
+    /// Whether the typeface `name` is installed (or embedded), under its own name or one this system gives it.
+    pub(crate) fn has_typeface(&self, name: &str) -> bool {
+        self.fonts.available(name).is_some()
+    }
+
     /// The width of `text` in `font` at `size` pixels, from the characters'
     /// advances (text is laid out without kerning).
     pub(crate) fn text_width(&self, text: &str, font: &Font, size: f32) -> f32 {
@@ -379,7 +434,7 @@ impl Resources {
     /// How far to move a line of `font` at `size` down from where GPUI puts
     /// it in a line box `line` high (GPUI centres the font's height in the
     /// box) to where PowerPoint does (`rich_text::baseline`).
-    fn baseline_shift(&self, font: &Font, size: f32, line: f32) -> f32 {
+    pub(crate) fn baseline_shift(&self, font: &Font, size: f32, line: f32) -> f32 {
         let (a, d) = self.metrics(font);
         // GPUI's baseline: the font's height centred in the line.
         let gpui = (line - (a + d) * size) / 2.0 + a * size;
@@ -399,7 +454,9 @@ impl Resources {
         // left out: its substitute drawn to its width looks smaller than it,
         // and matched its PDF worse.)
         let expected = match name {
-            n if n.starts_with("ＭＳ") || n.starts_with("MS ") => 0.54, // i18n-ok（フォント名の照合（ＭＳ で始まる名前の判定）。ファイルの中の名前。i18n-ok）
+            n if n.starts_with("ＭＳ") || n.starts_with("MS ") => if ibis_pptx::EXCEL_METRICS == ibis_pptx::ExcelMetrics::Windows { 0.5 } else { 0.54 }, // i18n-ok（フォント名の照合（ＭＳ で始まる名前の判定）。ファイルの中の名前。i18n-ok）
+            // Noto Sans JP's digits (0.555 em, from the widths in Excel's PDF of a user's workbook).
+            n if n.starts_with("Noto Sans") => 0.555,
             _ => return 1.0,
         };
         let actual = self.text_width("0", font, 100.0) / 100.0;
@@ -455,8 +512,16 @@ impl Resources {
     /// `ea` font), when it is installed; `None` otherwise (the system's
     /// font draws them, as before).
     pub(crate) fn default_east_asian_font(&self, style: &TextStyle) -> Option<Font> {
-        if style.font.as_deref().is_some_and(is_east_asian_typeface) {
+        if style.font.is_none() || style.font.as_deref().is_some_and(is_east_asian_typeface) {
             return None;
+        }
+        if let Some(ea) = style.fallback_font.as_deref().filter(|f| is_east_asian_typeface(f)) {
+            return Some(self.fonts.font(&TextStyle { font: Some(ea.into()), fallback_font: style.font.clone(), ..style.clone() }));
+        }
+        if style.bold
+            && let Some(ea) = self.fonts.east_asian_fallback.as_deref()
+        {
+            return Some(self.fonts.font(&TextStyle { font: Some(ea.into()), fallback_font: None, ..style.clone() }));
         }
         self.fonts.available("MS Gothic")?;
         Some(self.fonts.font(&TextStyle { font: Some("MS Gothic".into()), fallback_font: None, ..style.clone() }))
@@ -466,23 +531,42 @@ impl Resources {
 /// Maps the typefaces a document asks for to installed fonts.
 struct Fonts {
     installed: HashSet<String>,
+    /// OpenType `name` (ID 1 / ID 16 / ID 4) and `OS/2` weight index for
+    /// fonts embedded in the current document.
+    embedded_index: OpenTypeIndex,
     /// Used for East Asian typefaces that are not installed.
     east_asian_fallback: Option<SharedString>,
     substitutions: HashMap<String, String>,
 }
 
-/// Weight words at the end of a typeface name, such as "Poppins SemiBold".
-const WEIGHT_SUFFIXES: &[(&str, FontWeight)] = &[
+/// Weight words at the end of a typeface name, such as "Poppins SemiBold"
+/// or GDI sub-family names like "Segoe UI Semilight".
+/// Compound weight words ("ExtraLight", "SemiLight", "SemiBold", "ExtraBold"...)
+/// are listed before their shorter suffixes ("Light", "Bold") so suffix
+/// stripping matches the full weight word first.
+pub(crate) const WEIGHT_SUFFIXES: &[(&str, FontWeight)] = &[
     ("ExtraLight", FontWeight::EXTRA_LIGHT),
+    ("Extralight", FontWeight::EXTRA_LIGHT),
     ("UltraLight", FontWeight::EXTRA_LIGHT),
+    ("Ultralight", FontWeight::EXTRA_LIGHT),
+    ("SemiLight", FontWeight(350.0)),
+    ("Semilight", FontWeight(350.0)),
+    ("DemiLight", FontWeight(350.0)),
+    ("Demilight", FontWeight(350.0)),
     ("Thin", FontWeight::THIN),
     ("Light", FontWeight::LIGHT),
     ("Regular", FontWeight::NORMAL),
+    ("Normal", FontWeight::NORMAL),
+    ("Book", FontWeight::NORMAL),
     ("Medium", FontWeight::MEDIUM),
     ("SemiBold", FontWeight::SEMIBOLD),
+    ("Semibold", FontWeight::SEMIBOLD),
     ("DemiBold", FontWeight::SEMIBOLD),
+    ("Demibold", FontWeight::SEMIBOLD),
     ("ExtraBold", FontWeight::EXTRA_BOLD),
+    ("Extrabold", FontWeight::EXTRA_BOLD),
     ("UltraBold", FontWeight::EXTRA_BOLD),
+    ("Ultrabold", FontWeight::EXTRA_BOLD),
     ("Bold", FontWeight::BOLD),
     ("Black", FontWeight::BLACK),
     ("Heavy", FontWeight::BLACK),
@@ -497,7 +581,43 @@ const WEIGHT_SUFFIXES: &[(&str, FontWeight)] = &[
     ("W7", FontWeight(700.0)),
     ("W8", FontWeight(800.0)),
     ("W9", FontWeight(900.0)),
+    // Ricoh HG/HGP/HGS and other Japanese typeface weight suffixes ("HGP創英角ｺﾞｼｯｸUB", "HGPｺﾞｼｯｸE").
+    ("UB", FontWeight::EXTRA_BOLD),
+    ("EB", FontWeight::EXTRA_BOLD),
 ];
+
+/// Strip a trailing weight word from `name` (either an exact suffix in
+/// `WEIGHT_SUFFIXES` or a case-insensitive weight word after `' '` or `'-'`),
+/// returning the base family name and its `FontWeight`.
+pub(crate) fn strip_weight_suffix(name: &str) -> Option<(&str, FontWeight)> {
+    let name = name.trim();
+    for &(suffix, weight) in WEIGHT_SUFFIXES {
+        if let Some(stem) = name.strip_suffix(suffix) {
+            let base = stem.trim_end_matches([' ', '-']);
+            if !base.is_empty() {
+                return Some((base, weight));
+            }
+        }
+    }
+    // Single-letter Japanese typeface weight suffixes ("HGPｺﾞｼｯｸE", "HG明朝B", "HG丸ｺﾞｼｯｸM-PRO")
+    // directly after a non-ASCII character.
+    for &(suffix, weight) in &[("E", FontWeight::EXTRA_BOLD), ("B", FontWeight::BOLD), ("M", FontWeight::MEDIUM), ("L", FontWeight::LIGHT)] {
+        if let Some(stem) = name.strip_suffix(suffix)
+            && stem.chars().last().is_some_and(|c| !c.is_ascii())
+        {
+            return Some((stem, weight));
+        }
+    }
+    if let Some((stem, last_word)) = name.rsplit_once([' ', '-']) {
+        let base = stem.trim_end_matches([' ', '-']);
+        if !base.is_empty()
+            && let Some(&(_, weight)) = WEIGHT_SUFFIXES.iter().find(|(suffix, _)| last_word.eq_ignore_ascii_case(suffix))
+        {
+            return Some((base, weight));
+        }
+    }
+    None
+}
 
 /// Installed fonts that stand for a typeface Office has in other files,
 /// whose ascent and descent are the typeface's (`font_metrics`), not their
@@ -605,6 +725,17 @@ pub(crate) fn is_east_asian_typeface(name: &str) -> bool {
     name.chars().any(|c| c as u32 >= 0x2e80) || HINTS.iter().any(|h| name.contains(h))
 }
 
+/// Whether an uninstalled Latin typeface name is a serif face (drawn with
+/// Times New Roman / Liberation Serif rather than a sans-serif stand-in).
+fn is_serif_latin_typeface(name: &str) -> bool {
+    const HINTS: &[&str] = &[
+        "Serif", "Goudy", "Merriweather", "Garamond", "Baskerville", "Palatino", "Bookman",
+        "Caslon", "Bodoni", "Didot", "Cambria", "Constantia", "Georgia", "Charter", "Rockwell",
+        "Slab", "Antiqua", "Minion", "Sabon", "Times",
+    ];
+    !name.contains("Sans") && HINTS.iter().any(|h| name.contains(h))
+}
+
 /// Fonts bundled with the desktop app (`fonts/carlito/`, OFL-1.1): Carlito,
 /// with Calibri's widths, stands in for it. Not in the web build, whose
 /// download it would add 2.7 MB to.
@@ -702,10 +833,525 @@ fn split_collection(data: &[u8]) -> Vec<Vec<u8>> {
 #[cfg(target_family = "wasm")]
 fn add_extra_font_dirs(_: &App, _: &mut HashSet<String>) {}
 
+/// Names and style read from the `name` and `OS/2` tables of an OpenType /
+/// TrueType font face.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OpenTypeFaceInfo {
+    /// Typographic family names (Name ID 16).
+    pub(crate) id16_names: Vec<String>,
+    /// Font family / GDI family names (Name ID 1).
+    pub(crate) id1_names: Vec<String>,
+    /// Full font names (Name ID 4).
+    pub(crate) id4_names: Vec<String>,
+    /// `OS/2` `usWeightClass` (100..=1000, default 400).
+    pub(crate) weight: u16,
+    /// `OS/2` `fsSelection` italic or oblique flag.
+    pub(crate) italic: bool,
+}
+
+#[derive(Clone, Debug)]
+struct OpenTypeEntry {
+    /// Candidate family names as registered by the platform's text system
+    /// (Name ID 16 first, then Name ID 1).
+    family_candidates: Vec<String>,
+    /// `OS/2` `usWeightClass`.
+    weight: u16,
+    /// `OS/2` italic or oblique flag.
+    italic: bool,
+    /// 0 for Name ID 16 / Name ID 1, 1 for Name ID 4 (full font name).
+    tier: u8,
+}
+
+impl OpenTypeEntry {
+    fn resolve_in(&self, installed: &HashSet<String>) -> Option<SharedString> {
+        for cand in &self.family_candidates {
+            if let Some(exact) = installed.get(cand.as_str()) {
+                return Some(SharedString::from(exact.clone()));
+            }
+        }
+        for cand in &self.family_candidates {
+            if let Some(found) = installed.iter().find(|f| f.eq_ignore_ascii_case(cand)) {
+                return Some(SharedString::from(found.clone()));
+            }
+        }
+        for cand in &self.family_candidates {
+            if let Some(aliased) = alias_in_installed(cand, installed) {
+                return Some(aliased);
+            }
+        }
+        None
+    }
+}
+
+/// Maps OpenType GDI family names (Name ID 1), typographic family names
+/// (Name ID 16), and full names (Name ID 4) across locales to the family
+/// names the platform's text system registers and the face's `OS/2` weight.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct OpenTypeIndex {
+    entries: HashMap<String, OpenTypeEntry>,
+}
+
+impl OpenTypeIndex {
+    pub(crate) fn insert_face(&mut self, face: &OpenTypeFaceInfo) {
+        let mut all_families: Vec<String> = Vec::with_capacity(face.id16_names.len() + face.id1_names.len());
+        for n in face.id16_names.iter().chain(face.id1_names.iter()) {
+            if !all_families.iter().any(|x| x == n) {
+                all_families.push(n.clone());
+            }
+        }
+        if all_families.is_empty() {
+            return;
+        }
+        let id16_only: Vec<String> = if face.id16_names.is_empty() {
+            all_families.clone()
+        } else {
+            face.id16_names.clone()
+        };
+        for name16 in &face.id16_names {
+            self.insert_candidate(name16, &id16_only, face.weight, face.italic, 0);
+        }
+        for name1 in &face.id1_names {
+            self.insert_candidate(name1, &all_families, face.weight, face.italic, 0);
+        }
+        for name4 in &face.id4_names {
+            self.insert_candidate(name4, &all_families, face.weight, face.italic, 1);
+        }
+    }
+
+    pub(crate) fn insert_explicit(&mut self, query: &str, family: &str, weight: u16, italic: bool) {
+        let query = query.trim();
+        let family = family.trim();
+        if query.is_empty() || family.is_empty() {
+            return;
+        }
+        let mut cands = vec![family.to_string()];
+        if !query.eq_ignore_ascii_case(family) {
+            cands.push(query.to_string());
+        }
+        self.insert_candidate(query, &cands, weight, italic, 0);
+    }
+
+    fn insert_candidate(&mut self, key_name: &str, candidates: &[String], weight: u16, italic: bool, tier: u8) {
+        let key = key_name.trim().to_lowercase();
+        if key.is_empty() {
+            return;
+        }
+        let new_score = (tier, italic, (i32::from(weight) - 400).abs());
+        match self.entries.get_mut(&key) {
+            Some(existing) => {
+                for c in candidates {
+                    if !existing.family_candidates.iter().any(|x| x == c) {
+                        existing.family_candidates.push(c.clone());
+                    }
+                }
+                let old_score = (existing.tier, existing.italic, (i32::from(existing.weight) - 400).abs());
+                if new_score < old_score {
+                    existing.weight = weight;
+                    existing.italic = italic;
+                    existing.tier = tier;
+                }
+            }
+            None => {
+                self.entries.insert(
+                    key,
+                    OpenTypeEntry {
+                        family_candidates: candidates.to_vec(),
+                        weight,
+                        italic,
+                        tier,
+                    },
+                );
+            }
+        }
+    }
+
+    fn get(&self, name: &str) -> Option<&OpenTypeEntry> {
+        let key = name.trim().to_lowercase();
+        self.entries.get(&key)
+    }
+}
+
+fn parse_os2_table(os2: &[u8]) -> (u16, bool) {
+    if os2.len() < 6 {
+        return (400, false);
+    }
+    let raw_w = u16::from_be_bytes([os2[4], os2[5]]);
+    let weight = if (1..=9).contains(&raw_w) {
+        raw_w * 100
+    } else if (100..=1000).contains(&raw_w) {
+        raw_w
+    } else {
+        400
+    };
+    let italic = if os2.len() >= 64 {
+        let fs_selection = u16::from_be_bytes([os2[62], os2[63]]);
+        (fs_selection & 0x0201) != 0
+    } else {
+        false
+    };
+    (weight, italic)
+}
+
+fn parse_name_table(name: &[u8]) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let mut id16_names = Vec::new();
+    let mut id1_names = Vec::new();
+    let mut id4_names = Vec::new();
+    if name.len() < 6 {
+        return (id16_names, id1_names, id4_names);
+    }
+    let count = u16::from_be_bytes([name[2], name[3]]) as usize;
+    let storage = u16::from_be_bytes([name[4], name[5]]) as usize;
+    for i in 0..count.min(512) {
+        let rec = 6 + i * 12;
+        let Some(r) = name.get(rec..rec + 12) else { break };
+        let platform = u16::from_be_bytes([r[0], r[1]]);
+        let encoding = u16::from_be_bytes([r[2], r[3]]);
+        let name_id = u16::from_be_bytes([r[6], r[7]]);
+        if !matches!(name_id, 1 | 4 | 16) {
+            continue;
+        }
+        let len = u16::from_be_bytes([r[8], r[9]]) as usize;
+        let off = storage.saturating_add(u16::from_be_bytes([r[10], r[11]]) as usize);
+        let Some(raw) = name.get(off..off.saturating_add(len)) else { continue };
+        let decoded = if platform == 0 || (platform == 3 && matches!(encoding, 1 | 10)) {
+            if raw.is_empty() || raw.len() % 2 != 0 {
+                None
+            } else {
+                let u16s: Vec<u16> = raw.chunks_exact(2).map(|b| u16::from_be_bytes([b[0], b[1]])).collect();
+                String::from_utf16(&u16s).ok()
+            }
+        } else if platform == 1 && encoding == 0 && !raw.is_empty() && raw.is_ascii() {
+            std::str::from_utf8(raw).ok().map(str::to_string)
+        } else {
+            None
+        };
+        let Some(s) = decoded else { continue };
+        let s = s.trim_matches('\0').trim();
+        if s.is_empty() || s.starts_with('.') {
+            continue;
+        }
+        let target = match name_id {
+            16 => &mut id16_names,
+            1 => &mut id1_names,
+            4 => &mut id4_names,
+            _ => continue,
+        };
+        if !target.iter().any(|x| x == s) {
+            target.push(s.to_string());
+        }
+    }
+    (id16_names, id1_names, id4_names)
+}
+
+fn parse_opentype_faces<R: std::io::Read + std::io::Seek>(reader: &mut R) -> Vec<OpenTypeFaceInfo> {
+    use std::io::SeekFrom;
+    let mut hdr = [0u8; 12];
+    if reader.seek(SeekFrom::Start(0)).is_err() || reader.read_exact(&mut hdr).is_err() {
+        return Vec::new();
+    }
+    let offsets: Vec<u64> = if &hdr[0..4] == b"ttcf" {
+        let count = u32::from_be_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]) as usize;
+        let count = count.min(256);
+        let mut buf = vec![0u8; count * 4];
+        if reader.read_exact(&mut buf).is_err() {
+            return Vec::new();
+        }
+        buf.chunks_exact(4).map(|b| u64::from(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))).collect()
+    } else if matches!(&hdr[0..4], b"\x00\x01\x00\x00" | b"OTTO" | b"true" | b"typ1") {
+        vec![0]
+    } else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::with_capacity(offsets.len());
+    for font_off in offsets {
+        let mut sfnt = [0u8; 12];
+        if reader.seek(SeekFrom::Start(font_off)).is_err() || reader.read_exact(&mut sfnt).is_err() {
+            continue;
+        }
+        let num_tables = (u16::from_be_bytes([sfnt[4], sfnt[5]]) as usize).min(128);
+        let mut dir = vec![0u8; num_tables * 16];
+        if reader.read_exact(&mut dir).is_err() {
+            continue;
+        }
+        let mut name_span: Option<(u64, usize)> = None;
+        let mut os2_span: Option<(u64, usize)> = None;
+        for rec in dir.chunks_exact(16) {
+            let tag = &rec[0..4];
+            let off = u64::from(u32::from_be_bytes([rec[8], rec[9], rec[10], rec[11]]));
+            let len = u32::from_be_bytes([rec[12], rec[13], rec[14], rec[15]]) as usize;
+            if tag == b"name" {
+                name_span = Some((off, len));
+            } else if tag == b"OS/2" {
+                os2_span = Some((off, len));
+            }
+        }
+        let Some((name_off, name_len)) = name_span else { continue };
+        if name_len == 0 || name_len > 256 * 1024 {
+            continue;
+        }
+        let mut name_buf = vec![0u8; name_len];
+        if reader.seek(SeekFrom::Start(name_off)).is_err() || reader.read_exact(&mut name_buf).is_err() {
+            continue;
+        }
+        let (id16_names, id1_names, id4_names) = parse_name_table(&name_buf);
+        if id16_names.is_empty() && id1_names.is_empty() {
+            continue;
+        }
+        let (weight, italic) = match os2_span {
+            Some((os2_off, os2_len)) if os2_len >= 6 => {
+                let mut os2_buf = vec![0u8; os2_len.min(64)];
+                if reader.seek(SeekFrom::Start(os2_off)).is_ok() && reader.read_exact(&mut os2_buf).is_ok() {
+                    parse_os2_table(&os2_buf)
+                } else {
+                    (400, false)
+                }
+            }
+            _ => (400, false),
+        };
+        out.push(OpenTypeFaceInfo { id16_names, id1_names, id4_names, weight, italic });
+    }
+    out
+}
+
+pub(crate) fn parse_opentype_faces_from_slice(data: &[u8]) -> Vec<OpenTypeFaceInfo> {
+    let mut cursor = std::io::Cursor::new(data);
+    parse_opentype_faces(&mut cursor)
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn scan_font_dir_into(dir: &std::path::Path, depth: usize, index: &mut OpenTypeIndex) {
+    if depth > 4 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            scan_font_dir_into(&path, depth + 1, index);
+            continue;
+        }
+        let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+        if matches!(ext.as_deref(), Some("ttf" | "otf" | "ttc"))
+            && let Ok(mut file) = std::fs::File::open(&path)
+        {
+            for face in parse_opentype_faces(&mut file) {
+                index.insert_face(&face);
+            }
+        }
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn system_font_directories() -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(root) = std::env::var_os("SystemRoot").or_else(|| std::env::var_os("WINDIR")) {
+            dirs.push(std::path::PathBuf::from(root).join("Fonts"));
+        } else {
+            dirs.push(std::path::PathBuf::from(r"C:\Windows\Fonts"));
+        }
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            dirs.push(std::path::PathBuf::from(local).join("Microsoft").join("Windows").join("Fonts"));
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        dirs.push(std::path::PathBuf::from("/System/Library/Fonts"));
+        dirs.push(std::path::PathBuf::from("/System/Library/Fonts/Supplemental"));
+        dirs.push(std::path::PathBuf::from("/Library/Fonts"));
+        if let Some(home) = std::env::var_os("HOME") {
+            dirs.push(std::path::PathBuf::from(home).join("Library").join("Fonts"));
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        dirs.push(std::path::PathBuf::from("/usr/share/fonts"));
+        dirs.push(std::path::PathBuf::from("/usr/local/share/fonts"));
+        if let Some(home) = std::env::var_os("HOME") {
+            let home = std::path::PathBuf::from(home);
+            dirs.push(home.join(".local/share/fonts"));
+            dirs.push(home.join(".fonts"));
+        }
+    }
+    if let Some(extra) = std::env::var_os("IBIS_EXTRA_FONT_DIRS") {
+        dirs.extend(std::env::split_paths(&extra));
+    }
+    dirs
+}
+
+static SYSTEM_OPENTYPE_INDEX: std::sync::OnceLock<OpenTypeIndex> = std::sync::OnceLock::new();
+
+pub(crate) fn system_opentype_index() -> &'static OpenTypeIndex {
+    SYSTEM_OPENTYPE_INDEX.get_or_init(|| {
+        let mut index = OpenTypeIndex::default();
+        for data in BUNDLED_FONTS {
+            for face in parse_opentype_faces_from_slice(data) {
+                index.insert_face(&face);
+            }
+        }
+        #[cfg(not(target_family = "wasm"))]
+        for dir in system_font_directories() {
+            scan_font_dir_into(&dir, 0, &mut index);
+        }
+        index
+    })
+}
+
+fn alias_in_installed(name: &str, installed: &HashSet<String>) -> Option<SharedString> {
+    TYPEFACE_ALIASES
+        .iter()
+        .filter(|(office, _)| *office == name || office.eq_ignore_ascii_case(name))
+        .find_map(|(_, other)| {
+            installed
+                .get(*other)
+                .or_else(|| installed.iter().find(|f| f.eq_ignore_ascii_case(other)))
+                .map(|s| SharedString::from(s.clone()))
+        })
+}
+
+fn installed_or_alias(name: &str, installed: &HashSet<String>) -> Option<SharedString> {
+    if let Some(exact) = installed.get(name) {
+        return Some(SharedString::from(exact.clone()));
+    }
+    if let Some(found) = installed.iter().find(|f| f.eq_ignore_ascii_case(name)) {
+        return Some(SharedString::from(found.clone()));
+    }
+    alias_in_installed(name, installed)
+}
+
+/// Resolve `name` against `installed`, consulting `extra_index` (e.g.
+/// embedded fonts), the system OpenType `name` + `OS/2` index (when
+/// `use_system_index` is true), `TYPEFACE_ALIASES`, and `WEIGHT_SUFFIXES`.
+pub(crate) fn resolve_font_with_index(
+    name: &str,
+    installed: &HashSet<String>,
+    extra_index: Option<&OpenTypeIndex>,
+    use_system_index: bool,
+) -> Option<(SharedString, FontWeight, bool)> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let lookup_index = |q: &str| -> Option<(SharedString, FontWeight, bool)> {
+        if let Some(idx) = extra_index
+            && let Some(entry) = idx.get(q)
+            && let Some(family) = entry.resolve_in(installed)
+        {
+            return Some((family, FontWeight(f32::from(entry.weight)), entry.italic));
+        }
+        if use_system_index
+            && let Some(entry) = system_opentype_index().get(q)
+            && let Some(family) = entry.resolve_in(installed)
+        {
+            return Some((family, FontWeight(f32::from(entry.weight)), entry.italic));
+        }
+        None
+    };
+
+    // 1. OpenType `name` table (ID 1 / ID 16 / ID 4) + `OS/2` weight resolution.
+    if let Some(resolved) = lookup_index(name) {
+        return Some(resolved);
+    }
+
+    // 2. Direct match or typeface alias in `installed`.
+    if let Some(family) = installed_or_alias(name, installed) {
+        let weight = strip_weight_suffix(name).map_or(FontWeight::NORMAL, |(_, w)| w);
+        return Some((family, weight, false));
+    }
+
+    // 3. Weight suffix stripping ("Segoe UI Semilight" -> "Segoe UI" at weight 350).
+    if let Some((base, weight)) = strip_weight_suffix(name) {
+        if let Some((family, _, italic)) = lookup_index(base) {
+            return Some((family, weight, italic));
+        }
+        if let Some(family) = installed_or_alias(base, installed) {
+            return Some((family, weight, false));
+        }
+    }
+
+    None
+}
+
+/// Resolve a typeface name against the system's installed fonts (or
+/// `fallback_installed` if `SYSTEM_FONTS` has not been initialized yet).
+pub(crate) fn resolve_system_font(
+    name: &str,
+    fallback_installed: &HashSet<String>,
+) -> Option<(SharedString, FontWeight, bool)> {
+    let installed = system_font_names().unwrap_or(fallback_installed);
+    resolve_font_with_index(name, installed, None, true)
+}
+
+/// Whether `name` is available for `presentation` (installed on the system,
+/// aliased, weight-suffixed, mapped via OpenType `name` ID 1 ⇔ ID 16, or
+/// embedded in `presentation.fonts`).
+pub(crate) fn is_presentation_font_available(
+    name: &str,
+    presentation: &ibis_doc_model::Presentation,
+) -> bool {
+    let name = name.trim();
+    if name.is_empty() {
+        return true;
+    }
+    let name = presentation
+        .font_substitutions
+        .get(name)
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(name);
+
+    let matches_embedded = |candidate: &str| -> bool {
+        presentation
+            .fonts
+            .iter()
+            .any(|f| f.typeface.trim().eq_ignore_ascii_case(candidate))
+    };
+    if matches_embedded(name) {
+        return true;
+    }
+    if let Some((base, _)) = strip_weight_suffix(name)
+        && matches_embedded(base)
+    {
+        return true;
+    }
+
+    if let Ok(registered) = REGISTERED_FONTS.lock()
+        && !registered.is_empty()
+    {
+        let mut embedded_installed = HashSet::new();
+        let mut embedded_index = OpenTypeIndex::default();
+        for (_, family, faces) in registered.iter() {
+            embedded_installed.insert(family.clone());
+            for face in faces {
+                embedded_index.insert_face(face);
+            }
+        }
+        for f in &presentation.fonts {
+            embedded_installed.insert(f.typeface.clone());
+        }
+        if resolve_font_with_index(name, &embedded_installed, Some(&embedded_index), false).is_some() {
+            return true;
+        }
+    }
+
+    if let Some(sys) = system_font_names() {
+        if name.eq_ignore_ascii_case(BUNDLED_FAMILY) {
+            return true;
+        }
+        if resolve_font_with_index(name, sys, None, true).is_some() {
+            return true;
+        }
+    }
+
+    false
+}
+
 /// Embedded fonts already given to the text system, by a hash of their
-/// data, with their family. The text system cannot drop fonts, so each is
-/// added once per run of the app.
-static REGISTERED_FONTS: std::sync::Mutex<Vec<(u64, String)>> = std::sync::Mutex::new(Vec::new());
+/// data, with their family and OpenType `name`/`OS/2` metadata. The text
+/// system cannot drop fonts, so each is added once per run of the app.
+static REGISTERED_FONTS: std::sync::Mutex<Vec<(u64, String, Vec<OpenTypeFaceInfo>)>> = std::sync::Mutex::new(Vec::new());
 
 fn data_hash(data: &[u8]) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -733,20 +1379,39 @@ impl Fonts {
         let mut registered = REGISTERED_FONTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut new_fonts = Vec::new();
         for font in fonts {
-            let installed = self.available(&font.typeface).is_some_and(|(family, _)| !registered.iter().any(|(_, f)| **f == *family));
+            let installed = self.available(&font.typeface).is_some_and(|(family, _)| !registered.iter().any(|(_, f, _)| **f == *family));
             if installed {
                 continue; // installed on this system
             }
             let hash = data_hash(&font.data);
-            if let Some((_, family)) = registered.iter().find(|(h, _)| *h == hash) {
+            if let Some((_, family, faces)) = registered.iter().find(|(h, _, _)| *h == hash) {
                 self.installed.insert(family.clone());
+                for face in faces {
+                    self.embedded_index.insert_face(face);
+                }
+                let weight = faces.first().map_or_else(
+                    || strip_weight_suffix(&font.typeface).map_or(400, |(_, w)| w.0 as u16),
+                    |f| f.weight,
+                );
+                let italic = faces.first().is_some_and(|f| f.italic);
+                self.embedded_index.insert_explicit(&font.typeface, family, weight, italic);
                 continue;
             }
             // Decoded on another thread since the file was read (none when
             // its licence forbids using it).
             match preload.font(font) {
                 Some((family, ttf)) => {
-                    registered.push((hash, family.clone()));
+                    let faces = parse_opentype_faces_from_slice(&ttf);
+                    for face in &faces {
+                        self.embedded_index.insert_face(face);
+                    }
+                    let weight = faces.first().map_or_else(
+                        || strip_weight_suffix(&font.typeface).map_or(400, |(_, w)| w.0 as u16),
+                        |f| f.weight,
+                    );
+                    let italic = faces.first().is_some_and(|f| f.italic);
+                    self.embedded_index.insert_explicit(&font.typeface, &family, weight, italic);
+                    registered.push((hash, family.clone(), faces));
                     self.installed.insert(family);
                     new_fonts.push(std::borrow::Cow::Owned(ttf));
                 }
@@ -783,20 +1448,20 @@ impl Fonts {
                 names
             })
             .clone();
-        // Listing the fonts takes a while: once for each text system (the app has one).
-        static CHECKED_SYSTEMS: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
-        let system = Arc::as_ptr(cx.text_system()) as usize;
+        // Listing the fonts takes a while: once for each live text system (the app has one;
+        // `Weak` avoids address-reuse false hits when short-lived test `App`s are dropped).
+        static CHECKED_SYSTEMS: std::sync::Mutex<Vec<std::sync::Weak<gpui_kit::TextSystem>>> = std::sync::Mutex::new(Vec::new());
+        let weak = Arc::downgrade(cx.text_system());
         let new_system = {
             let mut checked = CHECKED_SYSTEMS.lock().unwrap_or_else(|e| e.into_inner());
-            if first || checked.contains(&system) {
-                checked.push(system);
-                false
-            } else {
-                checked.push(system);
-                true
+            checked.retain(|w| w.strong_count() > 0);
+            let already = checked.iter().any(|w| w.ptr_eq(&weak));
+            if !already {
+                checked.push(weak);
             }
+            !first && !already
         };
-        if new_system && !BUNDLED_FONTS.is_empty() && !cx.text_system().all_font_names().iter().any(|n| n == BUNDLED_FAMILY) {
+        if new_system && !BUNDLED_FONTS.is_empty() {
             let fonts = BUNDLED_FONTS.iter().map(|data| std::borrow::Cow::Borrowed(*data)).collect();
             if let Err(err) = cx.text_system().add_fonts(fonts) {
                 log::warn!("bundled fonts could not be loaded: {err}");
@@ -806,7 +1471,12 @@ impl Fonts {
             .into_iter()
             .find(|f| installed.contains(*f))
             .map(SharedString::from);
-        Self { installed, east_asian_fallback, substitutions: HashMap::new() }
+        Self {
+            installed,
+            embedded_index: OpenTypeIndex::default(),
+            east_asian_fallback,
+            substitutions: HashMap::new(),
+        }
     }
 
     fn resolve<'a>(&'a self, name: &'a str) -> &'a str {
@@ -815,55 +1485,52 @@ impl Fonts {
 
     fn font(&self, style: &TextStyle) -> Font {
         let (family, mut weight) = match &style.font {
-            // A typeface that is not installed gives way to the run's other one.
-            Some(name) if self.available(name).is_none() && style.fallback_font.as_deref().is_some_and(|f| self.available(f).is_some()) => {
-                let fb = style.fallback_font.as_deref().unwrap_or(name);
-                self.family(fb)
-            }
             Some(name) => self.family(name),
             None => (SharedString::from(".SystemUIFont"), FontWeight::NORMAL),
         };
-        // A typeface named for its weight ("Poppins SemiBold") is its own
-        // family to PowerPoint, whose bold member is usually the same face,
-        // so bold only applies to plain typefaces.
+        // A typeface named for its weight ("Poppins SemiBold", "Segoe UI Semilight")
+        // is its own family to PowerPoint, whose bold member is usually the same face,
+        // so bold only applies to plain typefaces (or faces lighter than Semibold).
+        // ＭＳ 明朝 has no bold face of its own (Word uses the regular face, w5_mincho_bold_not_heavier_face).
         let resolved_name = style.font.as_deref().map(|n| self.resolve(n));
-        let named_weight = resolved_name.is_some_and(|n| WEIGHT_SUFFIXES.iter().any(|(suffix, _)| n.ends_with(suffix)));
-        if style.bold && !named_weight {
+        let ms_mincho_standin = resolved_name.is_some_and(|n| {
+            self.available(n).is_none() && matches!(n, "ＭＳ 明朝" | "MS Mincho" | "ＭＳ Ｐ明朝" | "MS PMincho" | "ＭＳ明朝" | "ＭＳＰ明朝") // i18n-ok（フォント名の判定）
+        });
+        let named_weight = resolved_name.is_some_and(|n| strip_weight_suffix(n).is_some()) || weight != FontWeight::NORMAL;
+        if style.bold && !ms_mincho_standin && (!named_weight || weight < FontWeight::SEMIBOLD) {
             weight = FontWeight::BOLD;
+        }
+        // A proportional Japanese typeface (MS P Gothic, HGP, Meiryo UI) narrows its kana and punctuation; the
+        // font standing in for it does so with proportional widths (`palt`), as the typeface's lines are.
+        let proportional = style.font.as_deref().is_some_and(|n| {
+            self.available(n).is_none() && (n.starts_with("ＭＳ Ｐ") || n.starts_with("MS P") || n.starts_with("HGP") || n.starts_with("Meiryo UI")) // i18n-ok（フォント名の判定（表示名ではなく、フォント名の接頭辞））
+        });
+        let mut features = vec![("kern".into(), u32::from(style.kern.0.is_some_and(|k| k > 0 && style.font_size > k)))];
+        if proportional {
+            features.push(("palt".into(), 1));
+            features.push(("pwid".into(), 1));
         }
         Font {
             family,
             weight,
             style: if style.italic { FontStyle::Italic } else { FontStyle::Normal },
-            features: FontFeatures(Arc::new(vec![("kern".into(), 0)])),
+            // Kerned above the size the file says (`kern`, inherited from the master: 1200 is 12 pt; text of exactly 12 pt is not kerned in
+            // PowerPoint's PDFs, PTXT-00107); not kerned when it says nothing.
+            features: FontFeatures(Arc::new(features)),
             fallbacks: browser_fallbacks(style),
             ..font(".SystemUIFont")
         }
     }
 
     /// The available family and weight for a typeface name, if any: the
-    /// name itself, or the name without a weight word ("Poppins SemiBold"
-    /// is Poppins at 600).
+    /// name itself, a GDI sub-family mapped by its OpenType `name` (ID 1
+    /// to ID 16) and `OS/2` tables, or the name without a weight word
+    /// ("Poppins SemiBold" is Poppins at 600, "Segoe UI Semilight" is
+    /// Segoe UI at 350).
     fn available(&self, name: &str) -> Option<(SharedString, FontWeight)> {
         let name = self.resolve(name);
-        let installed = |name: &str| -> Option<SharedString> {
-            if self.installed.contains(name) {
-                return Some(name.to_string().into());
-            }
-            // The same typeface under the name this system gives it.
-            TYPEFACE_ALIASES
-                .iter()
-                .filter(|(office, _)| *office == name)
-                .find(|(_, other)| self.installed.contains(*other))
-                .map(|(_, other)| other.to_string().into())
-        };
-        if let Some(family) = installed(name) {
-            return Some((family, FontWeight::NORMAL));
-        }
-        WEIGHT_SUFFIXES
-            .iter()
-            .find_map(|(suffix, weight)| Some((name.strip_suffix(suffix)?.trim_end(), *weight)))
-            .and_then(|(base, weight)| Some((installed(base)?, weight)))
+        resolve_font_with_index(name, &self.installed, Some(&self.embedded_index), true)
+            .map(|(family, weight, _)| (family, weight))
     }
 
     /// The family and weight to draw a typeface with, falling back to a
@@ -873,7 +1540,7 @@ impl Fonts {
         if let Some(found) = self.available(name) {
             return found;
         }
-        let weight = WEIGHT_SUFFIXES.iter().find(|(suffix, _)| name.ends_with(suffix)).map(|(_, w)| *w).unwrap_or(FontWeight::NORMAL);
+        let weight = strip_weight_suffix(name).map_or(FontWeight::NORMAL, |(_, w)| w);
         // A Mincho (serif) typeface gives way to an installed Mincho.
         if (name.contains("明朝") || name.contains("Mincho")) // i18n-ok（フォント名の照合（部分一致で明朝を判定）。i18n-ok）
             && let Some(mincho) = ["Hiragino Mincho ProN", "YuMincho", "BIZ UDMincho", "Noto Serif CJK JP", "IPAexMincho"].into_iter().find(|f| self.installed.contains(*f))
@@ -881,8 +1548,24 @@ impl Fonts {
             return (mincho.into(), weight);
         }
         match &self.east_asian_fallback {
-            Some(fallback) if is_east_asian_typeface(name) => (fallback.clone(), weight),
-            _ => (".SystemUIFont".into(), weight),
+            Some(fallback) if is_east_asian_typeface(name) => {
+                // ＭＳ ゴシック's strokes are heavier than 游ゴシック's / Hiragino Sans W3's regular weight (c006_b2).
+                let ms_gothic = matches!(name, "ＭＳ ゴシック" | "MS Gothic" | "ＭＳ Ｐゴシック" | "MS PGothic" | "ＭＳゴシック" | "ＭＳＰゴシック"); // i18n-ok（フォント名の判定）
+                let w = if ms_gothic && weight == FontWeight::NORMAL { FontWeight::MEDIUM } else { weight };
+                (fallback.clone(), w)
+            }
+            _ if is_serif_latin_typeface(name) => match ["Times New Roman", "Liberation Serif", "Tinos", "Georgia"].into_iter().find(|f| self.installed.contains(*f)) {
+                Some(serif) => (serif.into(), weight),
+                None => (".SystemUIFont".into(), weight),
+            },
+            // Humanist sans-serifs whose widths match Calibri (`Carlito`) closer than Arial.
+            _ if name.starts_with("Meta") && self.installed.contains(BUNDLED_FAMILY) => (BUNDLED_FAMILY.into(), weight),
+            // A Latin typeface that is not installed gives way to a common one of about its width
+            // (the system UI font is wider than most: a line takes 13% more room).
+            _ => match ["Arial", "Helvetica", "Liberation Sans"].into_iter().find(|f| self.installed.contains(*f)) {
+                Some(common) => (common.into(), weight),
+                None => (".SystemUIFont".into(), weight),
+            },
         }
     }
 }
@@ -949,7 +1632,7 @@ pub(crate) fn background_with_mode(fill: &Fill, mode: ColorMode) -> Option<Backg
         Fill::Pattern { background, .. } => Some(hsla_mode(*background, mode).into()),
         // (Painted band by band where it can be: `gradient::paint_gradient`.)
         Fill::Path { stops, .. } => Some(hsla_mode(stops.last()?.color, mode).into()),
-        Fill::None | Fill::Image(_) | Fill::TileImage { .. } | Fill::TileLinear { .. } => None,
+        Fill::None | Fill::Image(_) | Fill::TileImage { .. } | Fill::Blip(_) | Fill::TileLinear { .. } => None,
     }
 }
 
@@ -1626,6 +2309,20 @@ pub(crate) fn place<E: Styled>(element: E, frame: EmuRect, scale: f32) -> E {
         .h(px(h))
 }
 
+/// The picture of a [`BlipFill`](ibis_doc_model::BlipFill) over a frame, with its range, place, tiling and
+/// colour effects; `geometry` cuts it to an outline other than the frame.
+fn blip_fill_image(blip: &ibis_doc_model::BlipFill, geometry: Option<&Geometry>, flips: (bool, bool), frame: EmuRect, res: &Resources) -> Option<Arc<Image>> {
+    let mut picture = Picture::new(blip.media);
+    picture.crop = blip.crop;
+    picture.fill_rect = blip.fill_rect;
+    picture.tile = blip.tile;
+    picture.duotone = blip.duotone;
+    picture.luminance = blip.luminance;
+    picture.effects = blip.effects;
+    picture.geometry = geometry.filter(|g| **g != Geometry::Rect).cloned();
+    styled_image(flips.0, flips.1, &picture, frame, res)
+}
+
 /// Paint `fill` over the whole of `element`.
 pub(crate) fn with_fill(element: Div, fill: &Fill, res: &Resources) -> Div {
     match fill {
@@ -1633,6 +2330,11 @@ pub(crate) fn with_fill(element: Div, fill: &Fill, res: &Resources) -> Div {
         Fill::Pattern { background: bg, .. } => element.bg(hsla_mode(*bg, res.color_mode)),
         Fill::Image(media) | Fill::TileImage { media, .. } => match res.picture(*media) {
             Some(image) => element.child(img(image).absolute().size_full().object_fit(ObjectFit::Fill)),
+            None => element,
+        },
+        // Where the frame is not known (a table cell): the picture as is, with its opacity.
+        Fill::Blip(blip) => match res.picture(blip.media) {
+            Some(image) => element.child(img(image).absolute().size_full().object_fit(ObjectFit::Fill).opacity(blip.effects.opacity.map_or(1.0, |o| o as f32 / 100_000.0))),
             None => element,
         },
         other => match background_with_mode(other, res.color_mode) {
@@ -1765,6 +2467,15 @@ pub(crate) fn slide_backdrop(slide: &Slide, scale: f32, res: &Resources) -> Div 
                 res,
             ))
         }
+        Fill::Blip(blip) => {
+            let size = slide.size.unwrap_or(ibis_doc_model::EmuSize { width: 12_192_000, height: 6_858_000 });
+            let frame = EmuRect { x: 0, y: 0, width: size.width, height: size.height };
+            let base = div().absolute().size_full().top_0().left_0().overflow_hidden();
+            match blip_fill_image(blip, None, (false, false), frame, res) {
+                Some(image) => base.child(img(res.svg_picture(image)).absolute().size_full().object_fit(ObjectFit::Fill)),
+                None => with_fill(base, &slide.background, res),
+            }
+        }
         _ => with_fill(div().absolute().size_full().top_0().left_0(), &slide.background, res),
     };
     // A pattern's cells over the whole slide, from its corner.
@@ -1859,10 +2570,13 @@ pub(crate) fn shape_element_with_positions(
         ShapeKind::Line(_) => true,
         _ => false,
     };
-    let is_point_text = w <= 0.0 && h <= 0.0;
+    let is_point_text = is_1d_line && w <= 0.0 && h <= 0.0;
     let text = text.or_else(|| {
         // Edited text is laid out even when empty, for its caret.
         let body = body.filter(|b| !b.is_empty() || positions.is_some())?;
+        if !is_1d_line && (w <= 0.0 || h <= 0.0) && positions.is_none() {
+            return None;
+        }
         let (body, max_w) = if is_point_text {
             let mut modified = body.clone();
             modified.insets = ibis_doc_model::Insets::default();
@@ -1908,7 +2622,7 @@ pub(crate) fn shape_element_with_positions(
             let text_left = (cx - w / 2.0) as f32 * scale;
             Some(frame.x as f32 * scale + text_left)
         };
-        Some(text_body_element(&body, max_w, scale, res, positions, text_turn, origin_x).into_any_element())
+        Some(text_body_element(&body, max_w, Some(h), scale, res, positions, text_turn, origin_x).into_any_element())
     });
     // The text goes in the text rectangle.
     let clip_text = body.is_some_and(|b| b.clip);
@@ -2407,9 +3121,13 @@ fn auto_shape(container: Div, shape: &Shape, auto: &AutoShape, frame: EmuRect, s
                     scale,
                     res,
                 )),
+                Fill::Blip(blip) => match blip_fill_image(blip, Some(&auto.geometry), (shape.flip_h, shape.flip_v), frame, res) {
+                    Some(image) => body.child(img(res.svg_picture(image)).absolute().size_full().object_fit(ObjectFit::Fill)),
+                    None => with_fill(body, &auto.fill, res),
+                },
                 _ => with_fill(body, &auto.fill, res),
             };
-            if matches!(auto.fill, Fill::Image(_) | Fill::TileImage { .. }) {
+            if matches!(auto.fill, Fill::Image(_) | Fill::TileImage { .. } | Fill::Blip(_)) {
                 body = body.overflow_hidden();
             }
 
@@ -2430,7 +3148,7 @@ fn auto_shape(container: Div, shape: &Shape, auto: &AutoShape, frame: EmuRect, s
             // rounded as much more: PowerPoint's glow follows the outline
             // out, round at the corners (PEFF-00079), where a spread box
             // shadow keeps the shape's corners.
-            let glow = auto.glow.map(|(color, glow_radius)| {
+            let glow = auto.glow.filter(|_| auto.fill != Fill::None || auto.stroke.is_some()).map(|(color, glow_radius)| {
                 let r = glow_radius as f32 * scale;
                 let (spread, blur) = glow_spread_blur(r);
                 div()
@@ -2523,15 +3241,6 @@ fn auto_shape(container: Div, shape: &Shape, auto: &AutoShape, frame: EmuRect, s
             if let Some(stroke) = auto.stroke.as_ref().filter(|_| !bevel_stroked) {
                 if round_rect_exact && auto.inner_shadow.is_none() {
                     // Handled inside body canvas above
-                } else if matches!(auto.fill, Fill::Image(_) | Fill::TileImage { .. }) {
-                    container = container.child(
-                        div()
-                            .size_full()
-                            .rounded(radius)
-                            .border(stroke_px(stroke, scale))
-                            .border_color(hsla_mode(stroke.color, res.color_mode))
-                            .when(stroke.dashed, |d| d.border_dashed()),
-                    );
                 } else {
                     container = container.child(outline_element(stroke, w, h, radius, scale, auto.geometry == Geometry::Rect, at, res.color_mode));
                 }
@@ -2574,7 +3283,17 @@ fn auto_shape(container: Div, shape: &Shape, auto: &AutoShape, frame: EmuRect, s
     let container = match &auto.fill {
         Fill::Image(media) => match (!rotated).then(|| clipped_fill(*media, shape, &outlines, frame, res)).flatten() {
             Some(image) => container.child(img(res.svg_picture(image)).absolute().size_full().object_fit(ObjectFit::Fill)),
-            None => with_fill(container.overflow_hidden(), &auto.fill, res),
+            None => match rotated
+                .then(|| {
+                    let mut pic = Picture::new(*media);
+                    pic.geometry = Some(auto.geometry.clone());
+                    rotated_image(shape, &pic, frame, res)
+                })
+                .flatten()
+            {
+                Some((image, bounds)) => container.child(place(img(res.svg_picture(image)), bounds, scale).object_fit(ObjectFit::Fill)),
+                None => with_fill(container.overflow_hidden(), &auto.fill, res),
+            },
         },
         Fill::TileImage { media, tx, ty, sx, sy, flip, align } => container.child(tile_fill_element(
             *media,
@@ -2588,6 +3307,26 @@ fn auto_shape(container: Div, shape: &Shape, auto: &AutoShape, frame: EmuRect, s
             scale,
             res,
         )),
+        Fill::Blip(blip) => match (!rotated).then(|| blip_fill_image(blip, Some(&auto.geometry), (shape.flip_h, shape.flip_v), frame, res)).flatten() {
+            Some(image) => container.child(img(res.svg_picture(image)).absolute().size_full().object_fit(ObjectFit::Fill)),
+            None => match rotated
+                .then(|| {
+                    let mut pic = Picture::new(blip.media);
+                    pic.crop = blip.crop;
+                    pic.fill_rect = blip.fill_rect;
+                    pic.tile = blip.tile;
+                    pic.duotone = blip.duotone;
+                    pic.luminance = blip.luminance;
+                    pic.effects = blip.effects;
+                    pic.geometry = Some(auto.geometry.clone());
+                    rotated_image(shape, &pic, frame, res)
+                })
+                .flatten()
+            {
+                Some((image, bounds)) => container.child(place(img(res.svg_picture(image)), bounds, scale).object_fit(ObjectFit::Fill)),
+                None => with_fill(container.overflow_hidden(), &auto.fill, res),
+            },
+        },
         _ => container,
     };
     let fill = turned_fill(&auto.fill, shape);
@@ -2613,6 +3352,10 @@ fn auto_shape(container: Div, shape: &Shape, auto: &AutoShape, frame: EmuRect, s
     // on whole pixels, its 0.75 pt one and open lines smoothed across them).
     let on_pixels = !res.exact;
     let color_mode = res.color_mode;
+    let path_closes: Vec<bool> = match &auto.geometry {
+        Geometry::Formula(f) => f.def.paths.iter().map(|p| p.ops.contains(&ibis_doc_model::PathOp::Close)).collect(),
+        _ => outlines.iter().map(|o| o.subpaths.iter().any(|s| s.closed)).collect(),
+    };
     container.child(
         canvas(
             |_, _, _| {},
@@ -2665,7 +3408,8 @@ fn auto_shape(container: Div, shape: &Shape, auto: &AutoShape, frame: EmuRect, s
                         }
                     }
                 }
-                for outline in &outlines {
+                for (outline_idx, outline) in outlines.iter().enumerate() {
+                    let path_has_close = path_closes.get(outline_idx).copied().unwrap_or(false);
                     let subpaths: Vec<(Vec<Point<Pixels>>, bool)> = outline
                         .subpaths
                         .iter()
@@ -2722,10 +3466,14 @@ fn auto_shape(container: Div, shape: &Shape, auto: &AutoShape, frame: EmuRect, s
                             .collect();
                         // The line stops inside a filled head, so its end
                         // does not poke out past the head's point (as a
-                        // straight line's, `line_element`).
+                        // straight line's, `line_element`). A preset path that
+                        // contains `<close/>` (such as the accent bar of
+                        // `accentCallout1..3` / `accentBorderCallout1..3`) is
+                        // treated by PowerPoint as closed for line ends and
+                        // receives no arrowheads.
                         let tips = subpaths.clone();
                         let mut subpaths = subpaths;
-                        if stroke.head != LineEnd::None || stroke.tail != LineEnd::None {
+                        if !path_has_close && (stroke.head != LineEnd::None || stroke.tail != LineEnd::None) {
                             let head_base = END_BASE_POINTS * EMU_PER_POINT as f32 * scale;
                             if let Some((points, _)) = subpaths.iter_mut().find(|(p, closed)| !*closed && p.len() >= 2) {
                                 let n = points.len();
@@ -2753,9 +3501,15 @@ fn auto_shape(container: Div, shape: &Shape, auto: &AutoShape, frame: EmuRect, s
                         } else if stroke.dashed {
                             for (points, closed) in &subpaths {
                                 let pieces = dash_pieces(points, *closed, stroke, f32::from(width));
+                                let square = stroke.cap == ibis_doc_model::LineCap::Square;
                                 for piece in &pieces {
                                     for (line, w) in compound_lines(piece, false, f32::from(width), stroke.compound) {
-                                        if let Some(p) = polygon_styled(&line, Some(px(w)), false, stroke.cap, stroke.join) {
+                                        let line = if square && line.len() >= 2 {
+                                            square_capped(&line, w.min(1.0), true, true)
+                                        } else {
+                                            line
+                                        };
+                                        if let Some(p) = polygon_styled(&line, Some(px(w)), false, ibis_doc_model::LineCap::Flat, stroke.join) {
                                             window.paint_path(p, hsla(stroke.color));
                                         }
                                     }
@@ -2779,7 +3533,75 @@ fn auto_shape(container: Div, shape: &Shape, auto: &AutoShape, frame: EmuRect, s
                             }
                         } else if let Some(p) = compound_path_styled(&subpaths, Some(width), stroke.cap, stroke.join) {
                             let mut painted_gradient = false;
-                            if let Some(ibis_doc_model::Fill::Linear { stops, .. } | ibis_doc_model::Fill::TileLinear { stops, .. } | ibis_doc_model::Fill::Path { stops, .. }) = &stroke.fill {
+                            if let Some(
+                                ibis_doc_model::Fill::Linear { angle, scaled, stops }
+                                | ibis_doc_model::Fill::TileLinear { angle, scaled, stops, .. },
+                            ) = &stroke.fill
+                            {
+                                if !stops.is_empty() {
+                                    let all_pts: Vec<(f32, f32)> = subpaths
+                                        .iter()
+                                        .flat_map(|(pts, _)| pts.iter().map(|pt| (f32::from(pt.x), f32::from(pt.y))))
+                                        .collect();
+                                    if all_pts.len() >= 2 {
+                                        let min_x = all_pts.iter().map(|p| p.0).fold(f32::INFINITY, f32::min);
+                                        let max_x = all_pts.iter().map(|p| p.0).fold(f32::NEG_INFINITY, f32::max);
+                                        let min_y = all_pts.iter().map(|p| p.1).fold(f32::INFINITY, f32::min);
+                                        let max_y = all_pts.iter().map(|p| p.1).fold(f32::NEG_INFINITY, f32::max);
+                                        let bw = (max_x - min_x).max(1.0);
+                                        let bh = (max_y - min_y).max(1.0);
+                                        let rad = (*angle as f32 / 60_000.0).to_radians();
+                                        let (dx, dy) = if *scaled {
+                                            let (s, c) = rad.sin_cos();
+                                            let (vx, vy) = (c * bw, s * bh);
+                                            let len = vx.hypot(vy).max(1e-6);
+                                            (vx / len, vy / len)
+                                        } else {
+                                            (rad.cos(), rad.sin())
+                                        };
+                                        let corners = [(min_x, min_y), (max_x, min_y), (max_x, max_y), (min_x, max_y)];
+                                        let t0 = corners.iter().map(|&(x, y)| x * dx + y * dy).fold(f32::INFINITY, f32::min);
+                                        let t1 = corners.iter().map(|&(x, y)| x * dx + y * dy).fold(f32::NEG_INFINITY, f32::max);
+                                        let span = (t1 - t0).max(1e-6);
+                                        for (pts, closed) in &subpaths {
+                                            if pts.len() >= 2 {
+                                                let edges: Vec<(Point<Pixels>, Point<Pixels>)> = if *closed && pts.len() >= 3 {
+                                                    let mut e: Vec<_> = pts.windows(2).map(|w| (w[0], w[1])).collect();
+                                                    if let (Some(&first), Some(&last)) = (pts.first(), pts.last()) {
+                                                        if (f32::from(last.x - first.x)).hypot(f32::from(last.y - first.y)) > 1e-3 {
+                                                            e.push((last, first));
+                                                        }
+                                                    }
+                                                    e
+                                                } else {
+                                                    pts.windows(2).map(|w| (w[0], w[1])).collect()
+                                                };
+                                                for (p0, p1) in edges {
+                                                    let (x0, y0) = (f32::from(p0.x), f32::from(p0.y));
+                                                    let (x1, y1) = (f32::from(p1.x), f32::from(p1.y));
+                                                    let seg_len = (x1 - x0).hypot(y1 - y0);
+                                                    let steps = ((seg_len / 4.0).ceil() as usize).clamp(1, 64);
+                                                    for step in 0..steps {
+                                                        let u0 = step as f32 / steps as f32;
+                                                        let u1 = (step + 1) as f32 / steps as f32;
+                                                        let um = (u0 + u1) * 0.5;
+                                                        let (mx, my) = (x0 + (x1 - x0) * um, y0 + (y1 - y0) * um);
+                                                        let t = ((mx * dx + my * dy) - t0) / span;
+                                                        let seg_color = crate::render::gradient::color_at_mode(stops, t, false);
+                                                        let q0 = point(px(x0 + (x1 - x0) * u0), px(y0 + (y1 - y0) * u0));
+                                                        let q1 = point(px(x0 + (x1 - x0) * u1), px(y0 + (y1 - y0) * u1));
+                                                        let cap = if steps == 1 { stroke.cap } else { LineCap::Flat };
+                                                        if let Some(seg_p) = polygon_styled(&[q0, q1], Some(width), false, cap, stroke.join) {
+                                                            window.paint_path(seg_p, seg_color);
+                                                        }
+                                                    }
+                                                }
+                                                painted_gradient = true;
+                                            }
+                                        }
+                                    }
+                                }
+                            } else if let Some(ibis_doc_model::Fill::Path { stops, .. }) = &stroke.fill {
                                 if !stops.is_empty() {
                                     for (pts, closed) in &subpaths {
                                         if pts.len() >= 2 {
@@ -2818,7 +3640,7 @@ fn auto_shape(container: Div, shape: &Shape, auto: &AutoShape, frame: EmuRect, s
                         }
                         // Arrowheads at the ends of an open outline (bent
                         // and curved connectors, arcs).
-                        if stroke.head != LineEnd::None || stroke.tail != LineEnd::None {
+                        if !path_has_close && (stroke.head != LineEnd::None || stroke.tail != LineEnd::None) {
                             let head_base = END_BASE_POINTS * EMU_PER_POINT as f32 * scale;
                             if let Some((points, _)) = tips.iter().find(|(p, closed)| !*closed && p.len() >= 2) {
                                 // The direction from a point a little way along, for a curve.
@@ -3098,6 +3920,29 @@ pub(crate) fn polygon_styled(
     builder.build().ok()
 }
 
+/// Short lines (the dashes of a dashed line, or the dots of a dotted one) stroked `width` wide with butt ends as
+/// one path: one object, in a PDF too, however many there are.
+pub(crate) fn dashes_path(pieces: &[Vec<Point<Pixels>>], width: Pixels) -> Option<Path<Pixels>> {
+    let opts = lyon_tessellation::StrokeOptions::default().with_line_width(f32::from(width)).with_line_cap(lyon_tessellation::LineCap::Butt);
+    let mut builder = PathBuilder::default().with_style(gpui_kit::PathStyle::Stroke(opts));
+    let mut any = false;
+    for piece in pieces {
+        let Some((first, rest)) = piece.split_first() else { continue };
+        if rest.is_empty() {
+            continue;
+        }
+        builder.move_to(*first);
+        for p in rest {
+            builder.line_to(*p);
+        }
+        any = true;
+    }
+    if !any {
+        return None;
+    }
+    builder.build().ok()
+}
+
 pub(crate) fn polygon(points: &[Point<Pixels>], stroke: Option<Pixels>, closed: bool) -> Option<Path<Pixels>> {
     polygon_styled(points, stroke, closed, LineCap::Flat, LineJoin::Miter)
 }
@@ -3249,6 +4094,36 @@ fn line_element(shape: &Shape, stroke: Stroke, frame: EmuRect, scale: f32, mode:
                 } else {
                     vec![vec![ends[0], ends[1]]]
                 };
+                let grad_stops: Option<(i32, Vec<ibis_doc_model::GradientStop>)> = match &stroke.fill {
+                    Some(Fill::Linear { angle, stops, .. } | Fill::TileLinear { angle, stops, .. })
+                        if !stops.is_empty() && !stroke.dashed && stroke.compound == ibis_doc_model::LineCompound::Single =>
+                    {
+                        Some((*angle, stops.clone()))
+                    }
+                    _ => None,
+                };
+                let color_at = |pt: Point<Pixels>| -> Hsla {
+                    let Some((angle, ref stops)) = grad_stops else { return color };
+                    let rad = (angle as f32 / 60_000.0).to_radians();
+                    let (gx, gy) = (rad.cos(), rad.sin());
+                    let p0 = f32::from(tip0.x) * gx + f32::from(tip0.y) * gy;
+                    let p1 = f32::from(tip1.x) * gx + f32::from(tip1.y) * gy;
+                    let span = p1 - p0;
+                    let t = if span.abs() > 1e-3 {
+                        let p = f32::from(pt.x) * gx + f32::from(pt.y) * gy;
+                        ((p - p0.min(p1)) / span.abs()).clamp(0.0, 1.0)
+                    } else {
+                        let (dx, dy) = (f32::from(tip1.x - tip0.x), f32::from(tip1.y - tip0.y));
+                        let len2 = dx * dx + dy * dy;
+                        if len2 > 1e-3 {
+                            ((f32::from(pt.x - tip0.x) * dx + f32::from(pt.y - tip0.y) * dy) / len2).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        }
+                    };
+                    let _ = mode;
+                    crate::render::gradient::color_at(stops, t)
+                };
                 if stroke.cap == ibis_doc_model::LineCap::Round {
                     let w_px = f32::from(width);
                     if stroke.dashed {
@@ -3273,16 +4148,35 @@ fn line_element(shape: &Shape, stroke: Stroke, frame: EmuRect, scale: f32, mode:
                                     })
                                     .collect();
                                 if let Some(p) = polygon(&disc, None, true) {
-                                    window.paint_path(p, color);
+                                    window.paint_path(p, color_at(pt));
                                 }
                             }
                         }
                     }
                 }
-                for piece in &pieces {
-                    for (line, w) in compound_lines(piece, false, f32::from(width), stroke.compound) {
-                        if let Some(p) = polygon(&line, Some(px(w)), false) {
-                            window.paint_path(p, color);
+                if grad_stops.is_some() {
+                    for piece in &pieces {
+                        if piece.len() >= 2 {
+                            let (p0, p1) = (piece[0], piece[piece.len() - 1]);
+                            let n_seg = 32usize;
+                            for k in 0..n_seg {
+                                let f0 = k as f32 / n_seg as f32;
+                                let f1 = (k + 1) as f32 / n_seg as f32;
+                                let fm = (f0 + f1) * 0.5;
+                                let lerp = |f: f32| point(p0.x + px(f32::from(p1.x - p0.x) * f), p0.y + px(f32::from(p1.y - p0.y) * f));
+                                let seg = [lerp(f0), lerp(f1)];
+                                if let Some(p) = polygon(&seg, Some(width), false) {
+                                    window.paint_path(p, color_at(lerp(fm)));
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    for piece in &pieces {
+                        for (line, w) in compound_lines(piece, false, f32::from(width), stroke.compound) {
+                            if let Some(p) = polygon(&line, Some(px(w)), false) {
+                                window.paint_path(p, color);
+                            }
                         }
                     }
                 }
@@ -3293,7 +4187,7 @@ fn line_element(shape: &Shape, stroke: Stroke, frame: EmuRect, scale: f32, mode:
                     paint_compound_round_caps(window, &pieces, f32::from(width), stroke.compound, color, head_plain, tail_plain);
                 }
                 for (at, from, end) in [(tip1, tip0, stroke.tail), (tip0, tip1, stroke.head)] {
-                    paint_line_end(end, at, from, f32::from(width), head_base, color, window);
+                    paint_line_end(end, at, from, f32::from(width), head_base, color_at(at), window);
                 }
             },
         )
@@ -3373,10 +4267,9 @@ fn picture_element(container: Div, shape: &Shape, picture: &Picture, frame: EmuR
     let (w, h) = (frame.width as f32 * scale, frame.height as f32 * scale);
     let radius = px(w.min(h) * picture.corner as f32 / 100_000.0);
     // The outline, over the picture.
-    let outline = picture.stroke.as_ref().map(|stroke| {
-        let width = px((stroke.width as f32 * scale).max(0.5));
-        div().absolute().size_full().rounded(radius).border(width).border_color(hsla(stroke.color))
-    });
+    // Centred on the picture's edge, half of it outside, and dashed as the line is (as PowerPoint draws a picture's border).
+    let at = (shape.frame.x as f32 * scale, shape.frame.y as f32 * scale);
+    let outline = picture.stroke.as_ref().map(|stroke| outline_element(stroke, w, h, radius, scale, picture.corner == 0 && picture.geometry.is_none(), at, res.color_mode));
 
     // A video playing: its newest frame, in place of the poster, preserving corner, outline and shadow.
     #[cfg(target_os = "macos")]
@@ -3396,16 +4289,185 @@ fn picture_element(container: Div, shape: &Shape, picture: &Picture, frame: EmuR
     }
     let turned = shape.rotation.rem_euclid(21_600_000) != 0 || shape.flip_h || shape.flip_v;
     if turned && let Some((image, bounds)) = rotated_image(shape, picture, frame, res) {
+        let geom = picture
+            .geometry
+            .clone()
+            .or_else(|| (picture.corner > 0).then_some(Geometry::RoundRect { radius: picture.corner }))
+            .unwrap_or(Geometry::Rect);
+        let outlines = geometry_outlines(&geom, frame);
+        let place_map = Placement::new(shape, frame);
+        let stroke_half_emu = picture.stroke.as_ref().map(|st| st.width / 2).unwrap_or(0);
+        let shadow_outlines = shadow_outlines(&geom, frame, stroke_half_emu as f64);
+        let at_px = (frame.x as f32 * scale, frame.y as f32 * scale);
+        let on_pixels = !res.exact;
+        let color_mode = res.color_mode;
+        let mut cont = container;
+        if let Some(s) = picture.shadow {
+            let shadow_outlines = shadow_outlines.clone();
+            cont = cont.child(
+                canvas(
+                    |_, _, _| {},
+                    move |b, _, window, _| {
+                        let exact = exact_origin(b.origin, at_px, window.scale_factor());
+                        if s.has_transform() {
+                            let (w_emu, h_emu) = (frame.width as f64, frame.height as f64);
+                            let anchor = shadow_anchor(s.align, w_emu, h_emu, stroke_half_emu as f64);
+                            let blur = s.blur as f32 * scale;
+                            let color = hsla_mode(s.color, color_mode);
+                            render_transformed_shadow(window, &shadow_outlines, anchor, &s, blur, color, exact, scale);
+                        } else {
+                            let (dx, dy, blur, color) = shadow_parts(s, scale);
+                            let spots: Vec<(f32, f32)> = if blur < 0.5 {
+                                vec![(0.0, 0.0)]
+                            } else {
+                                (0..8)
+                                    .map(|i| (i as f32 * std::f32::consts::FRAC_PI_4).sin_cos())
+                                    .map(|(s, c)| (c * blur / 2.0, s * blur / 2.0))
+                                    .chain([(0.0, 0.0)])
+                                    .collect()
+                            };
+                            let faint = Hsla { a: color.a / spots.len() as f32 * 1.6, ..color };
+                            for (sx, sy) in &spots {
+                                let origin = point(exact.x + px(dx + sx), exact.y + px(dy + sy));
+                                for outline in shadow_outlines.iter().filter(|o| o.fill != ibis_doc_model::PathFill::None) {
+                                    let subpaths: Vec<(Vec<Point<Pixels>>, bool)> = outline
+                                        .subpaths
+                                        .iter()
+                                        .map(|sub| {
+                                            let points: Vec<(f32, f32)> = sub.points.iter().map(|&(x, y)| (x as f32, y as f32)).collect();
+                                            (place_map.map(&points, origin, scale), sub.closed)
+                                        })
+                                        .collect();
+                                    if let Some(p) = compound_path(&subpaths, None) {
+                                        window.paint_path(p, faint);
+                                    }
+                                }
+                            }
+                        }
+                    },
+                )
+                .absolute()
+                .size_full(),
+            );
+        }
+        if let Some(bg_color) = picture.effects.background {
+            let fill_outlines = outlines.clone();
+            let fill_map = place_map;
+            cont = cont.child(
+                canvas(
+                    |_, _, _| {},
+                    move |b, _, window, _| {
+                        let exact = exact_origin(b.origin, at_px, window.scale_factor());
+                        for outline in fill_outlines.iter().filter(|o| o.fill != ibis_doc_model::PathFill::None) {
+                            let subpaths: Vec<(Vec<Point<Pixels>>, bool)> = outline
+                                .subpaths
+                                .iter()
+                                .map(|sub| {
+                                    let points: Vec<(f32, f32)> = sub.points.iter().map(|&(x, y)| (x as f32, y as f32)).collect();
+                                    (fill_map.map(&points, exact, scale), sub.closed)
+                                })
+                                .collect();
+                            if let Some(p) = compound_path(&subpaths, None) {
+                                window.paint_path(p, hsla_mode(bg_color, color_mode));
+                            }
+                        }
+                    },
+                )
+                .absolute()
+                .size_full(),
+            );
+        }
         // The rotated picture covers its bounding box, around the frame.
-        return container.child(
+        cont = cont.child(
             place(img(res.svg_picture(image)), bounds, scale).object_fit(ObjectFit::Fill),
         );
+        if let Some(stroke) = picture.stroke.clone() {
+            cont = cont.child(
+                canvas(
+                    |_, _, _| {},
+                    move |b, _, window, _| {
+                        let exact = exact_origin(b.origin, at_px, window.scale_factor());
+                        let width = painted_stroke_px(&stroke, scale, window);
+                        let inset_offset = if stroke.alignment == ibis_doc_model::LineAlignment::Inset {
+                            f32::from(width) / 2.0
+                        } else {
+                            0.0
+                        };
+                        for outline in outlines.iter().filter(|o| o.stroke) {
+                            let subpaths: Vec<(Vec<Point<Pixels>>, bool)> = outline
+                                .subpaths
+                                .iter()
+                                .map(|sub| {
+                                    let points: Vec<(f32, f32)> = sub.points.iter().map(|&(x, y)| (x as f32, y as f32)).collect();
+                                    let mapped = place_map.map(&points, exact, scale);
+                                    let pts = if sub.closed && inset_offset > 0.0 {
+                                        offset_polyline(&mapped, true, inset_offset)
+                                    } else {
+                                        mapped
+                                    };
+                                    (if on_pixels || sub.closed { stroke_adjusted(&pts, sub.closed, f32::from(width), window.scale_factor()) } else { pts }, sub.closed)
+                                })
+                                .collect();
+                            if stroke.compound != ibis_doc_model::LineCompound::Single && !stroke.dashed {
+                                for (points, closed) in &subpaths {
+                                    for (line, w) in compound_lines(points, *closed, f32::from(width), stroke.compound) {
+                                        if let Some(p) = polygon_styled(&line, Some(px(w)), *closed, stroke.cap, stroke.join) {
+                                            window.paint_path(p, hsla_mode(stroke.color, color_mode));
+                                        }
+                                    }
+                                }
+                            } else if stroke.dashed {
+                                for (points, closed) in &subpaths {
+                                    let pieces = dash_pieces(points, *closed, &stroke, f32::from(width));
+                                    for piece in &pieces {
+                                        for (line, w) in compound_lines(piece, false, f32::from(width), stroke.compound) {
+                                            if let Some(p) = polygon_styled(&line, Some(px(w)), false, ibis_doc_model::LineCap::Flat, stroke.join) {
+                                                window.paint_path(p, hsla_mode(stroke.color, color_mode));
+                                            }
+                                        }
+                                    }
+                                    if stroke.cap == ibis_doc_model::LineCap::Round {
+                                        paint_round_caps(window, &pieces, f32::from(width), hsla_mode(stroke.color, color_mode));
+                                    }
+                                }
+                            } else if let Some(p) = compound_path_styled(&subpaths, Some(width), stroke.cap, stroke.join) {
+                                window.paint_path(p, hsla_mode(stroke.color, color_mode));
+                            }
+                        }
+                    },
+                )
+                .absolute()
+                .size_full(),
+            );
+        }
+        return cont;
     }
     if !res.has_picture(picture.media) {
         return container;
     }
-    // Cut to a shape, or given colour effects: one SVG with the crop, the cut and the filters.
-    let styled = (!picture.effects.is_none() || picture.geometry.is_some() || picture.luminance.is_some() || picture.tile.is_some() || picture.fill_rect.is_some() || picture.soft_edge.is_some() || picture.artistic_effect.is_some()).then(|| styled_picture_image(shape, picture, frame, res)).flatten();
+    // Cut to a shape, or given colour effects, or upscaled beyond its source pixels (where GPUI's
+    // unpadded texture atlas would bleed transparent edge texels under linear filtering): one SVG
+    // rasterized with edge clamping.
+    let upscaled = res.image_size(picture.media).is_some_and(|(pw, ph)| {
+        let frac = |v: i32| v as f32 / 100_000.0;
+        let vw = (1.0 - frac(picture.crop.left) - frac(picture.crop.right)).max(0.01);
+        let vh = (1.0 - frac(picture.crop.top) - frac(picture.crop.bottom)).max(0.01);
+        let draw_w = (w * 2.0).max(frame.width as f32 / 9_525.0);
+        let draw_h = (h * 2.0).max(frame.height as f32 / 9_525.0);
+        draw_w > pw as f32 * vw + 0.5 || draw_h > ph as f32 * vh + 0.5
+    });
+    let styled = (!picture.effects.is_none()
+        || upscaled
+        || picture.geometry.is_some()
+        || picture.corner > 0
+        || picture.luminance.is_some()
+        || (picture.duotone.is_some() && picture.clear.is_some())
+        || picture.tile.is_some()
+        || picture.fill_rect.is_some()
+        || picture.soft_edge.is_some()
+        || picture.artistic_effect.is_some())
+        .then(|| styled_picture_image(shape, picture, frame, res))
+        .flatten();
     let recoloured = picture.duotone.filter(|_| styled.is_none()).and_then(|(dark, light)| {
         let key = (picture.media, dark, light);
         if let Some(found) = res.duotones.borrow().get(&key) {
@@ -3429,7 +4491,7 @@ fn picture_element(container: Div, shape: &Shape, picture: &Picture, frame: EmuR
         Some(image)
     });
     // Recoloured pictures are loaded by GPUI; the picture itself once decoded.
-    let Some(image) = styled.clone().or(recoloured).or(cleared).map(|image| res.svg_picture(image)).or_else(|| res.picture(picture.media)) else { return container };
+    let Some(image) = styled.clone().or(recoloured).or(cleared).map(|image| res.svg_picture(image)).or_else(|| res.picture_at_size(picture.media, w, h)) else { return container };
     // (The crop is in the styled picture already.)
     let c = if styled.is_some() { ibis_doc_model::Crop::default() } else { picture.crop };
     let frac = |v: i32| v as f32 / 100_000.0;
@@ -3451,7 +4513,30 @@ fn picture_element(container: Div, shape: &Shape, picture: &Picture, frame: EmuR
     let mut cont = container.rounded(radius);
     if let Some(s) = picture.shadow {
         let (dx, dy, blur, color) = shadow_parts(s, scale);
-        cont = cont.shadow(vec![BoxShadow { color, offset: point(px(dx), px(dy)), blur_radius: px(blur / 3.0), spread_radius: px(0.), inset: false }]);
+        // A picture that can be transparent casts a shadow of its shape (its opaque parts in the shadow's
+        // colour), not of its frame; a JPEG has no transparent parts, so the frame's will do.
+        let silhouette = res
+            .source(picture.media)
+            .filter(|(encoding, _)| !matches!(encoding, crate::render::picture_svg::Encoding::Jpeg))
+            .and_then(|_| {
+                let mut shade = Picture::new(picture.media);
+                shade.crop = picture.crop;
+                shade.geometry = picture.geometry.clone();
+                shade.effects.replace = Some(s.color.rgb);
+                shade.effects.opacity = Some((s.color.alpha as i32 * 100_000 / 255).clamp(0, 100_000));
+                // The blur's deviation, in the picture's own pixels (the SVG's units).
+                let k = res.image_size(picture.media).map_or(0.0, |(px_w, _)| px_w as f64 / frame.width.max(1) as f64);
+                shade.soft_edge = (s.blur > 0).then(|| (s.blur as f64 / 3.0 * k * 12_700.0) as i64).filter(|v| *v > 0);
+                styled_image(shape.flip_h, shape.flip_v, &shade, frame, res)
+            });
+        match silhouette {
+            Some(image) => {
+                cont = cont.child(div().absolute().left(px(dx)).top(px(dy)).w(px(w)).h(px(h)).child(img(res.svg_picture(image)).absolute().size_full().object_fit(ObjectFit::Fill)));
+            }
+            None => {
+                cont = cont.shadow(vec![BoxShadow { color, offset: point(px(dx), px(dy)), blur_radius: px(blur / 3.0), spread_radius: px(0.), inset: false }]);
+            }
+        }
     }
     if let Some(r) = picture.reflection
         && r.sy == -100_000
@@ -3488,30 +4573,42 @@ fn picture_element(container: Div, shape: &Shape, picture: &Picture, frame: EmuR
     // An animated GIF plays in the slide show: an image with an id keeps its
     // frame (GPUI advances it by the frames' delays).
     let animated = res.animate_pictures.get() && matches!(&image, ImageSource::Render(data) if data.frame_count() > 1);
-    if animated {
-        cont.overflow_hidden().child(whole.id(ElementId::Name(format!("gif-{}", shape.id.0).into())))
-    } else {
-        cont.overflow_hidden().child(whole)
-    }
-    .children(lum_overlay)
-    .children(outline)
+    // The picture is cut to the frame; its outline, half of it outside, is not.
+    let cut = div()
+        .absolute()
+        .size_full()
+        .rounded(radius)
+        .overflow_hidden()
+        .when_some(picture.effects.background, |d, c| d.bg(hsla_mode(c, res.color_mode)));
+    let cut = if animated { cut.child(whole.id(ElementId::Name(format!("gif-{}", shape.id.0).into()))) } else { cut.child(whole) };
+    cont.child(cut.children(lum_overlay)).children(outline)
 }
 
 /// The SVG of `picture` cropped, cut to its geometry and given its colour effects, if its format can be wrapped.
 fn styled_picture_image(shape: &Shape, picture: &Picture, frame: EmuRect, res: &Resources) -> Option<Arc<Image>> {
+    styled_image(shape.flip_h, shape.flip_v, picture, frame, res)
+}
+
+/// A picture wrapped as SVG for a frame, with the effects it carries (see [`styled_picture_image`]).
+fn styled_image(flip_h: bool, flip_v: bool, picture: &Picture, frame: EmuRect, res: &Resources) -> Option<Arc<Image>> {
     let (w, h) = (frame.width as f64, frame.height as f64);
-    let subpaths: Option<Vec<Vec<(f64, f64)>>> = picture.geometry.as_ref().map(|g| {
+    let geom = picture
+        .geometry
+        .clone()
+        .or_else(|| (picture.corner > 0).then_some(Geometry::RoundRect { radius: picture.corner }));
+    let subpaths: Option<Vec<Vec<(f64, f64)>>> = geom.as_ref().map(|g| {
         geometry_outlines(g, frame)
             .iter()
             .filter(|o| o.fill != ibis_doc_model::PathFill::None)
             .flat_map(|o| &o.subpaths)
-            .map(|s| s.points.iter().map(|&(x, y)| (if shape.flip_h { w - x } else { x }, if shape.flip_v { h - y } else { y })).collect())
+            .map(|s| s.points.iter().map(|&(x, y)| (if flip_h { w - x } else { x }, if flip_v { h - y } else { y })).collect())
             .collect()
     });
     let key = {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        (frame.width, frame.height, picture.crop, picture.luminance, picture.duotone, picture.effects, picture.soft_edge, shape.flip_h, shape.flip_v, picture.tile, picture.fill_rect, picture.artistic_effect).hash(&mut hasher);
+        (frame.width, frame.height, picture.crop, picture.clear, picture.luminance, picture.duotone, picture.effects, picture.soft_edge).hash(&mut hasher);
+        (flip_h, flip_v, picture.tile, picture.fill_rect, picture.artistic_effect).hash(&mut hasher);
         for p in subpaths.iter().flatten().flatten() {
             (p.0.to_bits(), p.1.to_bits()).hash(&mut hasher);
         }
@@ -3522,7 +4619,7 @@ fn styled_picture_image(shape: &Shape, picture: &Picture, frame: EmuRect, res: &
     }
     let (encoding, data) = res.source(picture.media)?;
     let rgb = |c: ibis_doc_model::Rgb| (c.r(), c.g(), c.b());
-    let look = crate::render::picture_svg::Look { luminance: picture.luminance, duotone: picture.duotone.map(|(a, b)| (rgb(a), rgb(b))), effects: picture.effects, soft_edge: picture.soft_edge, artistic_effect: picture.artistic_effect };
+    let look = crate::render::picture_svg::Look { clear: picture.clear.map(rgb), luminance: picture.luminance, duotone: picture.duotone.map(|(a, b)| (rgb(a), rgb(b))), effects: picture.effects, soft_edge: picture.soft_edge, artistic_effect: picture.artistic_effect };
     // Tiles: a tile is the picture's pixels at one point each, scaled (`a:tile/@sx`, `@sy`); the first sits at
     // the frame's corner `align` names, moved by `tx`, `ty`.
     let tile = picture.tile.and_then(|t| {
@@ -3553,13 +4650,37 @@ fn styled_picture_image(shape: &Shape, picture: &Picture, frame: EmuRect, res: &
 /// The picture of `shape` rotated and flipped, with its bounds relative to
 /// the frame's top-left corner; `None` if its format cannot be wrapped.
 fn rotated_image(shape: &Shape, picture: &Picture, frame: EmuRect, res: &Resources) -> Option<(Arc<Image>, EmuRect)> {
-    let key = (picture.media, shape.rotation, shape.flip_h, shape.flip_v, picture.crop, frame.width, frame.height);
+    let (w, h) = (frame.width as f64, frame.height as f64);
+    let geom = picture
+        .geometry
+        .clone()
+        .or_else(|| (picture.corner > 0).then_some(Geometry::RoundRect { radius: picture.corner }))
+        .filter(|g| *g != Geometry::Rect);
+    let subpaths: Option<Vec<Vec<(f64, f64)>>> = geom.as_ref().map(|g| {
+        geometry_outlines(g, frame)
+            .iter()
+            .filter(|o| o.fill != ibis_doc_model::PathFill::None)
+            .flat_map(|o| &o.subpaths)
+            .map(|s| s.points.iter().map(|&(x, y)| (if shape.flip_h { w - x } else { x }, if shape.flip_v { h - y } else { y })).collect())
+            .collect()
+    });
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (shape.rotation, shape.flip_h, shape.flip_v, picture.crop, frame.width, frame.height, picture.clear, picture.luminance, picture.duotone, picture.effects, picture.soft_edge, picture.artistic_effect).hash(&mut hasher);
+        for p in subpaths.iter().flatten().flatten() {
+            (p.0.to_bits(), p.1.to_bits()).hash(&mut hasher);
+        }
+        (picture.media, hasher.finish())
+    };
     if let Some(found) = res.rotated.borrow().get(&key) {
         return Some(found.clone());
     }
     let (encoding, data) = res.source(picture.media)?;
     let local = EmuRect { x: 0, y: 0, ..frame };
-    let wrapped = crate::render::picture_svg::rotated_picture(&data, encoding, local, shape.rotation, shape.flip_h, shape.flip_v, picture.crop);
+    let rgb = |c: ibis_doc_model::Rgb| (c.r(), c.g(), c.b());
+    let look = crate::render::picture_svg::Look { clear: picture.clear.map(rgb), luminance: picture.luminance, duotone: picture.duotone.map(|(a, b)| (rgb(a), rgb(b))), effects: picture.effects, soft_edge: picture.soft_edge, artistic_effect: picture.artistic_effect };
+    let wrapped = crate::render::picture_svg::rotated_picture(&data, encoding, local, shape.rotation, shape.flip_h, shape.flip_v, picture.crop, subpaths.as_deref(), &look);
     let entry = (Arc::new(Image::from_bytes(ImageFormat::Svg, wrapped.svg)), wrapped.bounds);
     res.rotated.borrow_mut().insert(key, entry.clone());
     Some(entry)
@@ -3597,6 +4718,8 @@ fn placeholder_element(container: Div, kind: &Placeholder, frame: EmuRect, scale
 pub(crate) fn text_body_element(
     body: &TextBody,
     width: Option<f64>,
+    // The height of the box the text is in (EMU), for text in columns.
+    height: Option<f64>,
     scale: f32,
     res: &Resources,
     positions: Option<&crate::render::rich_text::TextPositions>,
@@ -3613,6 +4736,14 @@ pub(crate) fn text_body_element(
     // The paragraphs are placed together, from their unrounded heights.
     let block = crate::render::rich_text::TextBlock::default();
     block.heights.borrow_mut().resize(body.paragraphs.len(), 0.0);
+    // Text in columns runs down a column of the box's height, then on in the next (`TextBlock::flow`).
+    if body.columns > 1 && !body.vertical && let (Some(w), Some(h)) = (width, height) {
+        let cols = body.columns.clamp(1, 16) as usize;
+        let total_w = (w as f32 - (body.insets.left + body.insets.right) as f32).max(0.0);
+        let col_w = ((total_w - (cols as f32 - 1.0) * body.column_spacing as f32) / cols as f32).max(1.0);
+        let column_h = (h as f32 - (body.insets.top + body.insets.bottom) as f32).max(1.0);
+        block.flow.set(Some((column_h * scale, (col_w + body.column_spacing as f32) * scale, cols)));
+    }
     // Text bent to a warp (`a:prstTxWarp`) that has two guide curves: its glyphs are collected and painted
     // bent after the paragraphs (the other warps are not drawn yet).
     if let Some(geometry) = body.warp.as_deref().and_then(|name| ibis_pptx::text_warp_geometry(name, &body.warp_adjust))
@@ -3626,8 +4757,15 @@ pub(crate) fn text_body_element(
     let slots = positions.map(|p| p.slots(body.paragraphs.len()));
     let paragraphs = body.paragraphs.iter().enumerate().map(|(index, paragraph)| {
         let align = paragraph.align.unwrap_or(body.style.align);
-        let styles: Vec<TextStyle> = paragraph.runs.iter().map(|r| res.with_theme_font(body.style.with_run(&r.style), &r.text)).collect();
-        let end_style = res.with_theme_font(body.style.with_run(&paragraph.end_style), "");
+        // (Vertical text is not kerned: PowerPoint's PDFs of PTXT-00158 to 00162 are not.)
+        let unkerned = |mut s: TextStyle| {
+            if body.vertical || body.sideways != 0 {
+                s.kern = ibis_doc_model::KernMin(None);
+            }
+            s
+        };
+        let styles: Vec<TextStyle> = paragraph.runs.iter().map(|r| unkerned(res.with_theme_font(body.style.with_run(&r.style), &r.text))).collect();
+        let end_style = unkerned(res.with_theme_font(body.style.with_run(&paragraph.end_style), ""));
         let first = styles.first().unwrap_or(&end_style);
         let line_height = match paragraph.line_spacing {
             Some(LineSpacing::Percent(p)) => relative(LINE_HEIGHT * p as f32 / 100_000.0),
@@ -3646,8 +4784,14 @@ pub(crate) fn text_body_element(
         // raised or lowered by `baseline` of the full size.
         let script_scale = |r: &ibis_doc_model::Run| if r.style.baseline != 0 { 2.0 / 3.0 } else { 1.0 };
         // Without a bullet the first line starts at the indent and the others
-        // at the margin; with one, the text starts at the margin.
-        let first_line = if paragraph.bullet.is_some() {
+        // at the margin; with one, the text starts at the margin unless a
+        // non-hanging bullet (`indent >= 0`) pushes the first line right.
+        let has_text = paragraph.runs.iter().any(|r| !r.text.is_empty());
+        let first_line = if let Some(b) = paragraph.bullet.as_ref().filter(|_| has_text) {
+            let bullet_emu = (first.font_size as f32 / 100.0 * font_scale * (b.size as f32 / 100_000.0) * 0.55 * EMU_PER_POINT as f32) as i64;
+            let text_chars = b.text.chars().count().max(1) as i64;
+            (paragraph.indent + bullet_emu * text_chars).max(0)
+        } else if paragraph.bullet.is_some() {
             0
         } else {
             (paragraph.margin_left + paragraph.indent).max(0) - paragraph.margin_left
@@ -3663,17 +4807,29 @@ pub(crate) fn text_body_element(
         } else {
             (&paragraph.runs[..], &styles[..])
         };
-        // An empty paragraph shows no bullet (it keeps one for the text typed into it).
-        let has_text = paragraph.runs.iter().any(|r| !r.text.is_empty());
         // Turned text paints its (text) bullet with its lines.
-        let turned_bullet = turn.and_then(|_| {
+        // A number or character bullet (not turned) is painted with its first line too: it is in the text's face and
+        // size, so on the text's baseline, where a box of its own put it a little low.
+        let turned_bullet = Some(()).filter(|_| turn.is_some() || paragraph.bullet.as_ref().is_some_and(|b| b.auto.is_some() || b.text == "•")).and_then(|_| {
             let b = paragraph.bullet.as_ref().filter(|b| has_text && b.picture.is_none())?;
-            let font = res.fonts.font(first);
+            let bullet_style = if b.auto.is_none()
+                && !b.text.chars().any(ibis_doc_model::is_east_asian)
+                && first.font.as_deref().is_some_and(is_east_asian_typeface)
+                && first.fallback_font.is_some()
+            {
+                TextStyle { font: first.fallback_font.clone(), bold: false, ..first.clone() }
+            } else if b.auto.is_none() {
+                TextStyle { bold: false, ..first.clone() }
+            } else {
+                first.clone()
+            };
+            let font = res.fonts.font(&bullet_style);
+            let first_font = res.fonts.font(first);
             let size = f32::from(size_px(first)) * (b.size as f32 / 100_000.0);
             // As the unturned bullet: its font's height centred in the first
             // line, moved as the first line's text is (`baseline_shift`).
             let (ba, bd) = res.metrics(&font);
-            let (fa, fd) = res.metrics(&font);
+            let (fa, fd) = res.metrics(&first_font);
             let centred = |a: f32, d: f32, s: f32| (line_px - (a + d) * s) / 2.0 + a * s;
             Some(crate::render::rich_text::BulletMark {
                 text: b.text.clone(),
@@ -3701,6 +4857,16 @@ pub(crate) fn text_body_element(
                     let size = full * script_scale(r);
                     let font = res.fonts.font(s);
                     let default_east_asian = res.default_east_asian_font(s);
+                    let latin_scale = res.substitute_scale(s.font.as_deref(), &font);
+                    let kana_widths = s
+                        .font
+                        .as_deref()
+                        .filter(|n| res.fonts.available(n).is_none())
+                        .and_then(crate::render::font_metrics::fallback_kana_widths);
+                    let proportional_alnum = s
+                        .font
+                        .as_deref()
+                        .is_some_and(|n| res.fonts.available(n).is_none() && crate::render::font_metrics::is_proportional_japanese_typeface(n));
                     // A run's East Asian characters are in its East Asian
                     // typeface (`s.font` when it has them) and the others in
                     // its Latin one (`s.fallback_font`). A line is as high as
@@ -3720,39 +4886,59 @@ pub(crate) fn text_body_element(
                         (true, Some(latin)) if s.font.as_deref().is_some_and(is_east_asian_typeface) => typeface(Some(latin), s),
                         _ => typeface(s.font.as_deref(), s),
                     };
-                    // Segments: text, ascent and descent, and whether in the
-                    // default East Asian font.
-                    let mut segments: Vec<(String, (f32, f32), bool)> = Vec::new();
+                    // Right/left-pointing triangles (U+25B6, U+25B7, U+25C0, U+25C1) are ~0.5 em in MS Gothic / MS PGothic
+                    // (which PowerPoint also uses when a Latin font like Verdana lacks them), whereas Hiragino Sans draws
+                    // them at 0.93 em; Arial Unicode MS has the MS Gothic-sized ~0.5 em glyphs.
+                    let msgothic_triangle_font = s
+                        .font
+                        .as_deref()
+                        .filter(|n| res.fonts.available(n).is_none() || !is_east_asian_typeface(n))
+                        .and_then(|_| res.fonts.available("Arial Unicode MS"))
+                        .map(|_| res.fonts.font(&TextStyle { font: Some("Arial Unicode MS".into()), fallback_font: None, ..s.clone() }));
+                    // Segments: text, ascent and descent, font override (0 = run's, 1 = default East Asian, 2 = MS Gothic symbol stand-in), and the substitute font scale.
+                    let mut segments: Vec<(String, (f32, f32), u8, f32)> = Vec::new();
                     for c in r.text.chars() {
                         let cjk = crate::render::rich_text::is_cjk(c);
                         let m = match east_asian {
                             Some(m) if cjk => m,
                             _ => latin,
                         };
-                        let other = cjk && default_east_asian.is_some();
+                        let other = if matches!(c, '▶' | '▷' | '◀' | '◁') && msgothic_triangle_font.is_some() {
+                            2
+                        } else if cjk && default_east_asian.is_some() {
+                            1
+                        } else {
+                            0
+                        };
+                        let sub = if c.is_ascii() { latin_scale } else { 1.0 };
                         match segments.last_mut() {
-                            Some((text, last, o)) if *last == m && *o == other => text.push(c),
-                            _ => segments.push((c.to_string(), m, other)),
+                            Some((text, last, o, sc)) if *last == m && *o == other && *sc == sub => text.push(c),
+                            _ => segments.push((c.to_string(), m, other, sub)),
                         }
                     }
                     if r.style.math.is_some() {
                         // A formula is one piece.
-                        segments = vec![(r.text.clone(), latin, false)];
+                        segments = vec![(r.text.clone(), latin, 0, 1.0)];
                     }
                     if segments.is_empty() {
-                        segments.push((String::new(), latin, false));
+                        segments.push((String::new(), latin, 0, 1.0));
                     }
                     // Capitals (`a:rPr/@cap`): each letter is drawn as its
                     // capital (one character for one, so that the caret's
                     // positions stay), small capitals smaller.
-                    let segments: Vec<(String, (f32, f32), bool, f32)> = segments
+                    let segments: Vec<(String, (f32, f32), u8, f32)> = segments
                         .into_iter()
-                        .flat_map(|(text, m, other)| crate::render::rich_text::capitals(&text, r.style.caps).into_iter().map(move |(t, k)| (t, m, other, k)))
+                        .flat_map(|(text, m, other, sub)| crate::render::rich_text::capitals(&text, r.style.caps).into_iter().map(move |(t, k)| (t, m, other, k * sub)))
                         .collect();
                     segments
                         .into_iter()
                         .map(|(text, (a, d), other, k)| {
-                            let piece_font = if other { default_east_asian.clone().unwrap_or_else(|| font.clone()) } else { font.clone() };
+                            let piece_font = match other {
+                                2 => msgothic_triangle_font.clone().unwrap_or_else(|| font.clone()),
+                                1 => default_east_asian.clone().unwrap_or_else(|| font.clone()),
+                                _ => font.clone(),
+                            };
+                            let bold_arrow = !r.style.invisible && s.bold && !text.is_empty() && text.chars().all(|c| ('\u{2190}'..='\u{21ff}').contains(&c));
                             crate::render::rich_text::Piece {
                                 text,
                                 font: piece_font,
@@ -3767,22 +4953,40 @@ pub(crate) fn text_body_element(
                                 raise: r.style.baseline as f32 / 100_000.0 * full,
                                 spacing: r.style.spacing as f32 / 100.0 * px_per_point,
                                 highlight: r.style.highlight.filter(|_| !r.style.invisible).map(|c| rgb_hsla_mode(c, res.color_mode)),
-                                outline: r.style.outline.filter(|_| !r.style.invisible).map(|(c, w)| (rgb_hsla_mode(c, res.color_mode), w as f32 * scale)),
+                                outline: r
+                                    .style
+                                    .outline
+                                    .filter(|_| !r.style.invisible)
+                                    .map(|(c, w)| (rgb_hsla_mode(c, res.color_mode), w as f32 * scale))
+                                    .or_else(|| bold_arrow.then(|| (rgb_hsla_mode(s.color, res.color_mode), 0.035 * size * k))),
                                 shadow: if res.color_mode == ColorMode::HighContrast {
                                     None
                                 } else {
-                                    r.style.shadow.filter(|_| !r.style.invisible).map(|s| {
+                                    r.style.shadow.filter(|s| !r.style.invisible && s.sx != 0).map(|s| {
                                         let rad = (s.direction as f32 / 60_000.0).to_radians();
                                         let dist = s.distance as f32 * scale;
-                                        (hsla_mode(s.color, res.color_mode), dist * rad.cos(), dist * rad.sin())
+                                        (hsla_mode(s.color, res.color_mode), dist * rad.cos(), dist * rad.sin(), s.blur as f32 * scale)
                                     })
                                 },
+                                inner_shadow: if res.color_mode == ColorMode::HighContrast {
+                                    None
+                                } else {
+                                    r.style.shadow.filter(|s| !r.style.invisible && s.sx == 0).map(|s| {
+                                        let rad = (s.direction as f32 / 60_000.0).to_radians();
+                                        let dist = s.distance as f32 * scale;
+                                        (hsla_mode(s.color, res.color_mode), dist * rad.cos(), dist * rad.sin(), s.blur as f32 * scale)
+                                    })
+                                },
+                                glow: r.style.glow.filter(|_| !r.style.invisible && res.color_mode != ColorMode::HighContrast).map(|(c, rad)| (hsla_mode(c, res.color_mode), rad as f32 * scale)),
                                 fill: r.style.fill.clone().filter(|_| !r.style.invisible),
                                 ascent: a * size,
                                 descent: d * size,
                                 strike: if r.style.invisible { ibis_doc_model::Strike::None } else { r.style.strike },
                                 strike_size: size,
                                 math: r.style.math.as_deref().cloned(),
+                                border: r.style.border.filter(|_| !r.style.invisible).map(|b| (rgb_hsla_mode(b.color, res.color_mode), (b.width as f32 * scale).max(0.5), b.space as f32 * scale)),
+                                kana_widths,
+                                proportional_alnum,
                             }
                         })
                         .collect::<Vec<_>>()
@@ -3800,6 +5004,9 @@ pub(crate) fn text_body_element(
                 line,
                 wrap: body.wrap && !single_path,
                 first_line: first_line as f32 * scale,
+                margin_left: paragraph.margin_left as f32 * scale,
+                tabs: paragraph.tabs.iter().map(|t| t.position as f32 * scale).collect(),
+                default_tab: paragraph.default_tab.unwrap_or(914_400).max(1) as f32 * scale,
                 room: width.map(|w| {
                     let total_w = (w as f32 - (body.insets.left + body.insets.right) as f32).max(0.0);
                     let col_w = if body.columns > 1 && !body.vertical {
@@ -3824,14 +5031,14 @@ pub(crate) fn text_body_element(
                 upright: body.vertical,
                 mirror: body.vertical && body.vertical_kind == ibis_doc_model::VerticalKind::Mongolian,
                 at_x: origin_x.filter(|_| turn.is_none() && !body.vertical && paragraph.align.unwrap_or(body.style.align) == TextAlign::Left).map(|x0| {
-                    x0 + (body.insets.left + paragraph.margin_left) as f32 * scale
+                    x0 + (body.insets.left + paragraph.margin_left) as f32 * scale + crate::render::rich_text::at_x_offset()
                 }),
             })
             .into_any_element()
         };
 
         let above = px(space_before as f32 / 100.0 * px_per_point);
-        let bullet = paragraph.bullet.as_ref().filter(|b| has_text && (turn.is_none() || b.picture.is_some())).map(|b| {
+        let bullet = paragraph.bullet.as_ref().filter(|b| has_text && (b.picture.is_some() || (turn.is_none() && b.auto.is_none() && b.text != "•"))).map(|b| {
             let color = b.color.unwrap_or(first.color);
             let size = size_px(first) * (b.size as f32 / 100_000.0);
             let left = px((paragraph.margin_left + paragraph.indent) as f32 * scale);
@@ -3855,6 +5062,13 @@ pub(crate) fn text_body_element(
                     .text_size(size)
                     // A smaller bullet sits in the middle of the first line.
                     .line_height(px(line_px))
+                    // A bullet takes the weight of the text's first run (bold headings have bold numbers).
+                    .when(b.auto.is_some(), |d| {
+                        // A number is set in the face of the text's first run (a bold Japanese heading has a bold number
+                        // of the same face).
+                        let font = res.fonts.font(first);
+                        d.font_family(font.family.clone()).font_weight(font.weight)
+                    })
                     .text_color(rgb_hsla_mode(color, res.color_mode))
                     .child(SharedString::from(b.text.clone())),
             }
@@ -3887,19 +5101,18 @@ pub(crate) fn text_body_element(
         .pb(px(body.insets.bottom as f32 * scale))
         .when(!body.wrap, |d| d.whitespace_nowrap())
         .child({
-            if body.columns > 1 && !body.vertical {
-                let cols = (body.columns as usize).clamp(1, 16);
-                let mut paras: Vec<Option<gpui_kit::Div>> = paragraphs.map(Some).collect();
-                let total = paras.len();
-                let per_col = if total == 0 { 1 } else { (total + cols - 1) / cols };
-                let gap_px = (body.column_spacing as f32 * scale).max(0.0);
-                let col_elements = (0..cols).map(|c| {
-                    let start = c * per_col;
-                    let end = (start + per_col).min(total);
-                    let col_paras: Vec<gpui_kit::Div> = (start..end).filter_map(|i| paras[i].take()).collect();
-                    div().flex_1().flex().flex_col().children(col_paras)
-                });
-                div().w_full().flex().flex_row().gap(px(gap_px)).children(col_elements).into_any_element()
+            if body.columns > 1 && !body.vertical && width.is_some() {
+                // Columns: the paragraphs run down the first column to the bottom of the box, then go on at the top of
+                // the next (a wrapping column of fixed height, a paragraph at a time).
+                let cols = body.columns.clamp(1, 16) as f32;
+                let total_w = (width.unwrap_or(0.0) as f32 - (body.insets.left + body.insets.right) as f32).max(0.0);
+                let col_w = ((total_w - (cols - 1.0) * body.column_spacing as f32) / cols).max(1.0) * scale;
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .children(paragraphs.map(|p| div().w(px(col_w)).flex_shrink_0().child(p)))
+                    .into_any_element()
             } else {
                 div().w_full().flex().flex_col().children(paragraphs).into_any_element()
             }
@@ -4074,6 +5287,284 @@ impl Resources {
             .unwrap_or(0.0);
         PAIR_KERNING.with(|c| c.borrow_mut().insert((id, a, b), em));
         em * size
+    }
+}
+
+#[cfg(test)]
+mod dashes_path_tests {
+    use super::dashes_path;
+    use gpui_kit::{OutlineVerb, Pixels, Point, point, px};
+
+    fn piece(x0: f32, x1: f32) -> Vec<Point<Pixels>> {
+        vec![point(px(x0), px(5.0)), point(px(x1), px(5.0))]
+    }
+
+    /// The dashes of a dashed line are one path, on the screen (tessellated) and in a PDF (its outline: a line for
+    /// each dash, stroked at the line's width with butt ends), however many there are.
+    #[test]
+    fn many_dashes_are_one_stroked_path() {
+        let pieces: Vec<_> = (0..50).map(|k| piece(k as f32 * 3.0, k as f32 * 3.0 + 2.0)).collect();
+        let path = dashes_path(&pieces, px(2.0)).expect("a path");
+        assert!(!path.vertices.is_empty(), "tessellated for the screen");
+        let outline = path.outline.as_ref().expect("an outline for a PDF");
+        let stroke = outline.stroke.expect("stroked");
+        assert_eq!(f32::from(stroke.width), 2.0);
+        assert!(!stroke.round_caps, "butt ends: a dash is as long as it is said");
+        assert_eq!(outline.verbs.len(), 100, "a move and a line for each dash");
+        assert!(matches!(outline.verbs[0], OutlineVerb::MoveTo(p) if p == point(px(0.0), px(5.0))));
+        assert!(matches!(outline.verbs[1], OutlineVerb::LineTo(p) if p == point(px(2.0), px(5.0))));
+    }
+
+    /// Nothing to draw is no path; a piece of one point is left out; a bent dash keeps its corner.
+    #[test]
+    fn empty_and_single_point_pieces_are_left_out_and_a_bend_stays() {
+        assert!(dashes_path(&[], px(1.0)).is_none());
+        assert!(dashes_path(&[vec![point(px(1.0), px(1.0))], vec![]], px(1.0)).is_none());
+        let bent = vec![point(px(0.0), px(0.0)), point(px(4.0), px(0.0)), point(px(4.0), px(4.0))];
+        let path = dashes_path(&[vec![point(px(9.0), px(9.0))], bent], px(1.0)).expect("a path");
+        assert_eq!(path.outline.as_ref().expect("an outline").verbs.len(), 3);
+    }
+}
+
+#[cfg(test)]
+mod font_resolution_tests {
+    use super::*;
+    use core::prelude::v1::test;
+
+    /// Build a minimal valid TrueType font binary with a `name` table and an `OS/2` table.
+    fn make_test_ttf(records: &[(u16, &str)], weight: u16, italic: bool) -> Vec<u8> {
+        // Build `name` table (format 0) with Windows Unicode BMP (platform 3, encoding 1) records.
+        let mut string_storage = Vec::new();
+        let mut name_records = Vec::new();
+        for &(name_id, text) in records {
+            let utf16: Vec<u8> = text.encode_utf16().flat_map(u16::to_be_bytes).collect();
+            let offset = string_storage.len() as u16;
+            let len = utf16.len() as u16;
+            string_storage.extend_from_slice(&utf16);
+            let mut rec = Vec::with_capacity(12);
+            rec.extend_from_slice(&3u16.to_be_bytes()); // platformID = 3 (Windows)
+            rec.extend_from_slice(&1u16.to_be_bytes()); // encodingID = 1 (Unicode BMP)
+            rec.extend_from_slice(&0x0409u16.to_be_bytes()); // languageID
+            rec.extend_from_slice(&name_id.to_be_bytes());
+            rec.extend_from_slice(&len.to_be_bytes());
+            rec.extend_from_slice(&offset.to_be_bytes());
+            name_records.push(rec);
+        }
+        let count = name_records.len() as u16;
+        let storage_offset = 6 + count * 12;
+        let mut name_table = Vec::new();
+        name_table.extend_from_slice(&0u16.to_be_bytes()); // format = 0
+        name_table.extend_from_slice(&count.to_be_bytes());
+        name_table.extend_from_slice(&storage_offset.to_be_bytes());
+        for rec in name_records {
+            name_table.extend_from_slice(&rec);
+        }
+        name_table.extend_from_slice(&string_storage);
+
+        // Build `OS/2` table (64 bytes).
+        let mut os2_table = vec![0u8; 64];
+        os2_table[4..6].copy_from_slice(&weight.to_be_bytes());
+        let fs_selection: u16 = if italic { 0x0001 } else { 0x0040 };
+        os2_table[62..64].copy_from_slice(&fs_selection.to_be_bytes());
+
+        // Assemble SFNT with 2 tables (`OS/2` and `name`).
+        let num_tables = 2u16;
+        let os2_offset = 12 + u32::from(num_tables) * 16;
+        let os2_len = os2_table.len() as u32;
+        let name_offset = os2_offset + os2_len;
+        let name_len = name_table.len() as u32;
+
+        let mut ttf = Vec::new();
+        ttf.extend_from_slice(&0x0001_0000u32.to_be_bytes());
+        ttf.extend_from_slice(&num_tables.to_be_bytes());
+        ttf.extend_from_slice(&32u16.to_be_bytes());
+        ttf.extend_from_slice(&1u16.to_be_bytes());
+        ttf.extend_from_slice(&0u16.to_be_bytes());
+
+        // Record 0: OS/2
+        ttf.extend_from_slice(b"OS/2");
+        ttf.extend_from_slice(&0u32.to_be_bytes());
+        ttf.extend_from_slice(&os2_offset.to_be_bytes());
+        ttf.extend_from_slice(&os2_len.to_be_bytes());
+
+        // Record 1: name
+        ttf.extend_from_slice(b"name");
+        ttf.extend_from_slice(&0u32.to_be_bytes());
+        ttf.extend_from_slice(&name_offset.to_be_bytes());
+        ttf.extend_from_slice(&name_len.to_be_bytes());
+
+        ttf.extend_from_slice(&os2_table);
+        ttf.extend_from_slice(&name_table);
+        ttf
+    }
+
+    #[test]
+    fn strip_weight_suffix_handles_semilight_and_compound_weights() {
+        assert_eq!(strip_weight_suffix("Segoe UI Semilight"), Some(("Segoe UI", FontWeight(350.0))));
+        assert_eq!(strip_weight_suffix("Segoe UI SemiLight"), Some(("Segoe UI", FontWeight(350.0))));
+        assert_eq!(strip_weight_suffix("SEGOE UI SEMILIGHT"), Some(("SEGOE UI", FontWeight(350.0))));
+        assert_eq!(strip_weight_suffix("Yu Gothic UI Semilight"), Some(("Yu Gothic UI", FontWeight(350.0))));
+        assert_eq!(strip_weight_suffix("Segoe UI Semibold"), Some(("Segoe UI", FontWeight::SEMIBOLD)));
+        assert_eq!(strip_weight_suffix("Poppins SemiBold"), Some(("Poppins", FontWeight::SEMIBOLD)));
+        assert_eq!(strip_weight_suffix("Poppins ExtraLight"), Some(("Poppins", FontWeight::EXTRA_LIGHT)));
+        assert_eq!(strip_weight_suffix("Poppins Extralight"), Some(("Poppins", FontWeight::EXTRA_LIGHT)));
+        assert_eq!(strip_weight_suffix("Segoe UI Light"), Some(("Segoe UI", FontWeight::LIGHT)));
+        assert_eq!(strip_weight_suffix("Segoe UI Black"), Some(("Segoe UI", FontWeight::BLACK)));
+        assert_eq!(strip_weight_suffix("Hiragino Kaku Gothic Std W8"), Some(("Hiragino Kaku Gothic Std", FontWeight(800.0))));
+        assert_eq!(strip_weight_suffix("Segoe UI"), None);
+        assert_eq!(strip_weight_suffix("Light"), None);
+    }
+
+    #[test]
+    fn opentype_index_maps_id1_subfamily_to_id16_family_and_os2_weight() {
+        let regular_ttf = make_test_ttf(
+            &[(1, "Segoe UI"), (4, "Segoe UI"), (16, "Segoe UI")],
+            400,
+            false,
+        );
+        let bold_ttf = make_test_ttf(
+            &[(1, "Segoe UI"), (4, "Segoe UI Bold"), (16, "Segoe UI")],
+            700,
+            false,
+        );
+        let semilight_ttf = make_test_ttf(
+            &[(1, "Segoe UI Semilight"), (4, "Segoe UI Semilight"), (16, "Segoe UI")],
+            350,
+            false,
+        );
+        let semilight_italic_ttf = make_test_ttf(
+            &[(1, "Segoe UI Semilight"), (4, "Segoe UI Semilight Italic"), (16, "Segoe UI")],
+            350,
+            true,
+        );
+
+        let mut index = OpenTypeIndex::default();
+        for data in [&regular_ttf, &bold_ttf, &semilight_ttf, &semilight_italic_ttf] {
+            let faces = parse_opentype_faces_from_slice(data);
+            assert_eq!(faces.len(), 1);
+            index.insert_face(&faces[0]);
+        }
+
+        let installed: HashSet<String> = ["Segoe UI".to_string()].into_iter().collect();
+
+        // Plain family resolves to weight 400, non-italic.
+        let (fam, w, it) = resolve_font_with_index("Segoe UI", &installed, Some(&index), false).expect("Segoe UI");
+        assert_eq!(fam.as_ref(), "Segoe UI");
+        assert_eq!(w, FontWeight(400.0));
+        assert!(!it);
+
+        // GDI subfamily "Segoe UI Semilight" resolves to typographic family "Segoe UI" at weight 350, non-italic.
+        let (fam, w, it) = resolve_font_with_index("Segoe UI Semilight", &installed, Some(&index), false).expect("Segoe UI Semilight");
+        assert_eq!(fam.as_ref(), "Segoe UI");
+        assert_eq!(w, FontWeight(350.0));
+        assert!(!it);
+
+        // Full name "Segoe UI Semilight Italic" (ID 4) resolves to "Segoe UI" at weight 350, italic.
+        let (fam, w, it) = resolve_font_with_index("Segoe UI Semilight Italic", &installed, Some(&index), false).expect("Segoe UI Semilight Italic");
+        assert_eq!(fam.as_ref(), "Segoe UI");
+        assert_eq!(w, FontWeight(350.0));
+        assert!(it);
+    }
+
+    #[test]
+    fn opentype_index_resolves_localized_japanese_and_english_names() {
+        let yugoth_m = make_test_ttf(
+            &[
+                (1, "Yu Gothic Medium"),
+                (1, "游ゴシック Medium"),
+                (16, "Yu Gothic"),
+                (16, "游ゴシック"),
+            ],
+            500,
+            false,
+        );
+        let mut index = OpenTypeIndex::default();
+        for face in parse_opentype_faces_from_slice(&yugoth_m) {
+            index.insert_face(&face);
+        }
+
+        // Japanese Windows (text_system lists "游ゴシック")
+        let ja_installed: HashSet<String> = ["游ゴシック".to_string()].into_iter().collect();
+        let (fam, w, _) = resolve_font_with_index("Yu Gothic Medium", &ja_installed, Some(&index), false).expect("resolved on ja-JP");
+        assert_eq!(fam.as_ref(), "游ゴシック");
+        assert_eq!(w, FontWeight(500.0));
+
+        // English Windows (text_system lists "Yu Gothic")
+        let en_installed: HashSet<String> = ["Yu Gothic".to_string()].into_iter().collect();
+        let (fam, w, _) = resolve_font_with_index("游ゴシック Medium", &en_installed, Some(&index), false).expect("resolved on en-US");
+        assert_eq!(fam.as_ref(), "Yu Gothic");
+        assert_eq!(w, FontWeight(500.0));
+
+        // macOS (text_system lists "YuGothic" via TYPEFACE_ALIASES)
+        let mac_installed: HashSet<String> = ["YuGothic".to_string()].into_iter().collect();
+        let (fam, w, _) = resolve_font_with_index("游ゴシック Medium", &mac_installed, Some(&index), false).expect("resolved on macOS");
+        assert_eq!(fam.as_ref(), "YuGothic");
+        assert_eq!(w, FontWeight(500.0));
+    }
+
+    #[test]
+    fn fonts_struct_resolves_weight_suffixed_typefaces_and_bold_interaction() {
+        let fonts = Fonts {
+            installed: ["Segoe UI".to_string(), "YuGothic".to_string()].into_iter().collect(),
+            embedded_index: OpenTypeIndex::default(),
+            east_asian_fallback: None,
+            substitutions: HashMap::new(),
+        };
+
+        assert_eq!(
+            fonts.available("Segoe UI Semilight"),
+            Some((SharedString::from("Segoe UI"), FontWeight(350.0)))
+        );
+        assert_eq!(
+            fonts.available("游ゴシック Light"),
+            Some((SharedString::from("YuGothic"), FontWeight::LIGHT))
+        );
+        assert!(fonts.available("UninstalledFont Semilight").is_none());
+
+        // Plain Semilight run has weight 350.
+        let f_plain = fonts.font(&TextStyle {
+            font: Some("Segoe UI Semilight".to_string()),
+            bold: false,
+            ..TextStyle::default()
+        });
+        assert_eq!(f_plain.family.as_ref(), "Segoe UI");
+        assert_eq!(f_plain.weight, FontWeight(350.0));
+
+        // Bold on a Semilight run promotes weight to BOLD (700).
+        let f_bold = fonts.font(&TextStyle {
+            font: Some("Segoe UI Semilight".to_string()),
+            bold: true,
+            ..TextStyle::default()
+        });
+        assert_eq!(f_bold.family.as_ref(), "Segoe UI");
+        assert_eq!(f_bold.weight, FontWeight::BOLD);
+
+        // Bold on a Black (900) run preserves weight 900 rather than demoting to 700.
+        let f_black = fonts.font(&TextStyle {
+            font: Some("Segoe UI Black".to_string()),
+            bold: true,
+            ..TextStyle::default()
+        });
+        assert_eq!(f_black.family.as_ref(), "Segoe UI");
+        assert_eq!(f_black.weight, FontWeight::BLACK);
+    }
+
+    #[test]
+    fn presentation_font_availability_checks_embedded_base_and_substitutions() {
+        let mut pres = ibis_doc_model::Presentation::default();
+        pres.fonts.push(ibis_doc_model::EmbeddedFont {
+            typeface: "Segoe UI".to_string(),
+            bold: false,
+            italic: false,
+            data: vec![1, 2, 3].into(),
+        });
+        pres.font_substitutions.insert("CustomMissing".to_string(), "Segoe UI Semilight".to_string());
+
+        assert!(is_presentation_font_available("Segoe UI", &pres));
+        assert!(is_presentation_font_available("Segoe UI Semilight", &pres));
+        assert!(is_presentation_font_available("Segoe UI Semibold", &pres));
+        assert!(is_presentation_font_available("CustomMissing", &pres));
+        assert!(!is_presentation_font_available("CompletelyUnknownFont Semilight", &pres));
     }
 }
 

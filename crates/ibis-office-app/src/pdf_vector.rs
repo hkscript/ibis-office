@@ -27,6 +27,11 @@ use krilla::text::{Font, GlyphId, KrillaGlyph};
 /// index in it.
 pub type FontData = Option<(Arc<Vec<u8>>, u32)>;
 
+/// How far a synthetic italic slants (x by this much of y), and the width of a synthetic bold's outline in ems: as the
+/// screen draws them (the macOS text system).
+const SYNTHETIC_SLANT: f32 = 0.2;
+const SYNTHETIC_BOLD_STROKE: f32 = 0.035;
+
 /// A page to write: its records, the window's width in logical pixels and
 /// device pixels per logical one, and its size in points.
 struct PendingPage {
@@ -66,24 +71,27 @@ impl PdfWriter {
         self.pages.len()
     }
 
-    pub fn add_page(&mut self, records: Vec<PaintRecord>, width_px: f32, page_pt: (f32, f32), scale_factor: f32, font_data: &mut dyn FnMut(FontId) -> FontData) {
+    pub fn add_page(&mut self, records: Vec<PaintRecord>, width_px: f32, page_pt: (f32, f32), scale_factor: f32, font_data: &mut dyn FnMut(FontId) -> (FontData, (bool, bool))) {
         self.add_page_shifted(records, width_px, page_pt, scale_factor, (0.0, 0.0), font_data);
     }
 
     /// [`Self::add_page`], with everything on the page moved by `shift`
     /// points (to put what the window drew on whole pixels where the paper
     /// wants it between them).
-    pub fn add_page_shifted(&mut self, records: Vec<PaintRecord>, width_px: f32, page_pt: (f32, f32), scale_factor: f32, shift: (f32, f32), font_data: &mut dyn FnMut(FontId) -> FontData) {
+    /// `font_data` also tells whether the font is drawn emboldened and slanted (bold or italic asked of a family without
+    /// that face): it is written so too.
+    pub fn add_page_shifted(&mut self, records: Vec<PaintRecord>, width_px: f32, page_pt: (f32, f32), scale_factor: f32, shift: (f32, f32), font_data: &mut dyn FnMut(FontId) -> (FontData, (bool, bool))) {
         for record in &records {
             if let PaintRecord::Glyph { font_id, glyph_id, .. } = record {
                 let font = self.fonts.entry(*font_id).or_insert_with(|| {
-                    font_data(*font_id).and_then(|(data, index)| {
+                    let (data, synthetic) = font_data(*font_id);
+                    data.and_then(|(data, index)| {
                         let characters = Arc::new(glyph_characters(&data, index));
                         let glyph_count = glyph_count(&data, index);
                         let extent = vertical_extent(&data, index);
                         let advances = glyph_advances(&data, index);
                         let font = Font::new(data.clone().into(), index)?;
-                        Some(PdfFont { font, characters, data, index, glyph_count, extent, advances, glyphs: Vec::new(), outlined: false })
+                        Some(PdfFont { font, characters, data, index, glyph_count, extent, advances, glyphs: Vec::new(), outlined: false, synthetic })
                     })
                 });
                 if let Some(font) = font
@@ -202,8 +210,8 @@ impl PdfWriter {
                     if glyph_id.0 >= pdf_font.glyph_count {
                         continue;
                     }
-                    let (font, characters, outlined, glyph_count, (ascent, descent)) =
-                        (pdf_font.font.clone(), pdf_font.characters.clone(), pdf_font.outlined, pdf_font.glyph_count, pdf_font.extent);
+                    let (font, characters, outlined, glyph_count, (ascent, descent), (bold, italic)) =
+                        (pdf_font.font.clone(), pdf_font.characters.clone(), pdf_font.outlined, pdf_font.glyph_count, pdf_font.extent, pdf_font.synthetic);
                     // The glyphs after it on the same line, in the same
                     // font, size, color and clip, go in one run: each
                     // advances to where the next one is.
@@ -228,7 +236,7 @@ impl PdfWriter {
                         gpui_kit::point(origin.x - gpui_kit::px(0.5), origin.y - *font_size * ascent),
                         gpui_kit::point(last_x + *font_size * last_advance + gpui_kit::px(0.5), origin.y + *font_size * descent),
                     );
-                    let inside = transformation.is_none() && within(&reach, clip);
+                    let inside = transformation.is_none() && !italic && within(&reach.dilate(*font_size * 0.05), clip);
                     with_clip(&mut surface, clip, inside, |s| {
                         if let Some(m) = transformation {
                             // In scaled pixels about the window's origin.
@@ -236,7 +244,14 @@ impl PdfWriter {
                             s.push_transform(&Transform::from_row(a, c, b, d, m.translation[0] / scale_factor, m.translation[1] / scale_factor));
                         }
                         let (paint, opacity) = color(*glyph_color);
-                        s.set_stroke(None);
+                        // Slanted about the baseline: x moves left by a fifth of the height below it (y grows down).
+                        if italic {
+                            let y0 = f32::from(origin.y);
+                            s.push_transform(&Transform::from_row(1.0, 0.0, -SYNTHETIC_SLANT, 1.0, SYNTHETIC_SLANT * y0, 0.0));
+                        }
+                        // Emboldened: outlined too, in the same colour.
+                        let stroke = bold.then(|| Stroke { paint: paint.clone().into(), width: size * SYNTHETIC_BOLD_STROKE, opacity, line_join: LineJoin::Round, ..Stroke::default() });
+                        s.set_stroke(stroke);
                         s.set_fill(Some(Fill { paint: paint.into(), opacity, rule: FillRule::NonZero }));
                         let mut text = String::new();
                         let mut glyphs = Vec::new();
@@ -249,6 +264,10 @@ impl PdfWriter {
                             glyphs.push(KrillaGlyph::new(GlyphId::new(id.0), advance, 0.0, 0.0, 0.0, start..text.len(), None));
                         }
                         s.draw_glyphs(Point::from_xy(f32::from(origin.x), f32::from(origin.y)), &glyphs, font, &text, size, outlined);
+                        s.set_stroke(None);
+                        if italic {
+                            s.pop();
+                        }
                         if transformation.is_some() {
                             s.pop();
                         }
@@ -350,6 +369,8 @@ struct PdfFont {
     advances: Vec<f32>,
     glyphs: Vec<u16>,
     outlined: bool,
+    /// Drawn emboldened (filled and outlined) and slanted, as the screen draws a font without a bold or italic face.
+    synthetic: (bool, bool),
 }
 
 /// Draw `f` inside `clip` (a rectangle in pixels).
@@ -603,6 +624,39 @@ fn glyph_characters(data: &[u8], index: u32) -> HashMap<u32, char> {
                 }
             })
             .or_insert(candidate);
+    }
+    use skrifa::raw::{TableProvider as _, tables::gsub::{SingleSubst, SubstitutionSubtables}};
+    if let Ok(gsub) = font.gsub()
+        && let Ok(lookups) = gsub.lookup_list()
+    {
+        for lookup in lookups.lookups().iter().flatten() {
+            if let Ok(SubstitutionSubtables::Single(subs)) = lookup.subtables() {
+                for sub in subs.iter().flatten() {
+                    match sub {
+                        SingleSubst::Format1(f1) => {
+                            let delta = f1.delta_glyph_id() as i32;
+                            if let Ok(cov) = f1.coverage() {
+                                for src in cov.iter() {
+                                    let dst = (src.to_u32() as i32 + delta).rem_euclid(65536) as u32;
+                                    if let Some(&cand) = out.get(&src.to_u32()) {
+                                        out.entry(dst).or_insert(cand);
+                                    }
+                                }
+                            }
+                        }
+                        SingleSubst::Format2(f2) => {
+                            if let Ok(cov) = f2.coverage() {
+                                for (src, dst) in cov.iter().zip(f2.substitute_glyph_ids()) {
+                                    if let Some(&cand) = out.get(&src.to_u32()) {
+                                        out.entry(dst.get().to_u32()).or_insert(cand);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     out.into_iter().map(|(g, (_, c))| (g, c)).collect()
 }

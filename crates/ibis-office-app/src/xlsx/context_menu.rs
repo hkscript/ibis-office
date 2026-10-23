@@ -806,19 +806,16 @@ impl SlideEditor {
                 ("xlsx.cell-sparkline-color-gray", "xlsx.sparkline-color-gray", 0x7F7F7F),
                 ("xlsx.cell-sparkline-color-black", "xlsx.sparkline-color-black", 0x000000),
             ];
-            let series_color_items: Vec<MenuEntry> = CELL_SPARKLINE_COLORS
-                .into_iter()
-                .map(|(id, label, hex)| {
-                    let rgb = ibis_doc_model::Rgb(hex);
-                    MenuItem::new(id, label)
-                        .checked(sp_group.series == Some(rgb))
-                        .on(move |this, window, cx| {
-                            this.set_selected_sparklines_series_color(Some(rgb), cx);
-                            this.focus_handle.focus(window, cx);
-                        })
-                        .into()
-                })
-                .collect();
+            let series_color_items: Vec<MenuEntry> = super::toolbar::palette_menu_with_ids(
+                self,
+                None,
+                &CELL_SPARKLINE_COLORS,
+                false,
+                std::rc::Rc::new(|this, rgb, window, cx| {
+                    this.set_selected_sparklines_series_color(rgb, cx);
+                    this.focus_handle.focus(window, cx);
+                }),
+            );
 
             let point_items: Vec<MenuEntry> = [
                 ("xlsx.cell-sparkline-high-point", "xlsx.sparkline-high-point", SPK::High, sp_group.high),
@@ -940,27 +937,16 @@ impl SlideEditor {
             let marker_color_items: Vec<MenuEntry> = CELL_MC_MENUS
                 .into_iter()
                 .map(|(sub_id, label_key, pt, palette)| {
-                    let cur_color = match pt {
-                        SPK::Negative => sp_group.negative,
-                        SPK::Markers => sp_group.markers_color,
-                        SPK::High => sp_group.high_color,
-                        SPK::Low => sp_group.low_color,
-                        SPK::First => sp_group.first_color,
-                        SPK::Last => sp_group.last_color,
-                    };
-                    let items: Vec<MenuEntry> = palette
-                        .into_iter()
-                        .map(|(item_id, color_label, hex)| {
-                            let rgb = ibis_doc_model::Rgb(hex);
-                            MenuItem::new(item_id, color_label)
-                                .checked(cur_color == Some(rgb))
-                                .on(move |this, window, cx| {
-                                    this.set_selected_sparklines_point_color(pt, Some(rgb), cx);
-                                    this.focus_handle.focus(window, cx);
-                                })
-                                .into()
-                        })
-                        .collect();
+                    let items: Vec<MenuEntry> = super::toolbar::palette_menu_with_ids(
+                        self,
+                        None,
+                        &palette,
+                        false,
+                        std::rc::Rc::new(move |this, rgb, window, cx| {
+                            this.set_selected_sparklines_point_color(pt, rgb, cx);
+                            this.focus_handle.focus(window, cx);
+                        }),
+                    );
                     Submenu::new(sub_id, "palette", label_key, items).into()
                 })
                 .collect();
@@ -1640,7 +1626,7 @@ impl SlideEditor {
         );
         out.push(MenuEntry::Separator);
         out.push(
-            MenuItem::new("xlsx.tab-gridlines", "_xlsx.gridlines")
+            MenuItem::new("xlsx.tab-gridlines", "xlsx.gridlines")
                 .checked(grid_lines)
                 .on(|this, window, cx| {
                     let Some((_, sheet)) = this.current_sheet() else { return };
@@ -1651,7 +1637,7 @@ impl SlideEditor {
                 .into(),
         );
         out.push(
-            MenuItem::new("xlsx.tab-headings", "_xlsx.headings")
+            MenuItem::new("xlsx.tab-headings", "xlsx.headings")
                 .checked(headings)
                 .on(|this, window, cx| {
                     let Some((_, sheet)) = this.current_sheet() else { return };
@@ -1689,6 +1675,12 @@ impl SlideEditor {
         }
         out.extend(menus.find_entry("edit.delete"));
         out.push(MenuEntry::Separator);
+
+        // A SmartArt diagram: its shapes, layout and colours (a slide's menu, #XLSX-OBJECT-017); its text pane is a slide's.
+        if self.can_modify_smartart_items() {
+            out.extend(self.smartart_shape_menu_entries().into_iter().filter(|e| !matches!(e, MenuEntry::Item(i) if i.id == "pptx.smartart.text-pane")));
+            out.push(MenuEntry::Separator);
+        }
 
         if let Some(shape_id) = self.selected_sheet_shape() {
             if let Some(shape) = self.slide().shapes.iter().find(|s| s.id == shape_id) {

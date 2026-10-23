@@ -177,7 +177,7 @@ impl SlideEditor {
             .gap_2()
             .px(px(18.))
             .py(px(8.))
-            .child(Input::new(&input).small())
+            .child(Input::new(&input).small().cleanable(true))
             .child(
                 h_flex()
                     .gap_1()

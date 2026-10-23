@@ -157,6 +157,10 @@ pub fn open_progressive(
     if crate::odp::is_odp(&data) {
         data = crate::odp::to_pptx(&data)?.into();
     }
+    // An OpenDocument text (.odt) likewise.
+    if crate::docx_convert::is_odt(&data) {
+        data = crate::docx_convert::import_odt_to_docx_bytes(&data)?.into();
+    }
 
     let mut csv_records = None;
     #[allow(unused_mut)]
@@ -179,6 +183,20 @@ pub fn open_progressive(
         crate::progress::fraction(0.15);
 
         let remaining_offset = iter.position();
+        // The cells the first rows make: room the last chunk's list keeps in front of its own, for the app to put them there
+        // without a copy of the whole list.
+        let first_cells_hint: usize = first.iter().map(|r| r.len()).sum();
+        // The cells the rest will make, from the size of the text left against the first rows' (a few per cent over): the list
+        // that gets them is made this big at once, so that it neither grows by doubling (3.7 GB for 2.3 GB of 21 million cells)
+        // nor stands beside the batches it is filled from.
+        let estimated_cells = if first.is_empty() || remaining_offset == 0 {
+            0
+        } else {
+            let rest_bytes = (text.len() - remaining_offset.min(text.len())) as f64;
+            let per_row = remaining_offset as f64 / first.len() as f64;
+            let cells_per_row = first_cells_hint as f64 / first.len() as f64;
+            (rest_bytes / per_row.max(1.0) * cells_per_row * 1.03) as usize
+        };
         if remaining_offset < text.len() {
             #[cfg(not(target_family = "wasm"))]
             {
@@ -191,9 +209,9 @@ pub fn open_progressive(
                     const BATCH_SIZE: usize = 100_000;
                     let mut batch = Vec::with_capacity(BATCH_SIZE);
                     let mut processed = first_chunk_rows;
-                    let base_style = ibis_doc_model::CellStyle::default();
+                    let base_style = ibis_doc_model::CellStyle { vertical: ibis_doc_model::CellVerticalAlign::Top, vertical_set: true, ..Default::default() };
                     let mut sheet_styles = Vec::new();
-                    let mut all_cells = Vec::new();
+                    let mut all_cells: Vec<ibis_doc_model::SheetCell> = Vec::with_capacity(estimated_cells + first_cells_hint);
                     let mut all_heights = Vec::new();
 
                     while let Some(rec) = iter.next() {
@@ -698,6 +716,7 @@ impl Source {
             background: ibis_doc_model::Fill::None,
             border: None,
             plot_background: ibis_doc_model::Fill::None,
+            plot_border: None,
             disp_blanks_as: None,
             plot_vis_only: true,
             data_table: None,
@@ -814,6 +833,7 @@ impl Source {
             background: ibis_doc_model::Fill::None,
             border: None,
             plot_background: ibis_doc_model::Fill::None,
+            plot_border: None,
             disp_blanks_as: None,
             plot_vis_only: true,
             data_table: None,
@@ -842,7 +862,7 @@ impl Source {
         match made {
             Ok((template, read)) => {
                 // A chartEx chart (waterfall…) was read back with its cells' values cached: it is that.
-                let chart = if kind.is_chart_ex() { template.clone() } else { pptx_chart_data::sheet_chart_from_data(&template, current, &refs) };
+                let chart = if kind.is_chart_ex() || refs.is_empty() { template.clone() } else { pptx_chart_data::sheet_chart_from_data(&template, current, &refs) };
                 lock().insert(id, NewChartEntry { kind, template: Some(template), refs });
                 Ok(ibis_doc_model::Shape { id, kind: ibis_doc_model::ShapeKind::Chart(Box::new(chart)), ..read })
             }

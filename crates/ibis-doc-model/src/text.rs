@@ -36,7 +36,23 @@ pub struct TextStyle {
     pub font: Option<String>,
     /// The run's other script's font, used when `font` is not installed.
     pub fallback_font: Option<String>,
+    /// Kerning from this size on, in hundredths of a point (`a:rPr/@kern`: 1200 kerns text of 12 pt and larger); `None` or 0: none.
+    pub kern: KernMin,
 }
+
+/// The size from which text is kerned (`a:rPr/@kern`, in hundredths of a point; `None` or 0: not kerned), as the file says it with its
+/// inheritance. It only tells the renderer: a run made in the editor has none until the file is read again, so it takes no part in
+/// comparing styles (two styles are equal whatever their `KernMin`).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct KernMin(pub Option<u32>);
+
+impl PartialEq for KernMin {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for KernMin {}
 
 impl TextStyle {
     pub const MIN_FONT_SIZE: u32 = 100;
@@ -61,6 +77,7 @@ impl TextStyle {
             align: self.align,
             font: run.font.clone().or_else(|| self.font.clone()),
             fallback_font: run.fallback_font.clone().or_else(|| self.fallback_font.clone()),
+            kern: KernMin(run.kern.0.or(self.kern.0)),
         }
     }
 }
@@ -76,6 +93,7 @@ impl Default for TextStyle {
             align: TextAlign::Left,
             font: None,
             fallback_font: None,
+            kern: KernMin(None),
         }
     }
 }
@@ -99,9 +117,10 @@ pub fn step_font_size(current: u32, grow: bool) -> u32 {
 }
 
 /// Whether a character is drawn with the East Asian font of a font set
-/// (as Office picks: from CJK radicals, U+2E80, up).
+/// (as Office picks: Enclosed Alphanumerics U+2460..=U+24FF, Geometric
+/// Shapes U+25A0..=U+25FF, and from CJK radicals, U+2E80, up).
 pub fn is_east_asian(c: char) -> bool {
-    c as u32 >= 0x2e80
+    matches!(c as u32, 0x2460..=0x24ff | 0x25a0..=0x25ff) || c as u32 >= 0x2e80
 }
 
 /// Typefaces by script: a theme's heading or body fonts.
@@ -192,6 +211,8 @@ pub struct RunStyle {
     pub font: Option<String>,
     /// The other script's font, for when `font` is not installed.
     pub fallback_font: Option<String>,
+    /// `a:rPr/@kern` (see `KernMin`).
+    pub kern: KernMin,
     /// The run's text is computed (a slide number), not typed.
     pub field: Option<TextField>,
     /// A line through the characters (`a:rPr/@strike`).
@@ -206,6 +227,8 @@ pub struct RunStyle {
     pub link_tooltip: Option<String>,
     /// Shadow effect on characters (`a:outerShdw`).
     pub shadow: Option<crate::drawing::Shadow>,
+    /// A soft glow around the characters (`a:effectLst/a:glow`): colour and radius in EMU.
+    pub glow: Option<(crate::drawing::Color, i64)>,
     /// Proofing language code (`a:rPr/@lang`, e.g. "ja-JP", "en-US").
     pub lang: Option<String>,
     /// The run is a math formula (`a14:m`), drawn typeset; its text is the
@@ -214,6 +237,8 @@ pub struct RunStyle {
     /// The formula is in the line with the text round it (`a14:m` holding `m:oMath`), not a display formula of its own
     /// (`m:oMathPara`).
     pub math_inline: bool,
+    /// Run border line (`w:bdr` inside a Word text box).
+    pub border: Option<crate::flow::FlowBorder>,
 }
 
 /// The kind of an underline (OOXML's `ST_TextUnderlineType`, but `none`).
@@ -407,6 +432,10 @@ pub struct Paragraph {
     pub level: u8,
     /// Tab stops defined on this paragraph (`a:pPr/a:tabLst`).
     pub tabs: Vec<TextTabStop>,
+    /// Default tab stop interval (`a:pPr/@defTabSz`), in EMU (`None`: 914 400 EMU = 1 inch).
+    pub default_tab: Option<Emu>,
+    /// Whether `w:snapToGrid` is explicitly disabled (`false`) on this paragraph in a Word text box.
+    pub no_snap_to_grid: bool,
 }
 
 impl Paragraph {
@@ -911,6 +940,9 @@ impl TextBody {
         } else {
             let tail = self.paragraphs[p2].split_off(o2);
             self.paragraphs[p1].split_off(o1);
+            if self.paragraphs[p1].runs.is_empty() {
+                self.paragraphs[p1].end_style = tail.end_style;
+            }
             self.paragraphs[p1].runs.extend(tail.runs);
             self.paragraphs.drain(p1 + 1..=p2);
         }
@@ -1018,7 +1050,7 @@ impl TextBody {
 
     /// Cut runs at character `at` of [`text`](Self::text) (so a format
     /// can be given from there).
-    fn split_runs_at(&mut self, at: usize) {
+    pub fn split_runs_at(&mut self, at: usize) {
         let (p, offset) = self.locate(at);
         let paragraph = &mut self.paragraphs[p];
         let mut pos = 0;
@@ -1183,6 +1215,7 @@ impl TextBody {
             match format.list {
                 Some(ListKind::None) => {
                     paragraph.bullet = None;
+                    paragraph.margin_left = 0;
                     paragraph.indent = 0;
                 }
                 Some(kind) => {

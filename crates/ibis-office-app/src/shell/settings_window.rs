@@ -7,6 +7,8 @@
 //! system's, English or Japanese); every window shows it at once.
 use gpui_kit::component::button::Button;
 use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::scroll::ScrollbarMode;
+use gpui_kit::component::theme::Theme;
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme as _, Root, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -58,6 +60,7 @@ pub(crate) fn open_at(category: usize, parent: Option<Bounds<Pixels>>, display: 
         ..Default::default()
     };
     let opened = cx.open_window(options, |window, cx| {
+        crate::shell::palette::watch(window, cx);
         let view = cx.new(|cx| SettingsWindow { category, focus: cx.focus_handle() });
         let focus = view.read(cx).focus.clone();
         focus.focus(window, cx);
@@ -106,6 +109,26 @@ pub(crate) fn links_warning_enabled() -> bool {
     crate::shell::settings::get(LINKS_WARNING_KEY).as_deref() != Some("0")
 }
 
+/// The key of スクロール バーを常に表示: on when `1` (off by default: the scrollbars show while scrolling or when the pointer is over one).
+pub(crate) const SCROLLBARS_ALWAYS_KEY: &str = "view.scrollbars-always";
+
+/// Whether the scrollbars of the windows are always shown.
+pub(crate) fn scrollbars_always() -> bool {
+    crate::shell::settings::get(SCROLLBARS_ALWAYS_KEY).as_deref() == Some("1")
+}
+
+/// The scrollbars' mode of every window as the setting says (at start, and when it is changed).
+pub(crate) fn apply_scrollbar_mode(cx: &mut App) {
+    apply_scrollbar_mode_only(cx);
+    cx.refresh_windows();
+}
+
+/// As `apply_scrollbar_mode`, without redrawing (the theme's change redraws).
+pub(crate) fn apply_scrollbar_mode_only(cx: &mut App) {
+    // Hidden until the view scrolls or the pointer is over one (not the system's setting, which may show them always), unless asked to stay.
+    Theme::set_scrollbar_mode(if scrollbars_always() { ScrollbarMode::Always } else { ScrollbarMode::Hover }, cx);
+}
+
 const CATEGORIES: [&str; 4] = ["settings.general", "settings.save", "settings.trust", "settings.qat"];
 
 fn check_row(id: impl Into<ElementId>, label: SharedString, on: bool, action: impl Fn(bool, &mut App) + 'static) -> Stateful<Div> {
@@ -127,6 +150,12 @@ impl SettingsWindow {
                 })
             }));
         let detail = v_flex().gap_3().child(language).child(div().text_sm().text_color(theme.muted_foreground).child(i18n::text("settings.language.note")));
+        // スクロール バーを常に表示.
+        let detail = detail.child(div().mt_3().child(Checkbox::new("settings-scrollbars-always").label(i18n::text("settings.view.scrollbars-always")).checked(scrollbars_always()).on_click(cx.listener(|_, checked: &bool, _, cx| {
+            crate::shell::settings::set(SCROLLBARS_ALWAYS_KEY, if *checked { "1" } else { "0" });
+            apply_scrollbar_mode(cx);
+            cx.notify();
+        }))));
         // 起動時に更新を確かめる (no update in the browser).
         #[cfg(not(target_family = "wasm"))]
         let detail = detail

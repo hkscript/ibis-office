@@ -27,16 +27,23 @@ pub(crate) fn table_element_editing(
     // that fall short of it were not laid out (in users' private
     // presentations, one table adds up, another is half its frame) and are
     // laid out here.
-    let stated: i64 = table.rows.iter().map(|r| r.height).sum();
-    let laid_out = (stated - frame.height).abs() <= frame.height / 100;
+    let stated: i64 = table.rows.iter().map(|r| if r.height > 0 { r.height } else { table.row_text_height(r) }).sum();
+    let laid_out = (stated - frame.height).abs() <= frame.height / 100 && !row_text_overflows(table);
     if !laid_out && table.rows.iter().all(|r| r.cells.iter().all(|c| c.row_span <= 1)) {
         return growing_table(table, frame, scale, res, edited);
     }
     fixed_table(table, frame, scale, res, edited)
 }
 
+/// Whether any row's explicit `height` (> 0) is shorter than the wrapped height of one of its cells' text.
+fn row_text_overflows(table: &Table) -> bool {
+    table.rows.iter().any(|row| row.height > 0 && table.row_text_height(row) > row.height + ibis_doc_model::EMU_PER_POINT)
+}
+
 /// Paint cell fill: supports solid, linear, path (e.g. tileRect rect gradient), and pattern fills.
-fn cell_fill_element(div: Div, fill: &Fill, res: &Resources, scale: f32) -> Div {
+/// `at` is where the cell is on the slide (pixels from its corner): a pattern's cells are anchored at the slide's corner, as PowerPoint
+/// anchors them (none: at the cell's own).
+fn cell_fill_element(div: Div, fill: &Fill, res: &Resources, scale: f32, at: Option<(f32, f32)>) -> Div {
     let mut div = with_fill(div, fill, res);
     if crate::render::gradient::is_gradient(fill) {
         let gradient = fill.clone();
@@ -63,7 +70,8 @@ fn cell_fill_element(div: Div, fill: &Fill, res: &Resources, scale: f32) -> Div 
                 move |bounds, _, window, _| {
                     let (o, s) = (bounds.origin, bounds.size);
                     let rect = vec![o, point(o.x + s.width, o.y), point(o.x + s.width, o.y + s.height), point(o.x, o.y + s.height)];
-                    crate::render::shape_view::paint_pattern(window, &pattern, &[rect], o, scale);
+                    let anchor = at.map_or(o, |(ax, ay)| point(o.x - px(ax), o.y - px(ay)));
+                    crate::render::shape_view::paint_pattern(window, &pattern, &[rect], anchor, scale);
                 },
             )
             .absolute()
@@ -81,15 +89,13 @@ fn cell_fill_element(div: Div, fill: &Fill, res: &Resources, scale: f32) -> Div 
 fn growing_table(table: &Table, frame: EmuRect, scale: f32, res: &Resources, edited: Option<((usize, usize), &TextPositions)>) -> Div {
     let px_of = |e: i64| e as f32 * scale;
     let rows = table.rows.iter().enumerate().map(|(r, row)| {
-        let mut col = 0usize;
         let cells = row.cells.iter().enumerate().filter_map(|(c, cell)| {
-            let positions = edited.filter(|(at, _)| *at == (r, c)).map(|(_, p)| p);
-            let span = cell.column_span.max(1) as usize;
-            let at = col;
-            col += span;
             if cell.merged {
                 return None;
             }
+            let positions = edited.filter(|(at, _)| *at == (r, c)).map(|(_, p)| p);
+            let span = cell.column_span.max(1) as usize;
+            let at = c;
             let at_emu: i64 = table.columns[..at.min(table.columns.len())].iter().sum();
             let cell_origin_x = (frame.x + at_emu) as f32 * scale;
             let w: f32 = table.columns[at.min(table.columns.len())..(at + span).min(table.columns.len())].iter().map(|c| px_of(*c)).sum();
@@ -98,6 +104,37 @@ fn growing_table(table: &Table, frame: EmuRect, scale: f32, res: &Resources, edi
             let line = |stroke: &Option<Stroke>, edge: u8| {
                 let stroke = stroke.as_ref()?;
                 let t = (stroke.width as f32 * scale).max(1.0);
+                if stroke.dashed || stroke.compound != ibis_doc_model::LineCompound::Single {
+                    let stroke = stroke.clone();
+                    let c = canvas(
+                        |_, _, _| {},
+                        move |bounds, _, window, _| {
+                            let (ox, oy) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
+                            let (bw, bh) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+                            let mut segs = Vec::new();
+                            if edge < 2 {
+                                render_h_line(&mut segs, 0.0, bw, bh * 0.5, &stroke, scale, edge == 1, false, false);
+                            } else {
+                                render_v_line(&mut segs, bw * 0.5, 0.0, bh, &stroke, scale, edge == 3, false, false);
+                            }
+                            for seg in &segs {
+                                let r = Bounds::new(
+                                    point(px(ox + seg.bounds[0]), px(oy + seg.bounds[1])),
+                                    size(px(seg.bounds[2]), px(seg.bounds[3])),
+                                );
+                                window.paint_quad(gpui_kit::fill(r, seg.color));
+                            }
+                        },
+                    )
+                    .size_full();
+                    let d = div().absolute().child(c);
+                    return Some(match edge {
+                        0 => d.top(px(-t / 2.0)).left_0().right_0().h(px(t)),
+                        1 => d.bottom(px(-t / 2.0)).left_0().right_0().h(px(t)),
+                        2 => d.left(px(-t / 2.0)).top_0().bottom_0().w(px(t)),
+                        _ => d.right(px(-t / 2.0)).top_0().bottom_0().w(px(t)),
+                    });
+                }
                 let d = div().absolute().bg(hsla(stroke.color));
                 Some(match edge {
                     0 => d.top(px(-t / 2.0)).left_0().right_0().h(px(t)),
@@ -132,8 +169,8 @@ fn growing_table(table: &Table, frame: EmuRect, scale: f32, res: &Resources, edi
                 None
             };
             Some(
-                cell_fill_element(div().relative().flex_none().w(px(w)).flex().flex_col(), &cell.fill, res, scale)
-                    .child(text_body_element(&cell.text, Some((w / scale) as f64), scale, res, positions, None, Some(cell_origin_x)))
+                cell_fill_element(div().relative().flex_none().w(px(w)).flex().flex_col(), &cell.fill, res, scale, None)
+                    .child(text_body_element(&cell.text, Some((w / scale) as f64), None, scale, res, positions, None, Some(cell_origin_x)))
                     .children([line(&b.top, 0), line(&b.bottom, 1), line(&b.left, 2), line(&b.right, 3)].into_iter().flatten())
                     .children(diag_canvas),
             )
@@ -192,10 +229,19 @@ fn fixed_table(table: &Table, frame: EmuRect, scale: f32, res: &Resources, edite
             let (w, h) = (right - left, bottom - top);
             let positions = edited.filter(|(at, _)| *at == (r, c)).map(|(_, p)| p);
             let cell_origin_x = (frame.x + xs_emu[c]) as f32 * scale;
-            cells.push(
-                cell_fill_element(div().absolute().left(px(left)).top(px(top)).w(px(w)).h(px(h)), &cell.fill, res, scale)
-                    .child(text_body_element(&cell.text, Some((w / scale) as f64), scale, res, positions, None, Some(cell_origin_x))),
-            );
+            // A fill reaches one pixel into the next column and row (painted later, so the neighbour's own fill covers it):
+            // the device-pixel snapping of the boxes otherwise leaves a hairline of the background between two fills.
+            let slide_at = Some((frame.x as f32 * scale + left, frame.y as f32 * scale + top));
+            let (ow, oh) = (if c + c_span < num_cols { 1.0 } else { 0.0 }, if r + r_span < num_rows { 1.0 } else { 0.0 });
+            if !matches!(&cell.fill, Fill::None) && !matches!(&cell.fill, Fill::Solid(c) if c.alpha < 255) && (ow > 0.0 || oh > 0.0) {
+                cells.push(cell_fill_element(div().absolute().left(px(left)).top(px(top)).w(px(w + ow)).h(px(h + oh)), &cell.fill, res, scale, slide_at));
+                cells.push(div().absolute().left(px(left)).top(px(top)).w(px(w)).h(px(h)).child(text_body_element(&cell.text, Some((w / scale) as f64), None, scale, res, positions, None, Some(cell_origin_x))));
+            } else {
+                cells.push(
+                    cell_fill_element(div().absolute().left(px(left)).top(px(top)).w(px(w)).h(px(h)), &cell.fill, res, scale, slide_at)
+                        .child(text_body_element(&cell.text, Some((w / scale) as f64), None, scale, res, positions, None, Some(cell_origin_x))),
+                );
+            }
 
             let b = &cell.borders;
             if let Some(s) = &b.tl_to_br {
@@ -215,170 +261,6 @@ fn fixed_table(table: &Table, frame: EmuRect, scale: f32, res: &Resources, edite
         }
     }
 
-    // Now render collapsed border segments via canvas paint_quad for subpixel precision
-    struct BorderSegment {
-        bounds: [f32; 4],
-        color: Hsla,
-    }
-
-    fn stroke_eq(a: &Stroke, b: &Stroke) -> bool {
-        a.width == b.width
-            && a.color == b.color
-            && a.compound == b.compound
-            && a.dashed == b.dashed
-            && a.dash == b.dash
-            && a.cap == b.cap
-    }
-
-    fn render_h_line(
-        segments: &mut Vec<BorderSegment>,
-        from_x: f32,
-        to_x: f32,
-        at_y: f32,
-        stroke: &Stroke,
-        scale: f32,
-        is_bottom: bool,
-        is_outer_left: bool,
-        is_outer_right: bool,
-    ) {
-        let t = (stroke.width as f32 * scale).max(1.0);
-        let color = hsla(stroke.color);
-        for &(mut a, mut b) in stroke.compound.bands() {
-            if is_bottom {
-                (a, b) = (1.0 - b, 1.0 - a);
-            }
-            let band_t = ((b - a) * t).max(0.5);
-            let offset = ((a + b) / 2.0 - 0.5) * t;
-            let band_top = at_y + offset - band_t / 2.0;
-
-            let mut b_from_x = from_x;
-            let mut b_to_x = to_x;
-            if is_outer_left {
-                let is_outer_band = if is_bottom { offset > 0.0 } else { offset < 0.0 };
-                b_from_x = if stroke.compound == ibis_doc_model::LineCompound::Single || is_outer_band {
-                    from_x - t / 2.0
-                } else {
-                    from_x + (t / 2.0 - band_t)
-                };
-            }
-            if is_outer_right {
-                let is_outer_band = if is_bottom { offset > 0.0 } else { offset < 0.0 };
-                b_to_x = if stroke.compound == ibis_doc_model::LineCompound::Single || is_outer_band {
-                    to_x + t / 2.0
-                } else {
-                    to_x - (t / 2.0 - band_t)
-                };
-            }
-
-            if stroke.dashed {
-                let pattern = match stroke.dash.pattern() {
-                    [] => &[4.0, 3.0][..],
-                    p => p,
-                };
-                let mut pos = 0.0f32;
-                let mut pat_idx = 0usize;
-                let mut is_dash = true;
-                let len = b_to_x - b_from_x;
-                let unit = t;
-                let cap_extra = if stroke.cap == ibis_doc_model::LineCap::Square { band_t / 2.0 } else { 0.0 };
-                while pos < len {
-                    let dash_len = pattern[pat_idx] * unit;
-                    let next_pos = (pos + dash_len).min(len);
-                    if is_dash && next_pos > pos {
-                        let seg_from = (b_from_x + pos - cap_extra).max(b_from_x);
-                        let seg_to = (b_from_x + next_pos + cap_extra).min(b_to_x);
-                        segments.push(BorderSegment {
-                            bounds: [seg_from, band_top, seg_to - seg_from, band_t],
-                            color,
-                        });
-                    }
-                    pos = next_pos;
-                    is_dash = !is_dash;
-                    pat_idx = (pat_idx + 1) % pattern.len();
-                }
-            } else {
-                segments.push(BorderSegment {
-                    bounds: [b_from_x, band_top, b_to_x - b_from_x, band_t],
-                    color,
-                });
-            }
-        }
-    }
-
-    fn render_v_line(
-        segments: &mut Vec<BorderSegment>,
-        at_x: f32,
-        from_y: f32,
-        to_y: f32,
-        stroke: &Stroke,
-        scale: f32,
-        is_right: bool,
-        is_outer_top: bool,
-        is_outer_bottom: bool,
-    ) {
-        let t = (stroke.width as f32 * scale).max(1.0);
-        let color = hsla(stroke.color);
-        for &(mut a, mut b) in stroke.compound.bands() {
-            if is_right {
-                (a, b) = (1.0 - b, 1.0 - a);
-            }
-            let band_t = ((b - a) * t).max(0.5);
-            let offset = ((a + b) / 2.0 - 0.5) * t;
-            let band_left = at_x + offset - band_t / 2.0;
-
-            let mut b_from_y = from_y;
-            let mut b_to_y = to_y;
-            if is_outer_top {
-                let is_outer_band = if is_right { offset > 0.0 } else { offset < 0.0 };
-                b_from_y = if stroke.compound == ibis_doc_model::LineCompound::Single || is_outer_band {
-                    from_y - t / 2.0
-                } else {
-                    from_y + (t / 2.0 - band_t)
-                };
-            }
-            if is_outer_bottom {
-                let is_outer_band = if is_right { offset > 0.0 } else { offset < 0.0 };
-                b_to_y = if stroke.compound == ibis_doc_model::LineCompound::Single || is_outer_band {
-                    to_y + t / 2.0
-                } else {
-                    to_y - (t / 2.0 - band_t)
-                };
-            }
-
-            if stroke.dashed {
-                let pattern = match stroke.dash.pattern() {
-                    [] => &[4.0, 3.0][..],
-                    p => p,
-                };
-                let mut pos = 0.0f32;
-                let mut pat_idx = 0usize;
-                let mut is_dash = true;
-                let len = b_to_y - b_from_y;
-                let unit = t;
-                let cap_extra = if stroke.cap == ibis_doc_model::LineCap::Square { band_t / 2.0 } else { 0.0 };
-                while pos < len {
-                    let dash_len = pattern[pat_idx] * unit;
-                    let next_pos = (pos + dash_len).min(len);
-                    if is_dash && next_pos > pos {
-                        let seg_from = (b_from_y + pos - cap_extra).max(b_from_y);
-                        let seg_to = (b_from_y + next_pos + cap_extra).min(b_to_y);
-                        segments.push(BorderSegment {
-                            bounds: [band_left, seg_from, band_t, seg_to - seg_from],
-                            color,
-                        });
-                    }
-                    pos = next_pos;
-                    is_dash = !is_dash;
-                    pat_idx = (pat_idx + 1) % pattern.len();
-                }
-            } else {
-                segments.push(BorderSegment {
-                    bounds: [band_left, b_from_y, band_t, b_to_y - b_from_y],
-                    color,
-                });
-            }
-        }
-    }
 
     let mut border_segments = Vec::new();
 
@@ -491,4 +373,169 @@ fn fixed_table(table: &Table, frame: EmuRect, scale: f32, res: &Resources, edite
     .size_full();
 
     div().absolute().left_0().top_0().size_full().children(cells).child(border_canvas)
+}
+
+// Now render collapsed border segments via canvas paint_quad for subpixel precision
+struct BorderSegment {
+    bounds: [f32; 4],
+    color: Hsla,
+}
+
+fn stroke_eq(a: &Stroke, b: &Stroke) -> bool {
+    a.width == b.width
+        && a.color == b.color
+        && a.compound == b.compound
+        && a.dashed == b.dashed
+        && a.dash == b.dash
+        && a.cap == b.cap
+}
+
+fn render_h_line(
+    segments: &mut Vec<BorderSegment>,
+    from_x: f32,
+    to_x: f32,
+    at_y: f32,
+    stroke: &Stroke,
+    scale: f32,
+    is_bottom: bool,
+    is_outer_left: bool,
+    is_outer_right: bool,
+) {
+    let t = (stroke.width as f32 * scale).max(1.0);
+    let color = hsla(stroke.color);
+    for &(mut a, mut b) in stroke.compound.bands() {
+        if is_bottom {
+            (a, b) = (1.0 - b, 1.0 - a);
+        }
+        let band_t = ((b - a) * t).max(0.5);
+        let offset = ((a + b) / 2.0 - 0.5) * t;
+        let band_top = at_y + offset - band_t / 2.0;
+
+        let mut b_from_x = from_x;
+        let mut b_to_x = to_x;
+        if is_outer_left {
+            let is_outer_band = if is_bottom { offset > 0.0 } else { offset < 0.0 };
+            b_from_x = if stroke.compound == ibis_doc_model::LineCompound::Single || is_outer_band {
+                from_x - t / 2.0
+            } else {
+                from_x + (t / 2.0 - band_t)
+            };
+        }
+        if is_outer_right {
+            let is_outer_band = if is_bottom { offset > 0.0 } else { offset < 0.0 };
+            b_to_x = if stroke.compound == ibis_doc_model::LineCompound::Single || is_outer_band {
+                to_x + t / 2.0
+            } else {
+                to_x - (t / 2.0 - band_t)
+            };
+        }
+
+        if stroke.dashed {
+            let pattern = match stroke.dash.pattern() {
+                [] => &[4.0, 3.0][..],
+                p => p,
+            };
+            let mut pos = 0.0f32;
+            let mut pat_idx = 0usize;
+            let mut is_dash = true;
+            let len = b_to_x - b_from_x;
+            let unit = t;
+            let cap_extra = if stroke.cap == ibis_doc_model::LineCap::Square { band_t / 2.0 } else { 0.0 };
+            while pos < len {
+                let dash_len = pattern[pat_idx] * unit;
+                let next_pos = (pos + dash_len).min(len);
+                if is_dash && next_pos > pos {
+                    let seg_from = (b_from_x + pos - cap_extra).max(b_from_x);
+                    let seg_to = (b_from_x + next_pos + cap_extra).min(b_to_x);
+                    segments.push(BorderSegment {
+                        bounds: [seg_from, band_top, seg_to - seg_from, band_t],
+                        color,
+                    });
+                }
+                pos = next_pos;
+                is_dash = !is_dash;
+                pat_idx = (pat_idx + 1) % pattern.len();
+            }
+        } else {
+            segments.push(BorderSegment {
+                bounds: [b_from_x, band_top, b_to_x - b_from_x, band_t],
+                color,
+            });
+        }
+    }
+}
+
+fn render_v_line(
+    segments: &mut Vec<BorderSegment>,
+    at_x: f32,
+    from_y: f32,
+    to_y: f32,
+    stroke: &Stroke,
+    scale: f32,
+    is_right: bool,
+    is_outer_top: bool,
+    is_outer_bottom: bool,
+) {
+    let t = (stroke.width as f32 * scale).max(1.0);
+    let color = hsla(stroke.color);
+    for &(mut a, mut b) in stroke.compound.bands() {
+        if is_right {
+            (a, b) = (1.0 - b, 1.0 - a);
+        }
+        let band_t = ((b - a) * t).max(0.5);
+        let offset = ((a + b) / 2.0 - 0.5) * t;
+        let band_left = at_x + offset - band_t / 2.0;
+
+        let mut b_from_y = from_y;
+        let mut b_to_y = to_y;
+        if is_outer_top {
+            let is_outer_band = if is_right { offset > 0.0 } else { offset < 0.0 };
+            b_from_y = if stroke.compound == ibis_doc_model::LineCompound::Single || is_outer_band {
+                from_y - t / 2.0
+            } else {
+                from_y + (t / 2.0 - band_t)
+            };
+        }
+        if is_outer_bottom {
+            let is_outer_band = if is_right { offset > 0.0 } else { offset < 0.0 };
+            b_to_y = if stroke.compound == ibis_doc_model::LineCompound::Single || is_outer_band {
+                to_y + t / 2.0
+            } else {
+                to_y - (t / 2.0 - band_t)
+            };
+        }
+
+        if stroke.dashed {
+            let pattern = match stroke.dash.pattern() {
+                [] => &[4.0, 3.0][..],
+                p => p,
+            };
+            let mut pos = 0.0f32;
+            let mut pat_idx = 0usize;
+            let mut is_dash = true;
+            let len = b_to_y - b_from_y;
+            let unit = t;
+            let cap_extra = if stroke.cap == ibis_doc_model::LineCap::Square { band_t / 2.0 } else { 0.0 };
+            while pos < len {
+                let dash_len = pattern[pat_idx] * unit;
+                let next_pos = (pos + dash_len).min(len);
+                if is_dash && next_pos > pos {
+                    let seg_from = (b_from_y + pos - cap_extra).max(b_from_y);
+                    let seg_to = (b_from_y + next_pos + cap_extra).min(b_to_y);
+                    segments.push(BorderSegment {
+                        bounds: [band_left, seg_from, band_t, seg_to - seg_from],
+                        color,
+                    });
+                }
+                pos = next_pos;
+                is_dash = !is_dash;
+                pat_idx = (pat_idx + 1) % pattern.len();
+            }
+        } else {
+            segments.push(BorderSegment {
+                bounds: [band_left, b_from_y, band_t, b_to_y - b_from_y],
+                color,
+            });
+        }
+    }
 }

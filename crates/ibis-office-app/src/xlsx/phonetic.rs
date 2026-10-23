@@ -121,7 +121,7 @@ impl SlideEditor {
                     .child(format!("{}: {}", text("fix.phonetic.cell"), cell_label)),
             )
             .child(div().text_size(px(13.)).child(text("fix.phonetic.furigana")))
-            .child(Input::new(&p.input).small())
+            .child(Input::new(&p.input).small().cleanable(true))
             .child(
                 h_flex()
                     .gap_2()

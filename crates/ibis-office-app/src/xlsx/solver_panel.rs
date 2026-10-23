@@ -704,7 +704,7 @@ impl SlideEditor {
                             .into_any_element(),
                     )),
             )
-            .child(mark("objective", Input::new(&p.objective).small().into_any_element()));
+            .child(mark("objective", Input::new(&p.objective).small().cleanable(true).into_any_element()));
         let radio = |id: &'static str, on: bool, label: &'static str, kind: GoalKind| {
             mark(
                 id,
@@ -730,7 +730,7 @@ impl SlideEditor {
                 .child(radio("goal-value", p.goal == GoalKind::Value, "xlsx.solver.goal-value", GoalKind::Value)),
         );
         if p.goal == GoalKind::Value {
-            body = body.child(mark("goal-number", Input::new(&p.goal_value).small().into_any_element()));
+            body = body.child(mark("goal-number", Input::new(&p.goal_value).small().cleanable(true).into_any_element()));
         }
         body = body
             .child(
@@ -748,7 +748,7 @@ impl SlideEditor {
                             .into_any_element(),
                     )),
             )
-            .child(mark("variables", Input::new(&p.variables).small().into_any_element()));
+            .child(mark("variables", Input::new(&p.variables).small().cleanable(true).into_any_element()));
 
         // Constraints.
         body = body.child(caption("xlsx.solver.constraints"));
@@ -791,7 +791,7 @@ impl SlideEditor {
                             .into_any_element(),
                     )),
             )
-            .child(mark("c-lhs", Input::new(&p.c_lhs).small().into_any_element()));
+            .child(mark("c-lhs", Input::new(&p.c_lhs).small().cleanable(true).into_any_element()));
         body = body.child(mark(
             "c-rel",
             Button::new("solver-rel")
@@ -817,7 +817,7 @@ impl SlideEditor {
                 })
                 .into_any_element(),
         ));
-        body = body.child(caption("xlsx.solver.constraint-value")).child(mark("c-rhs", Input::new(&p.c_rhs).small().into_any_element()));
+        body = body.child(caption("xlsx.solver.constraint-value")).child(mark("c-rhs", Input::new(&p.c_rhs).small().cleanable(true).into_any_element()));
         body = body.child(
             h_flex()
                 .gap_2()
@@ -890,7 +890,7 @@ impl SlideEditor {
             ("max-iterations", "xlsx.solver.max-iterations", &p.max_iterations),
             ("max-time", "xlsx.solver.max-time", &p.max_time),
         ] {
-            body = body.child(caption(caption_id)).child(mark(id, Input::new(entity).small().into_any_element()));
+            body = body.child(caption(caption_id)).child(mark(id, Input::new(entity).small().cleanable(true).into_any_element()));
         }
         if !p.message.is_empty() {
             body = body.child(div().text_size(px(12.)).child(SharedString::from(p.message.clone())));

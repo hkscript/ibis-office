@@ -456,6 +456,12 @@ impl SlideEditor {
     }
 
     pub(crate) fn scenario_manager_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
+        self.sheet_state()?.panels.scenario_manager.as_ref()?;
+        self.render_scenario_manager_panel(cx)
+    }
+
+    #[inline(never)]
+    fn render_scenario_manager_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
         let p = self.sheet_state()?.panels.scenario_manager.as_ref()?;
         let mark = |id: &str, child: AnyElement| {
             let ui = p.ui.clone();
@@ -630,7 +636,7 @@ impl SlideEditor {
                 body = body.child(div().text_size(px(13.)).font_weight(FontWeight::BOLD).child(text(if is_edit { "fix.protection.edit-scenarios" } else { "シナリオの追加" })));
 
                 body = body.child(div().text_size(px(12.)).child(text("_xlsx.scenario-name-colon")));
-                body = body.child(mark("scenario-name", Input::new(&p.name_input).small().into_any_element()));
+                body = body.child(mark("scenario-name", Input::new(&p.name_input).small().cleanable(true).into_any_element()));
 
                 body = body.child(
                     h_flex()
@@ -648,7 +654,7 @@ impl SlideEditor {
                         )),
                 );
                 let mut changing_row = h_flex().gap_2();
-                changing_row = changing_row.child(div().flex_1().child(mark("scenario-changing", Input::new(&p.changing_cells_input).small().into_any_element())));
+                changing_row = changing_row.child(div().flex_1().child(mark("scenario-changing", Input::new(&p.changing_cells_input).small().cleanable(true).into_any_element())));
                 changing_row = changing_row.child(mark(
                     "scenario-reload-cells",
                     Button::new("sc-reload-btn")
@@ -665,14 +671,14 @@ impl SlideEditor {
                     for (r_name, inp) in &p.values_inputs {
                         let mut r_row = h_flex().gap_2().items_center();
                         r_row = r_row.child(div().w(px(60.)).text_size(px(12.)).child(SharedString::from(r_name.clone())));
-                        r_row = r_row.child(div().flex_1().child(mark(&format!("scenario-val-{r_name}"), Input::new(inp).small().into_any_element())));
+                        r_row = r_row.child(div().flex_1().child(mark(&format!("scenario-val-{r_name}"), Input::new(inp).small().cleanable(true).into_any_element())));
                         vals_box = vals_box.child(r_row);
                     }
                     body = body.child(vals_box);
                 }
 
                 body = body.child(div().text_size(px(12.)).child(text("_xlsx.comment-colon")));
-                body = body.child(mark("scenario-comment", Input::new(&p.comment_input).small().into_any_element()));
+                body = body.child(mark("scenario-comment", Input::new(&p.comment_input).small().cleanable(true).into_any_element()));
 
                 if !p.message.is_empty() {
                     body = body.child(div().text_size(px(12.)).text_color(cx.theme().danger).child(SharedString::from(p.message.clone())));
@@ -722,7 +728,7 @@ impl SlideEditor {
                                 .into_any_element(),
                         )),
                 );
-                body = body.child(mark("scenario-result-cells", Input::new(&p.result_cells_input).small().into_any_element()));
+                body = body.child(mark("scenario-result-cells", Input::new(&p.result_cells_input).small().cleanable(true).into_any_element()));
 
                 if !p.message.is_empty() {
                     body = body.child(div().text_size(px(12.)).text_color(cx.theme().danger).child(SharedString::from(p.message.clone())));

@@ -8,6 +8,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{ActiveTheme as _, Root, Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 
 use crate::shell::editor::SlideEditor;
 use crate::shell::i18n;
@@ -42,6 +43,7 @@ fn open_window(view: impl FnOnce(&mut Window, &mut App) -> PasswordWindow, title
     };
     let options = WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), titlebar: Some(TitlebarOptions { title: Some(title), ..Default::default() }), ..Default::default() };
     let _ = cx.open_window(options, |window, cx| {
+        crate::shell::palette::watch(window, cx);
         let made = view(window, cx);
         let first = made.first.clone();
         let view = cx.new(|_| made);

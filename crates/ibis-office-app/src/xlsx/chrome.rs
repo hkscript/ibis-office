@@ -8,6 +8,7 @@
 //! line, a picture, several shapes, or the slide when nothing is selected).
 
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::{CharacterFormat, Color, Fill, GradientPath, LineSpacing, ListKind, ParagraphFormat, Rgb, ShapeKind, Stroke, TextAlign, step_font_size};
 
 use super::editing::{Align, ArrowKind, COLORS, LineKind, Order, SHAPES, SelectionKind, Tool, WIDTHS};
@@ -776,7 +777,7 @@ pub(crate) fn toolbar_right(editor: &SlideEditor) -> Vec<ToolItem> {
     fill_items.push(MenuEntry::Separator);
     fill_items.extend(fill_presets(false));
     let fill = ToolButton::new("fill", "format_color_fill", "pptx.common.fill")
-        .color(fill_color.unwrap_or(rgb(0xffffff).into()))
+        .color(fill_color.unwrap_or(crate::shell::palette::doc(0xffffff).into()))
         .menu(fill_items);
     let options = ToolButton::text("format-options", "_shell.format-options", "pptx.chrome.format-options-sidebar").click(|this, _, cx| {
         this.sidebar_open = true;
@@ -872,7 +873,7 @@ pub(crate) fn sidebar(editor: &mut SlideEditor) -> Option<SidebarPanel> {
                 Fill::None => crate::shell::i18n::text("_shell.none").to_string(),
                 Fill::Solid(c) => format!("#{:06X}", c.rgb.0),
                 Fill::Linear { .. } | Fill::TileLinear { .. } | Fill::Path { .. } => crate::shell::i18n::text("pptx.chrome.gradient").to_string(),
-                Fill::Image(_) | Fill::TileImage { .. } => crate::shell::i18n::text("pptx.chrome.picture").to_string(),
+                Fill::Image(_) | Fill::TileImage { .. } | Fill::Blip(_) => crate::shell::i18n::text("pptx.chrome.picture").to_string(),
                 Fill::Pattern { preset, .. } => crate::shell::i18n::format("pptx.chrome.pattern-preset", &[("preset", preset)]),
             };
             let line = auto.stroke.as_ref().map_or(crate::shell::i18n::text("_shell.none").to_string(), |s| {
@@ -898,7 +899,7 @@ pub(crate) fn sidebar(editor: &mut SlideEditor) -> Option<SidebarPanel> {
         Fill::None => crate::shell::i18n::text("_shell.none").to_string(),
         Fill::Solid(c) => format!("#{:06X}", c.rgb.0),
         Fill::Linear { .. } | Fill::TileLinear { .. } | Fill::Path { .. } => crate::shell::i18n::text("pptx.chrome.gradient").to_string(),
-        Fill::Image(_) | Fill::TileImage { .. } => crate::shell::i18n::text("pptx.chrome.picture").to_string(),
+        Fill::Image(_) | Fill::TileImage { .. } | Fill::Blip(_) => crate::shell::i18n::text("pptx.chrome.picture").to_string(),
         Fill::Pattern { preset, .. } => crate::shell::i18n::format("pptx.chrome.pattern-preset", &[("preset", preset)]),
     };
     let size = editor.presentation().slide_size;

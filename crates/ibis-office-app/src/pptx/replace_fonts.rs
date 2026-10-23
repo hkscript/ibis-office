@@ -9,6 +9,7 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::{Command, Presentation, ShapeKind, TextBody};
 
 use crate::pptx::SlidePopup;
@@ -88,25 +89,9 @@ pub(crate) fn presentation_used_fonts(presentation: &Presentation) -> Vec<String
 
 /// システムにインストールされておらず、プレゼンテーション内にも埋め込まれていない不足フォントを検出する。
 pub(crate) fn presentation_missing_fonts(presentation: &Presentation) -> Vec<String> {
-    let used = presentation_used_fonts(presentation);
-    let embedded_names: std::collections::HashSet<&str> = presentation.fonts.iter().map(|f| f.typeface.as_str()).collect();
-    let system = crate::render::shape_view::system_font_names();
-    used.into_iter()
-        .filter(|f| {
-            let name = f.as_str();
-            if embedded_names.contains(name) {
-                return false;
-            }
-            if let Some(sys) = system {
-                if sys.contains(name) {
-                    return false;
-                }
-                if name == "Carlito" || (name == "Calibri" && sys.contains("Carlito")) {
-                    return false;
-                }
-            }
-            true
-        })
+    presentation_used_fonts(presentation)
+        .into_iter()
+        .filter(|f| !crate::render::shape_view::is_presentation_font_available(f, presentation))
         .collect()
 }
 
@@ -560,7 +545,7 @@ impl SlideEditor {
 
         // 置換前のフォント
         body = body.child(div().text_size(px(12.)).text_color(rgb(0x5f6368)).child(crate::shell::i18n::text("pptx.replace-fonts.with")));
-        body = body.child(Input::new(&target).small());
+        body = body.child(Input::new(&target).small().cleanable(true));
 
         // 現在使用されているフォント候補の表示（クリックで選択可能）
         if !used_fonts.is_empty() {
@@ -595,7 +580,7 @@ impl SlideEditor {
 
         // 置換後のフォント / 代替先フォント
         body = body.child(div().text_size(px(12.)).text_color(rgb(0x5f6368)).child(crate::shell::i18n::text("pptx.replace-fonts.replace")));
-        body = body.child(Input::new(&replacement).small());
+        body = body.child(Input::new(&replacement).small().cleanable(true));
 
         // 設定中の代替フォント一覧
         let subs = self.presentation().font_substitutions.clone();

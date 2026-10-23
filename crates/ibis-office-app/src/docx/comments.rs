@@ -10,6 +10,7 @@ use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::flow_command::{self, CommentAuthor};
 use ibis_doc_model::{Block, FlowDocument, FlowPos};
 
@@ -113,8 +114,8 @@ impl SlideEditor {
                     .placeholder(crate::shell::i18n::text("_shell.type-a-comment-and-press-enter"))
             });
             let subscription = cx.subscribe_in(&input, window, |this, input, event: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter { secondary, shift } = event {
-                    if *secondary || *shift {
+                if let InputEvent::PressEnter { secondary, .. } = event {
+                    if *secondary {
                         let text = input.read(cx).value().to_string();
                         this.send_comment(&text, window, cx);
                     }

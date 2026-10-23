@@ -328,9 +328,9 @@ impl SlideEditor {
         let mut body = v_flex().gap_2().px(px(18.)).py(px(8.))
             .child(div().text_size(px(12.)).child(SharedString::from(crate::shell::i18n::format("_xlsx.applies-to-range", &[("range", &range)]))))
             .child(mark("kind", Button::new("conditional-kind").small().label(kind_label).dropdown_menu(move|m,window,cx|fill_menu(m.min_w(px(200.)),&choices,&editor,window,cx)).into_any_element()))
-            .child(mark("range", Input::new(&p.range).small().into_any_element()))
-            .child(mark("formula", Input::new(&p.formula).small().into_any_element()))
-            .when(top10.is_none() && p.kind.is_some_and(|k|k>=6), |d| d.child(mark("formula2",Input::new(&p.formula2).small().into_any_element())))
+            .child(mark("range", Input::new(&p.range).small().cleanable(true).into_any_element()))
+            .child(mark("formula", Input::new(&p.formula).small().cleanable(true).into_any_element()))
+            .when(top10.is_none() && p.kind.is_some_and(|k|k>=6), |d| d.child(mark("formula2",Input::new(&p.formula2).small().cleanable(true).into_any_element())))
             .when_some(top10, |d, (bottom, percent)| {
                 d.child(h_flex().gap_1()
                     .child(mark("top10-bottom", Button::new("conditional-top10-bottom").small().label(if bottom { crate::shell::i18n::text("_xlsx.cf-bottom") } else { crate::shell::i18n::text("_xlsx.cf-top") }).on_click(cx.listener(|this, _, _, cx| {
@@ -360,9 +360,9 @@ impl SlideEditor {
                     .child(mark("preset-red-text", Button::new("conditional-preset-red-text").small().label(crate::shell::i18n::text("xlsx.cf.preset-red-text")).on_click(cx.listener(|this, _, window, cx| this.apply_conditional_preset("", "9C0006", window, cx))).into_any_element()))
             )
             .child(crate::shell::i18n::text("_xlsx.fill-color-rgb"))
-            .child(mark("fill", Input::new(&p.fill).small().into_any_element()))
+            .child(mark("fill", Input::new(&p.fill).small().cleanable(true).into_any_element()))
             .child(crate::shell::i18n::text("xlsx.cf.text-color-rgb"))
-            .child(mark("text-color", Input::new(&p.text_color).small().into_any_element()))
+            .child(mark("text-color", Input::new(&p.text_color).small().cleanable(true).into_any_element()))
             .child(
                 h_flex().gap_1()
                     .child(mark("bold", Button::new("conditional-bold").small().when(is_bold, |b| b.primary()).label("B").on_click(cx.listener(|this, _, _, cx| {

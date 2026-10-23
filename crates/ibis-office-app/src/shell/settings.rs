@@ -18,6 +18,10 @@ mod store {
         if let Some(dir) = env("IBIS_SETTINGS_DIR") {
             return Some(dir.join("settings.txt"));
         }
+        // The scenarios keep the settings apart from the user's own.
+        if let Some(dir) = crate::shell::app_data::scenario_dir() {
+            return Some(dir.join("settings.txt"));
+        }
         #[cfg(target_os = "macos")]
         let base = env("HOME").map(|home| home.join("Library/Application Support"));
         #[cfg(target_os = "windows")]

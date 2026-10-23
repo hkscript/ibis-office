@@ -397,7 +397,7 @@ impl SlideEditor {
                 Box::new(|p| p.fixed = !p.fixed),
             ))
             .child(crate::shell::i18n::text("_xlsx.start-at-row"))
-            .child(mark("start-row", Input::new(&p.start_row).small().into_any_element()))
+            .child(mark("start-row", Input::new(&p.start_row).small().cleanable(true).into_any_element()))
             .child(crate::shell::i18n::text("_xlsx.column-data-format-click-to-change"));
         let shown = preview.iter().map(Vec::len).max().unwrap_or(0).min(8);
         let mut types = h_flex().gap_1().flex_wrap();
@@ -426,7 +426,7 @@ impl SlideEditor {
             ));
         }
         if p.fixed {
-            body = body.child(crate::shell::i18n::text("import-text.breaks")).child(mark("breaks", Input::new(&p.breaks).small().into_any_element()));
+            body = body.child(crate::shell::i18n::text("import-text.breaks")).child(mark("breaks", Input::new(&p.breaks).small().cleanable(true).into_any_element()));
         }
         body = body.child(button(
             "import-text-new-sheet".into(),
@@ -434,7 +434,7 @@ impl SlideEditor {
             Box::new(|p| p.new_sheet = !p.new_sheet),
         ));
         if !p.new_sheet {
-            body = body.child(crate::shell::i18n::text("fix.text-columns.destination")).child(mark("destination", Input::new(&p.destination).small().into_any_element()));
+            body = body.child(crate::shell::i18n::text("fix.text-columns.destination")).child(mark("destination", Input::new(&p.destination).small().cleanable(true).into_any_element()));
         }
         body = body.child(crate::shell::i18n::text("fix.text-columns.preview"));
         // The preview as a table: a cell for each field, the columns the file has (up to 8).

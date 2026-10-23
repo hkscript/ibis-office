@@ -8,6 +8,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::{Command, ShapeId, ShapeKind};
 
 use crate::shell::chrome::SidebarPanel;
@@ -124,8 +125,8 @@ impl SlideEditor {
         let (height, width, error) = (p.height.clone(), p.width.clone(), p.error.clone());
         let t = crate::shell::i18n::text;
         let mut body = v_flex().gap_2().px(px(18.)).py(px(8.));
-        body = body.child(div().text_size(px(13.)).child(t("pptx.cell-size-panel.row-height-cm"))).child(Input::new(&height).small());
-        body = body.child(div().text_size(px(13.)).child(t("pptx.cell-size-panel.column-width-cm"))).child(Input::new(&width).small());
+        body = body.child(div().text_size(px(13.)).child(t("pptx.cell-size-panel.row-height-cm"))).child(Input::new(&height).small().cleanable(true));
+        body = body.child(div().text_size(px(13.)).child(t("pptx.cell-size-panel.column-width-cm"))).child(Input::new(&width).small().cleanable(true));
         if let Some(error) = error {
             body = body.child(div().text_size(px(12.)).text_color(rgb(0xb3261e)).child(error));
         }

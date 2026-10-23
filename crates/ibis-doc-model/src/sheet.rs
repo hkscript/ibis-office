@@ -742,6 +742,42 @@ impl<'a> IntoIterator for &'a mut Cells {
     }
 }
 
+/// Workbook-level context cached on each [`Sheet`] so single-sheet consumers
+/// (such as conditional formatting evaluation) can resolve defined names,
+/// cross-sheet references, the sheet's own index/name, and the 1904 date system.
+#[derive(Debug, Clone, Default)]
+pub struct SheetBookContext {
+    pub sheet_name: String,
+    pub sheet_index: usize,
+    pub defined_names: std::sync::Arc<[DefinedName]>,
+    pub date1904: bool,
+    pub sheets: std::sync::Arc<[(String, Cells)]>,
+}
+
+impl SheetBookContext {
+    /// Whether two contexts carry identical workbook state and sheet cell content IDs.
+    pub fn exact_eq(&self, other: &Self) -> bool {
+        self.sheet_name == other.sheet_name
+            && self.sheet_index == other.sheet_index
+            && self.date1904 == other.date1904
+            && self.defined_names == other.defined_names
+            && self.sheets.len() == other.sheets.len()
+            && self
+                .sheets
+                .iter()
+                .zip(other.sheets.iter())
+                .all(|((na, ca), (nb, cb))| na == nb && ca.content_id() == cb.content_id())
+    }
+}
+
+impl PartialEq for SheetBookContext {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for SheetBookContext {}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sheet {
     /// Column widths, in EMU (0 for a hidden column).
@@ -854,6 +890,8 @@ pub struct Sheet {
     pub show_zeros: bool,
     /// インクの非表示.
     pub hide_ink: bool,
+    /// Cached workbook context for single-sheet evaluation (conditional formatting, etc.).
+    pub book_context: SheetBookContext,
 }
 
 impl Default for Sheet {
@@ -907,6 +945,7 @@ impl Default for Sheet {
             show_formulas: false,
             show_zeros: true,
             hide_ink: false,
+            book_context: SheetBookContext::default(),
         }
     }
 }
@@ -2080,5 +2119,14 @@ impl Default for ProtectionAllowed {
             objects: false,
             scenarios: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod size_tests {
+    /// A million-row CSV is 21 million cells: every byte of a cell is 21 MB of memory.
+    #[test]
+    fn a_cell_stays_small() {
+        assert!(std::mem::size_of::<super::SheetCell>() <= 112, "SheetCell is {} bytes", std::mem::size_of::<super::SheetCell>());
     }
 }

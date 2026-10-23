@@ -9,6 +9,7 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::component::{Disableable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::math::{Math, parse_latex, parse_linear};
 use ibis_doc_model::{EmuRect, Paragraph, Run, RunStyle, Shape, ShapeKind, TextAlign, TextBody, TextStyle};
 
@@ -316,7 +317,7 @@ impl SlideEditor {
                     }),
             )
             .child(div().text_size(px(13.)).child(text("pptx.math.hint")))
-            .child(Input::new(&input).small())
+            .child(Input::new(&input).small().cleanable(true))
             .children(typeset.map(|c| div().w_full().h(px(96.)).border_1().border_color(rgb(0xd0d0d0)).child(c)))
             .child(div().text_size(px(12.)).child(SharedString::from(format!("UnicodeMath: {preview_linear}"))))
             .child(div().text_size(px(12.)).text_color(text_secondary()).child(SharedString::from(format!("LaTeX: {preview_latex}"))))

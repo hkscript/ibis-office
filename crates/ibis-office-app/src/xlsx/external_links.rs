@@ -11,6 +11,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{Icon, Sizable as _, h_flex, v_flex};
 use crate::shell::icons::Material;
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::{Command, SheetCommand};
 
 pub(crate) struct ExternalLinksPanel {

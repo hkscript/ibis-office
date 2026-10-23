@@ -425,7 +425,7 @@ impl SlideEditor {
                     h_flex()
                         .gap_2()
                         .items_center()
-                        .child(Input::new(&p.date_start).small())
+                        .child(Input::new(&p.date_start).small().cleanable(true))
                         .child(
                             Checkbox::new("pivot-group-date-auto-start")
                                 .label(text("_shell.auto"))
@@ -443,7 +443,7 @@ impl SlideEditor {
                     h_flex()
                         .gap_2()
                         .items_center()
-                        .child(Input::new(&p.date_end).small())
+                        .child(Input::new(&p.date_end).small().cleanable(true))
                         .child(
                             Checkbox::new("pivot-group-date-auto-end")
                                 .label(text("_shell.auto"))
@@ -463,7 +463,7 @@ impl SlideEditor {
                     h_flex()
                         .gap_2()
                         .items_center()
-                        .child(Input::new(&p.num_start).small())
+                        .child(Input::new(&p.num_start).small().cleanable(true))
                         .child(
                             Checkbox::new("pivot-group-num-auto-start")
                                 .label(text("_shell.auto"))
@@ -481,7 +481,7 @@ impl SlideEditor {
                     h_flex()
                         .gap_2()
                         .items_center()
-                        .child(Input::new(&p.num_end).small())
+                        .child(Input::new(&p.num_end).small().cleanable(true))
                         .child(
                             Checkbox::new("pivot-group-num-auto-end")
                                 .label(text("_shell.auto"))
@@ -495,7 +495,7 @@ impl SlideEditor {
                         )
                 )
                 .child(div().text_size(px(13.)).child(text("_xlsx.units")))
-                .child(Input::new(&p.num_interval).small());
+                .child(Input::new(&p.num_interval).small().cleanable(true));
         }
 
         body = body

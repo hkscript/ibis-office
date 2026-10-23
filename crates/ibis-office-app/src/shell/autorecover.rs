@@ -13,6 +13,7 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 
 use crate::shell::chrome::SidebarPanel;
 use crate::shell::editor::SlideEditor;
@@ -45,13 +46,7 @@ impl Default for AutoRecoverConfig {
 
 /// The default directory for AutoRecover files.
 pub(crate) fn default_autorecover_dir() -> PathBuf {
-    let env = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
-    #[cfg(target_os = "macos")]
-    let base = env("HOME").map(|home| home.join("Library/Application Support"));
-    #[cfg(target_os = "windows")]
-    let base = env("APPDATA");
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let base = env("XDG_DATA_HOME").or_else(|| env("HOME").map(|home| home.join(".local/share")));
+    let base = crate::shell::app_data::base();
     let dir = base.unwrap_or_else(|| PathBuf::from(".")).join("ibisOffice").join("AutoRecover");
     let _ = std::fs::create_dir_all(&dir);
     dir
@@ -59,13 +54,7 @@ pub(crate) fn default_autorecover_dir() -> PathBuf {
 
 /// Where the config file is stored.
 fn config_store_path() -> Option<PathBuf> {
-    let env = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
-    #[cfg(target_os = "macos")]
-    let base = env("HOME").map(|home| home.join("Library/Application Support"));
-    #[cfg(target_os = "windows")]
-    let base = env("APPDATA");
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let base = env("XDG_DATA_HOME").or_else(|| env("HOME").map(|home| home.join(".local/share")));
+    let base = crate::shell::app_data::base();
     Some(base?.join("ibisOffice").join("autorecover-config.tsv"))
 }
 
@@ -375,7 +364,13 @@ impl SlideEditor {
         self.autorecover_off = disable;
         if self.is_document() {
             let freq = if disable { Some(0) } else { Some(interval_minutes) };
-            self.run_flow(vec![ibis_doc_model::FlowCommand::SetSaveFrequency(freq)], cx);
+            // Setting the interval is not an edit: on an unedited document it does not start an undo history
+            // (the document stays unmodified, so the timer has nothing to save).
+            if self.document.can_undo() {
+                self.run_flow(vec![ibis_doc_model::FlowCommand::SetSaveFrequency(freq)], cx);
+            } else if let Some(flow) = self.document.ids().flow.as_mut() {
+                std::sync::Arc::make_mut(flow).save_frequency = freq;
+            }
         }
         message(self, text("shell.autorecover.saved").to_string());
         cx.notify();

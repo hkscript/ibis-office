@@ -82,7 +82,7 @@ impl SlideEditor {
     }
     pub(crate) fn font_panel(&mut self,cx:&mut Context<Self>)->Option<SidebarPanel> {
         let edit=self.doc_state()?.font_edit.as_ref()?;
-        let row=|label:&'static str,field:&Entity<InputState>|h_flex().gap_2().child(div().w(px(140.)).text_sm().child(crate::shell::i18n::text(label))).child(Input::new(field).small());
+        let row=|label:&'static str,field:&Entity<InputState>|h_flex().gap_2().child(div().w(px(140.)).text_sm().child(crate::shell::i18n::text(label))).child(Input::new(field).small().cleanable(true));
         let body=v_flex().gap_2().px(px(18.)).py(px(8.))
             .child(div().text_sm().child(crate::shell::i18n::text("docx.font-panel.blank-means-not-specified-mixed")))
             .child(row("docx.font-panel.latin-font",&edit.fields[0]))

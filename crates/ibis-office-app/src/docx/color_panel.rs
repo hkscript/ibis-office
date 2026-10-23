@@ -53,7 +53,7 @@ impl SlideEditor {
         let edit=self.doc_state()?.color_edit.as_ref()?;
         let body=v_flex().gap_2().px(px(18.)).py(px(8.))
             .child(div().text_sm().child(crate::shell::i18n::text("docx.color-panel.rgb-6-digit-hex")))
-            .child(Input::new(&edit.field).small())
+            .child(Input::new(&edit.field).small().cleanable(true))
             .children(edit.error.clone().map(|error|div().text_sm().child(error)))
             .child(Button::new("docx-color-apply").primary().small().label(crate::shell::i18n::text("_shell.apply")).on_click(cx.listener(|this,_,window,cx|this.apply_color_edit(window,cx))));
         Some(SidebarPanel {title:crate::shell::i18n::text(if edit.underline {"docx.color-panel.underline-color"} else {"docx.toolbar.automatic"}),body:body.into_any_element()})

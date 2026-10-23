@@ -481,3 +481,7 @@ fix.formula-bar.collapse	Collapse Formula Bar
 xlsx.chart-type	Chart Type
 fix.validation.continue	Continue?
 fix.validation.cancel	Cancel
+fix.move.overwrite	Do you want to replace the contents of the destination cells?
+fix.move.ok	OK
+fix.menu.search-placeholder	Search
+fix.menu.not-found	Not found

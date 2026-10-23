@@ -13,6 +13,7 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::{Command, FontSet, Rgb, ThemeFonts};
 
 use crate::pptx::SlidePopup;
@@ -455,10 +456,10 @@ impl SlideEditor {
         body = body.child(label(&t("pptx.theme.effects"))).child(effects_row);
 
         for (_, name, input) in &panel.colors {
-            body = body.child(label(&t(name))).child(Input::new(input).small());
+            body = body.child(label(&t(name))).child(Input::new(input).small().cleanable(true));
         }
         for (name, input) in [("pptx.theme-panel.heading-font-latin", &panel.fonts[0]), ("pptx.theme-panel.heading-font-east-asian", &panel.fonts[1]), ("pptx.theme-panel.body-font-latin", &panel.fonts[2]), ("pptx.theme-panel.body-font-east-asian", &panel.fonts[3])] {
-            body = body.child(label(&t(name))).child(Input::new(input).small());
+            body = body.child(label(&t(name))).child(Input::new(input).small().cleanable(true));
         }
         if let Some(error) = &panel.error {
             body = body.child(div().text_size(px(12.)).text_color(rgb(0xb3261e)).child(error.clone()));

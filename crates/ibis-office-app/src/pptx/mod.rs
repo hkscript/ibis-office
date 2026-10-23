@@ -35,7 +35,11 @@ pub(crate) mod paragraph_panel;
 pub(crate) mod interaction;
 pub(crate) mod notes;
 #[cfg(all(any(target_os = "macos", target_os = "linux"), feature = "scenarios"))]
+#[path = "../tests/pptx/scenarios.rs"]
 pub(crate) mod scenarios;
+#[cfg(all(target_os = "macos", feature = "scenarios"))]
+#[path = "../tests/pptx/corpus_report.rs"]
+pub(crate) mod corpus_report;
 pub(crate) mod slide_view;
 pub(crate) mod size_panel;
 pub(crate) mod section_panel;
@@ -466,6 +470,11 @@ impl FormatEditor for Presentation {
 
     fn toolbar_right(editor: &SlideEditor) -> Option<Vec<ToolItem>> {
         Some(chrome::toolbar_right(editor))
+    }
+
+    /// Opened with no panel chosen, the pane shows the slide's or the shape's size and position (chrome::sidebar).
+    fn sidebar_on_request() -> bool {
+        true
     }
 
     fn sidebar(editor: &mut SlideEditor, _window: &mut Window, cx: &mut Context<SlideEditor>) -> Option<SidebarPanel> {

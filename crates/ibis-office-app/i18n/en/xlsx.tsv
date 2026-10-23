@@ -2519,3 +2519,84 @@ xlsx.size.preset-default-column	8.43 characters (Default)
 _xlsx.data-validation	Data Validation
 _xlsx.clear-all	Clear All
 _xlsx.remove-duplicates	Remove Duplicates
+xlsx.shape-panel.fill-color	Fill color (RRGGBB, empty for none)
+xlsx.shape-panel.outline-color	Outline color (RRGGBB, empty for none)
+xlsx.shape-panel.outline-width	Outline width (pt)
+xlsx.shape-panel.text-size	Text size (pt)
+xlsx.shape-panel.title	Format Shape
+xlsx.paste-options-button	Paste Options
+xlsx.qa.button	Quick Analysis
+xlsx.qa.formatting	Formatting
+xlsx.qa.charts	Charts
+xlsx.qa.totals	Totals
+xlsx.qa.tables	Tables
+xlsx.qa.sparklines	Sparklines
+xlsx.fndesc.sum	Adds up numbers
+xlsx.fndesc.average	Finds the mean of numbers
+xlsx.fndesc.count	Counts the cells that hold numbers
+xlsx.fndesc.counta	Counts the cells that are not empty
+xlsx.fndesc.max	Finds the largest number
+xlsx.fndesc.min	Finds the smallest number
+xlsx.fndesc.if	Gives one value or another, by whether a condition holds
+xlsx.fndesc.iferror	Gives another value only when a formula ends in an error
+xlsx.fndesc.ifs	Tries several conditions in turn and gives the value of the first that holds
+xlsx.fndesc.and	Checks that all the conditions hold
+xlsx.fndesc.or	Checks that at least one condition holds
+xlsx.fndesc.not	Turns true into false and false into true
+xlsx.fndesc.vlookup	Looks a value up in the left column of a table and gives the value from another column of that row
+xlsx.fndesc.xlookup	Looks a value up in a range and gives the matching value from another range
+xlsx.fndesc.hlookup	Looks a value up in the top row of a table and gives the value from another row of that column
+xlsx.fndesc.index	Gives the value at a given row and column of a range
+xlsx.fndesc.match	Gives the position of a value within a range
+xlsx.fndesc.countif	Counts the cells that meet a condition
+xlsx.fndesc.sumif	Adds up only the cells that meet a condition
+xlsx.fndesc.averageif	Finds the mean of only the cells that meet a condition
+xlsx.fndesc.countifs	Counts the cells that meet all of several conditions
+xlsx.fndesc.sumifs	Adds up only the cells that meet all of several conditions
+xlsx.fndesc.round	Rounds a number to a given number of digits
+xlsx.fndesc.roundup	Rounds a number up to a given number of digits
+xlsx.fndesc.rounddown	Rounds a number down to a given number of digits
+xlsx.fndesc.int	Drops the decimals, leaving a whole number
+xlsx.fndesc.abs	Gives the size of a number without its sign
+xlsx.fndesc.mod	Gives what is left over from a division
+xlsx.fndesc.power	Raises a number to a power
+xlsx.fndesc.sqrt	Gives the square root of a number
+xlsx.fndesc.concat	Joins the text of several strings or ranges
+xlsx.fndesc.textjoin	Joins several pieces of text with a separator between them
+xlsx.fndesc.left	Takes a number of characters from the start of text
+xlsx.fndesc.right	Takes a number of characters from the end of text
+xlsx.fndesc.mid	Takes a number of characters from the middle of text
+xlsx.fndesc.len	Gives how long a text is
+xlsx.fndesc.trim	Removes the extra spaces from text
+xlsx.fndesc.upper	Turns letters into capitals
+xlsx.fndesc.lower	Turns letters into small letters
+xlsx.fndesc.text	Turns a number into text in a given number format
+xlsx.fndesc.value	Turns text that looks like a number into a number
+xlsx.fndesc.today	Gives today's date
+xlsx.fndesc.now	Gives the date and time now
+xlsx.fndesc.date	Builds a date from a year, a month and a day
+xlsx.fndesc.year	Takes the year out of a date
+xlsx.fndesc.month	Takes the month out of a date
+xlsx.fndesc.day	Takes the day out of a date
+xlsx.fndesc.filter	Takes out only the rows that meet a condition
+xlsx.fndesc.sort	Gives a range sorted
+xlsx.fndesc.unique	Gives the list of values with the repeats removed
+xlsx.function.title	Insert Function
+xlsx.function.search	Search by name or by what you want to do
+xlsx.function.pick	Choose a function
+xlsx.function.argument	Argument {n}
+xlsx.function.optional	 (optional)
+xlsx.function.add-argument	Add Argument
+xlsx.function.result	Result: {value}
+xlsx.function.ok	OK
+xlsx.word-count.selection	Selection
+xlsx.word-count.sheet	Entire sheet
+xlsx.word-count.cells	Cells with data
+xlsx.page-break-preview-page	Page {page}
+_xlsx.headings	Show Headings
+xlsx.delete-menu	Delete
+xlsx.sheet-menu	Sheet
+xlsx.view-mode	View Mode
+xlsx.insert-cells-menu	Insert
+xlsx.notes-comments-menu	Notes/Comments
+xlsx.recommended-charts.empty	No numeric data in selection; inserts a chart with sample data.

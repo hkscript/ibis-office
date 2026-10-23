@@ -930,6 +930,7 @@ fn test_chart_trendline_and_error_bars_round_trip() {
             no_end_cap: false,
             value: Some(ibis_doc_model::Number(5.0)),
             stroke: None,
+            ..Default::default()
         });
     }
 
@@ -9571,3 +9572,43 @@ fn slide_sldimg_and_hdr_placeholder_roundtrip() {
 }
 
 
+
+/// Issue #16: an empty `<a:effectLst/>` in a shape's `spPr` turns off the theme's effect its `<p:style>` names (`effectRef`):
+/// no shadow, where the same shape without it has the theme's (the fixture's third effect style is an outer shadow).
+#[test]
+fn an_empty_effect_list_turns_off_the_themes_shadow() {
+    let mut s = Scenario::open("empty-effect-list", "editing/pptx-plan.pptx");
+    let slide = s.p().slides[0].id;
+    let index = s.p().slides[0].shapes.len();
+    let id = s.document.ids().new_shape_id();
+    let auto = AutoShape::new(Geometry::Rect, Fill::Solid(Color::BLACK), None);
+    let saved = s.run(vec![Command::InsertShape { slide, index, shape: Shape::new(id, EmuRect::new(500_000, 500_000, 2_000_000, 1_000_000), ShapeKind::Auto(auto)) }]);
+    let with_style = |empty_list: bool| -> Option<ibis_doc_model::Shadow> {
+        let mut package = ibis_ooxml::Package::open(saved.clone()).unwrap();
+        let xml = package.xml_mut("ppt/slides/slide1.xml").unwrap();
+        let root = xml.root_element().unwrap();
+        let sp = xml.descendants(root).into_iter().filter(|&n| xml.is_element(n) && xml.local_name(n) == "sp").last().unwrap();
+        let sp_pr = xml.child(sp, "spPr").unwrap();
+        if empty_list {
+            xml.append_element(sp_pr, "a:effectLst");
+        }
+        let style = xml.append_element(sp, "p:style");
+        xml.insert_after(sp_pr, style);
+        for (name, idx) in [("a:lnRef", "0"), ("a:fillRef", "0"), ("a:effectRef", "3")] {
+            let r = xml.append_element(style, name);
+            xml.set_attr(r, "idx", idx);
+            let color = xml.append_element(r, "a:schemeClr");
+            xml.set_attr(color, "val", "accent1");
+        }
+        let font = xml.append_element(style, "a:fontRef");
+        xml.set_attr(font, "idx", "minor");
+        let data = package.save(SaveOptions::default()).unwrap();
+        let opened = ibis_pptx::open(data).unwrap();
+        match &opened.presentation.slides[0].shapes[index].kind {
+            ShapeKind::Auto(a) => a.shadow,
+            _ => panic!("auto"),
+        }
+    };
+    assert!(with_style(false).is_some(), "the theme's shadow, named by effectRef");
+    assert!(with_style(true).is_none(), "an empty effectLst turns it off");
+}

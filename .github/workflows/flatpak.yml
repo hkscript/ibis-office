@@ -1,0 +1,157 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) ibis inc.
+# Additional terms under AGPL-3.0 section 7(b): see NOTICE.
+name: Build Linux Packages (AppImage & Flatpak)
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Optional GitHub release tag to upload the Linux packages to (e.g. v0.8.4)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  appimage:
+    name: AppImage (x86_64, glibc 2.31)
+    runs-on: ubuntu-24.04
+    container:
+      image: ubuntu:20.04
+      env:
+        DEBIAN_FRONTEND: noninteractive
+
+    steps:
+      - name: Install system build dependencies
+        run: |
+          apt-get update
+          apt-get install -y \
+            ca-certificates \
+            curl \
+            git \
+            python3 \
+            build-essential \
+            pkg-config \
+            libfontconfig1-dev \
+            libfreetype-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev
+
+      - name: Checkout repository and submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-directories: target/dist
+
+      - name: Build AppImage
+        run: scripts/bundle-linux.sh --release
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ibisOffice-AppImage-x86_64
+          path: |
+            target/dist/ibisOffice-*-Linux.AppImage
+            target/dist/ibisOffice-*-Linux.AppImage.sha256
+
+      - name: Attach AppImage to GitHub Release
+        if: github.event_name == 'release' || inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+        run: |
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+          chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list
+          apt-get update && apt-get install -y gh
+          gh release upload "$TAG" \
+            target/dist/ibisOffice-*-Linux.AppImage \
+            target/dist/ibisOffice-*-Linux.AppImage.sha256 \
+            --clobber
+
+  flatpak:
+    name: Flatpak (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout repository and submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system build and Flatpak dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            libfontconfig1-dev \
+            libfreetype-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            flatpak \
+            flatpak-builder
+
+      - name: Install Flathub runtime and SDK
+        run: |
+          sudo flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          sudo flatpak install -y --system flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-directories: target/dist
+
+      - name: Build Flatpak bundle
+        run: scripts/bundle-flatpak.sh --release
+
+      - name: Upload Flatpak artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ibisOffice-Flatpak-${{ matrix.arch }}
+          path: |
+            target/dist/ibisOffice-*-Linux-${{ matrix.arch }}.flatpak
+            target/dist/ibisOffice-*-Linux-${{ matrix.arch }}.flatpak.sha256
+
+      - name: Attach Flatpak to GitHub Release
+        if: github.event_name == 'release' || inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+        run: |
+          gh release upload "$TAG" \
+            target/dist/ibisOffice-*-Linux-${{ matrix.arch }}.flatpak \
+            target/dist/ibisOffice-*-Linux-${{ matrix.arch }}.flatpak.sha256 \
+            --clobber

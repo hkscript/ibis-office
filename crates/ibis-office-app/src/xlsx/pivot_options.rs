@@ -238,7 +238,7 @@ impl SlideEditor {
             v_flex()
                 .gap_1()
                 .child(div().text_size(px(12.)).font_weight(FontWeight::BOLD).child(text("_xlsx.pivottable-name")))
-                .child(mark("xlsx.pivot-options.name", Input::new(&p.name).small().into_any_element())),
+                .child(mark("xlsx.pivot-options.name", Input::new(&p.name).small().cleanable(true).into_any_element())),
         );
 
         // 2. レイアウトと書式
@@ -348,7 +348,7 @@ impl SlideEditor {
                                 }))
                                 .into_any_element(),
                         ))
-                        .child(div().w(px(120.)).child(mark("xlsx.pivot-options.grand-caption", Input::new(&p.grand_total_caption).small().into_any_element()))),
+                        .child(div().w(px(120.)).child(mark("xlsx.pivot-options.grand-caption", Input::new(&p.grand_total_caption).small().cleanable(true).into_any_element()))),
                 ),
         );
 
@@ -374,7 +374,7 @@ impl SlideEditor {
                                 }))
                                 .into_any_element(),
                         ))
-                        .child(div().w(px(120.)).child(mark("xlsx.pivot-options.row-caption", Input::new(&p.row_header_caption).small().into_any_element()))),
+                        .child(div().w(px(120.)).child(mark("xlsx.pivot-options.row-caption", Input::new(&p.row_header_caption).small().cleanable(true).into_any_element()))),
                 )
                 .child(
                     h_flex()
@@ -393,7 +393,7 @@ impl SlideEditor {
                                 }))
                                 .into_any_element(),
                         ))
-                        .child(div().w(px(120.)).child(mark("xlsx.pivot-options.col-caption", Input::new(&p.col_header_caption).small().into_any_element()))),
+                        .child(div().w(px(120.)).child(mark("xlsx.pivot-options.col-caption", Input::new(&p.col_header_caption).small().cleanable(true).into_any_element()))),
                 )
                 .child(
                     h_flex()
@@ -412,7 +412,7 @@ impl SlideEditor {
                                 }))
                                 .into_any_element(),
                         ))
-                        .child(div().w(px(100.)).child(mark("xlsx.pivot-options.missing-caption", Input::new(&p.missing_caption).small().into_any_element()))),
+                        .child(div().w(px(100.)).child(mark("xlsx.pivot-options.missing-caption", Input::new(&p.missing_caption).small().cleanable(true).into_any_element()))),
                 )
                 .child(
                     h_flex()
@@ -431,7 +431,7 @@ impl SlideEditor {
                                 }))
                                 .into_any_element(),
                         ))
-                        .child(div().w(px(100.)).child(mark("xlsx.pivot-options.error-caption", Input::new(&p.error_caption).small().into_any_element()))),
+                        .child(div().w(px(100.)).child(mark("xlsx.pivot-options.error-caption", Input::new(&p.error_caption).small().cleanable(true).into_any_element()))),
                 ),
         );
 

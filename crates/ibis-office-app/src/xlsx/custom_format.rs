@@ -204,12 +204,21 @@ impl SlideEditor {
         self.open_cell_format_with(tab, true, window, cx);
     }
 
+    /// The pane following the selection (right_pane.rs): the cell format, without taking the keyboard from the sheet.
+    pub(crate) fn open_custom_format_unfocused(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_cell_format_focus(FormatTab::Number, false, false, window, cx);
+    }
+
     fn open_cell_format_with(&mut self, tab: FormatTab, show: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_cell_format_focus(tab, show, true, window, cx);
+    }
+
+    fn open_cell_format_focus(&mut self, tab: FormatTab, show: bool, focus: bool, window: &mut Window, cx: &mut Context<Self>) {
         let style = self.current_style();
         let code = cx.new(|cx| InputState::new(window, cx).placeholder("#,##0"));
         code.update(cx, |i, cx| {
             i.set_value(style.number_format.clone(), window, cx);
-            if tab == FormatTab::Number {
+            if focus && tab == FormatTab::Number {
                 i.focus(window, cx);
             }
         });
@@ -322,7 +331,7 @@ impl SlideEditor {
                     section = section
                         .child(pane.select("cell-format-number", None, current, items))
                         .child(caption("_xlsx.number-format-custom"))
-                        .child(Input::new(&code).small())
+                        .child(Input::new(&code).small().cleanable(true))
                         .child(div().text_size(px(12.)).child(SharedString::from(format!("{}{sample}", crate::shell::i18n::text("_xlsx.sample")))))
                         .child(Button::new("custom-format-apply").primary().small().label(text("_xlsx.apply-to-selection")).on_click(cx.listener(move |this, _, _, cx| {
                             let code = c2.read(cx).value().trim().to_string();
@@ -367,7 +376,7 @@ impl SlideEditor {
                         .child(caption("_xlsx.text-direction"))
                         .child(h_flex().gap_1().items_center()
                             .child(div().flex_1().child(pane.select("cell-format-rotation", None, t_label, t_items)))
-                            .child(div().w(px(56.)).child(pane.marked("cell-format-rotation-input", Input::new(&rotation).small())))
+                            .child(div().w(px(56.)).child(pane.marked("cell-format-rotation-input", Input::new(&rotation).small().cleanable(true))))
                             .child(pane.marked("cell-format-rotation-set", Button::new("cell-format-rotation-set").small().label(text("_xlsx.apply")).on_click(cx.listener(move |this, _, _, cx| {
                                 let val = r2.read(cx).value().trim().to_string();
                                 this.apply_pane_rotation(&val, cx);
@@ -403,7 +412,7 @@ impl SlideEditor {
                     section = section
                         .child(caption("_xlsx.font-name"))
                         .child(h_flex().gap_1()
-                            .child(div().flex_1().child(Input::new(&font).small()))
+                            .child(div().flex_1().child(Input::new(&font).small().cleanable(true)))
                             .child(Button::new("cell-format-font-set").small().label(text("_xlsx.set-font")).on_click(cx.listener(move |this, _, _, cx| {
                                 let name = f2.read(cx).value().trim().to_string();
                                 this.format_cells(StyleChange::Font((!name.is_empty()).then_some(name)), cx);
@@ -411,7 +420,7 @@ impl SlideEditor {
                         .child(caption("_xlsx.size-points"))
                         .child(h_flex().gap_1().items_center()
                             .child(step("cell-format-size-less", "remove", "_shell.decrease-font-size", false))
-                            .child(div().w(px(72.)).child(Input::new(&size).small()))
+                            .child(div().w(px(72.)).child(Input::new(&size).small().cleanable(true)))
                             .child(step("cell-format-size-more", "add", "_shell.increase-font-size", true)))
                         .child(h_flex().gap_1()
                             .child(toggle("cell-format-bold", "format_bold", "_shell.bold-b", style.bold, StyleChange::Bold(!style.bold)))

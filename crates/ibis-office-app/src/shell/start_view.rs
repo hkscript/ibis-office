@@ -12,6 +12,7 @@ use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::v_flex;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 
 use crate::OpenFile;
 use crate::shell::editor::SlideEditor;
@@ -184,7 +185,7 @@ impl SlideEditor {
             .py(px(1.))
             .rounded(px(3.))
             .bg(rgb(color))
-            .text_color(rgb(0xffffff))
+            .text_color(crate::shell::palette::doc(0xffffff))
             .text_size(px(12.))
             .font_weight(FontWeight::BOLD)
             .child(label);

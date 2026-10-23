@@ -12,6 +12,7 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::component::{Sizable as _, v_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::{CellEdit, CellInput, CellValue, Command, SheetCommand, Sheet, Validation};
 
 use crate::shell::chrome::{MenuEntry, MenuItem, SidebarPanel, fill_menu};
@@ -966,7 +967,7 @@ impl SlideEditor {
                                 .into_any_element(),
                         )),
                 )
-                .child(mark("items", Input::new(&p.items).small().into_any_element()));
+                .child(mark("items", Input::new(&p.items).small().cleanable(true).into_any_element()));
             if compared && matches!(p.operator, "between" | "notBetween") {
                 body = body
                     .child(
@@ -986,7 +987,7 @@ impl SlideEditor {
                                     .into_any_element(),
                             )),
                     )
-                    .child(mark("second", Input::new(&p.second).small().into_any_element()));
+                    .child(mark("second", Input::new(&p.second).small().cleanable(true).into_any_element()));
             }
             body = body.child(toggle("validation-blank", p.allow_blank, "fix.validation.ignore-blank", |p| p.allow_blank = !p.allow_blank));
             if p.kind == "list" {
@@ -999,7 +1000,7 @@ impl SlideEditor {
         body = body
             .child(toggle("validation-show-prompt", p.show_prompt, "fix.validation.show-input-message-when-cell", |p| p.show_prompt = !p.show_prompt));
         if p.show_prompt {
-            body = body.child(mark("prompt-title", Input::new(&p.prompt_title).small().into_any_element())).child(mark("prompt", Input::new(&p.prompt).small().into_any_element()));
+            body = body.child(mark("prompt-title", Input::new(&p.prompt_title).small().cleanable(true).into_any_element())).child(mark("prompt", Input::new(&p.prompt).small().cleanable(true).into_any_element()));
         }
         }
         if p.tab == 2 {
@@ -1008,8 +1009,8 @@ impl SlideEditor {
         if p.show_error {
             body = body
                 .child(h_flex().gap_2().items_center().child(div().text_size(px(13.)).child(text("_shell.styles"))).child(choose("validation-style", &STYLES, p.style, |p, k| p.style = k)))
-                .child(mark("error-title", Input::new(&p.error_title).small().into_any_element()))
-                .child(mark("error-text", Input::new(&p.error_text).small().into_any_element()));
+                .child(mark("error-title", Input::new(&p.error_title).small().cleanable(true).into_any_element()))
+                .child(mark("error-text", Input::new(&p.error_text).small().cleanable(true).into_any_element()));
         }
         }
         body = body

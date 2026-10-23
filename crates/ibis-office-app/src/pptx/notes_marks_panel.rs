@@ -68,6 +68,16 @@ impl SlideEditor {
         cx.notify();
     }
 
+    pub(crate) fn clear_notes_marks(&mut self, cx: &mut Context<Self>) {
+        if let Some(p) = self.pptx_mut().and_then(|s| s.notes_marks_panel.as_mut()) {
+            p.header = false;
+            p.date = false;
+            p.footer = false;
+            p.number = false;
+        }
+        cx.notify();
+    }
+
     /// すべてに適用: the panel's choices on every notes page.
     pub(crate) fn apply_notes_marks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(p) = self.pptx().and_then(|s| s.notes_marks_panel.as_ref()) else { return };
@@ -83,6 +93,89 @@ impl SlideEditor {
         }
     }
 
+    pub(crate) fn notes_marks_context_menu_entries(&self) -> Vec<crate::shell::chrome::MenuEntry> {
+        use crate::shell::chrome::{MenuEntry, MenuItem};
+        let Some(p) = self.pptx().and_then(|s| s.notes_marks_panel.as_ref()) else {
+            return Vec::new();
+        };
+        let header = p.header;
+        let date = p.date;
+        let auto_date = p.auto_date;
+        let number = p.number;
+        let footer = p.footer;
+
+        vec![
+            MenuItem::tr("pptx.notes-marks-panel.apply-all")
+                .icon("done_all")
+                .on(|this, w, cx| this.apply_notes_marks(w, cx))
+                .into(),
+            MenuItem::tr("pptx.find.clear")
+                .icon("clear")
+                .on(|this, _, cx| this.clear_notes_marks(cx))
+                .into(),
+            MenuEntry::Separator,
+            MenuItem::tr("_shell.header")
+                .checked(header)
+                .on(move |this, _, cx| this.toggle_notes_marks("header", !header, cx))
+                .into(),
+            MenuItem::tr("_shell.date-time")
+                .checked(date)
+                .on(move |this, _, cx| this.toggle_notes_marks("date", !date, cx))
+                .into(),
+            MenuItem::tr("pptx.notes-marks-panel.update-automatically")
+                .checked(auto_date)
+                .on(move |this, _, cx| this.toggle_notes_marks("auto", !auto_date, cx))
+                .into(),
+            MenuItem::tr("_xlsx.page-number")
+                .checked(number)
+                .on(move |this, _, cx| this.toggle_notes_marks("number", !number, cx))
+                .into(),
+            MenuItem::tr("_shell.footer")
+                .checked(footer)
+                .on(move |this, _, cx| this.toggle_notes_marks("footer", !footer, cx))
+                .into(),
+            MenuEntry::Separator,
+            MenuItem::tr("_shell.header-footer")
+                .on(|this, w, cx| this.open_header_footer(w, cx))
+                .into(),
+            MenuItem::tr("_shell.close")
+                .icon("close")
+                .on(|this, w, cx| this.close_notes_marks(w, cx))
+                .into(),
+        ]
+    }
+
+    pub(crate) fn open_notes_marks_context_menu(
+        &mut self,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.end_text_edit(window, cx);
+        let items = self.notes_marks_context_menu_entries();
+        if items.is_empty() {
+            return;
+        }
+        self.focus_handle.focus(window, cx);
+        let entries = std::rc::Rc::new(items);
+        let editor = cx.entity().downgrade();
+        let menu = gpui_kit::component::menu::PopupMenu::build(window, cx, move |menu, window, cx| {
+            crate::shell::chrome::fill_menu(menu.min_w(px(220.)), &entries, &editor, window, cx)
+        });
+        let dismiss = cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, window, cx| {
+            if let Some(s) = this.pptx_mut() {
+                s.slide_popup = None;
+            }
+            cx.notify();
+            this.focus_handle.focus(window, cx);
+        });
+        menu.read(cx).focus_handle(cx).focus(window, cx);
+        if let Some(s) = self.pptx_mut() {
+            s.slide_popup = Some(super::SlidePopup { menu, position, _dismiss: dismiss });
+        }
+        cx.notify();
+    }
+
     pub(crate) fn notes_marks_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
         let p = self.pptx()?.notes_marks_panel.as_ref()?;
         let t = crate::shell::i18n::text;
@@ -90,17 +183,22 @@ impl SlideEditor {
             Checkbox::new(id).label(t(label)).checked(on).on_click(cx.listener(move |this, on: &bool, _, cx| this.toggle_notes_marks(which, *on, cx)))
         };
         let body = v_flex()
+            .id("pptx-notes-marks-panel")
             .gap_2()
             .px(px(18.))
             .py(px(8.))
+            .on_mouse_down(MouseButton::Right, cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                cx.stop_propagation();
+                this.open_notes_marks_context_menu(event.position, window, cx);
+            }))
             .child(check("pptx-nm-header", "_shell.header", p.header, "header"))
-            .child(Input::new(&p.header_text).small())
+            .child(Input::new(&p.header_text).small().cleanable(true))
             .child(check("pptx-nm-date", "_shell.date-time", p.date, "date"))
             .child(check("pptx-nm-auto", "pptx.notes-marks-panel.update-automatically", p.auto_date, "auto"))
-            .child(Input::new(&p.date_text).small().disabled(p.auto_date))
+            .child(Input::new(&p.date_text).small().cleanable(true).disabled(p.auto_date))
             .child(check("pptx-nm-number", "_xlsx.page-number", p.number, "number"))
             .child(check("pptx-nm-footer", "_shell.footer", p.footer, "footer"))
-            .child(Input::new(&p.footer_text).small())
+            .child(Input::new(&p.footer_text).small().cleanable(true))
             .child(
                 h_flex()
                     .gap_1()

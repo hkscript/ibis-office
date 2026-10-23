@@ -6,6 +6,7 @@ use std::sync::Arc;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::{
     AutoShape, Color, Command, EmuRect, Fill, Geometry, LineCompound,
     MediaFormat, PhotoAlbum, PhotoAlbumFrame, PhotoAlbumLayout, Picture, Rgb, Shadow,

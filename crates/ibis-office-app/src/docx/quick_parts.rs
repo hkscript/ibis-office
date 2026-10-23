@@ -610,6 +610,12 @@ impl SlideEditor {
 
     /// クイックパーツパネルの描画要素。
     pub(crate) fn quick_parts_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
+        self.doc_state()?.quick_parts.as_ref()?;
+        self.render_quick_parts_panel(cx)
+    }
+
+    #[inline(never)]
+    fn render_quick_parts_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
         let state = self.doc_state()?.quick_parts.as_ref()?;
         let custom_input = state.custom_field.clone();
         let filter_input = state.filter_input.clone();
@@ -676,7 +682,7 @@ impl SlideEditor {
                 v_flex()
                     .gap_1()
                     .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child(text("docx.quick-parts.name").to_string()))
-                    .child(Input::new(&name_in).small()),
+                    .child(Input::new(&name_in).small().cleanable(true)),
             );
 
             // ギャラリー選択
@@ -708,7 +714,7 @@ impl SlideEditor {
                 v_flex()
                     .gap_1()
                     .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child(text("docx.quick-parts.category").to_string()))
-                    .child(Input::new(&cat_in).small()),
+                    .child(Input::new(&cat_in).small().cleanable(true)),
             );
 
             // 保存先 (Scope)
@@ -764,7 +770,7 @@ impl SlideEditor {
                 v_flex()
                     .gap_1()
                     .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child(text("docx.quick-parts.description").to_string()))
-                    .child(Input::new(&desc_in).small()),
+                    .child(Input::new(&desc_in).small().cleanable(true)),
             );
 
             // コンテンツ
@@ -772,7 +778,7 @@ impl SlideEditor {
                 v_flex()
                     .gap_1()
                     .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child(text("docx.quick-parts.content").to_string()))
-                    .child(Input::new(&cont_in).small()),
+                    .child(Input::new(&cont_in).small().cleanable(true)),
             );
 
             // ボタン (保存 / キャンセル)
@@ -804,7 +810,7 @@ impl SlideEditor {
 
         // --- 登録済み文書パーツ一覧 ---
         body = body.child(label("docx.quick-parts.building-blocks"));
-        body = body.child(Input::new(&filter_input).small());
+        body = body.child(Input::new(&filter_input).small().cleanable(true));
 
         let mut block_list = v_flex().gap_2();
         let filtered: Vec<BuildingBlock> = state.building_blocks.iter().filter(|b| {
@@ -938,7 +944,7 @@ impl SlideEditor {
             .child(label("docx.quick-parts.field"))
             .child(field_grid)
             .child(label("docx.quick-parts.custom-field"))
-            .child(Input::new(&custom_input).small())
+            .child(Input::new(&custom_input).small().cleanable(true))
             .child(
                 Button::new("btn-insert-custom-field")
                     .primary()

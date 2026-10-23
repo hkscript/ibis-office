@@ -8,6 +8,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::{Command, FontSet, Rgb, ThemeFonts};
 
 use crate::pptx::theme_panel::{COLORS, THEME_PALETTES};
@@ -159,7 +160,7 @@ impl SlideEditor {
         body = body.child(label(&t("xlsx.theme-palette"))).child(palette_row);
 
         for (_, name, input) in &panel.colors {
-            body = body.child(label(&t(name))).child(Input::new(input).small());
+            body = body.child(label(&t(name))).child(Input::new(input).small().cleanable(true));
         }
         for (name, input) in [
             ("pptx.theme-panel.heading-font-latin", &panel.fonts[0]),
@@ -167,7 +168,7 @@ impl SlideEditor {
             ("pptx.theme-panel.body-font-latin", &panel.fonts[2]),
             ("pptx.theme-panel.body-font-east-asian", &panel.fonts[3]),
         ] {
-            body = body.child(label(&t(name))).child(Input::new(input).small());
+            body = body.child(label(&t(name))).child(Input::new(input).small().cleanable(true));
         }
         if let Some(error) = &panel.error {
             body = body.child(div().text_size(px(12.)).text_color(rgb(0xb3261e)).child(error.clone()));

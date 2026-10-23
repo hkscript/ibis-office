@@ -189,7 +189,7 @@ impl SlideEditor {
         let (font, size, color, before, after) = (edit.font.clone(), edit.size.clone(), edit.color.clone(), edit.before.clone(), edit.after.clone());
         let (bold, italic, align, auto_update) = (edit.bold, edit.italic, edit.align, edit.auto_update);
         let title = crate::shell::i18n::format("docx.style-panel.modify-style-name", &[("name", &edit.name)]);
-        let row = |label: &'static str, input: &Entity<InputState>| h_flex().gap_2().child(div().w(px(64.)).text_sm().child(crate::shell::i18n::text(label))).child(Input::new(input).small());
+        let row = |label: &'static str, input: &Entity<InputState>| h_flex().gap_2().child(div().w(px(64.)).text_sm().child(crate::shell::i18n::text(label))).child(Input::new(input).small().cleanable(true));
         let toggle = |id: &'static str, label: &'static str, on: bool, f: fn(&mut StyleEditState)| {
             Button::new(id).small().label(crate::shell::i18n::text(label)).selected(on).on_click(cx.listener(move |this, _, _, cx| {
                 if let Some(edit) = this.doc_state_mut().and_then(|s| s.style_edit.as_mut()) {

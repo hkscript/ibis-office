@@ -442,7 +442,7 @@ impl SlideEditor {
             .occlude()
             .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
             .child(desc)
-            .child(Input::new(&d.range).small())
+            .child(Input::new(&d.range).small().cleanable(true))
             .when(!is_resize, |b| b.child(Checkbox::new("table-header").label(crate::shell::i18n::text("_xlsx.my-table-has-headers")).checked(d.header).on_click(cx.listener(|this, on: &bool, _, cx| this.set_table_dialog_header(*on, cx)))))
             .when_some(d.error.clone(), |b, e| b.child(div().text_xs().text_color(theme.danger).child(e)))
             .child(

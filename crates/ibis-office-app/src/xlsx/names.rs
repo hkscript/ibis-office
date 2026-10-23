@@ -366,7 +366,7 @@ impl SlideEditor {
             .px(px(18.))
             .py(px(8.))
             .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).child(crate::shell::i18n::text("_shell.name")))
-            .child(Input::new(&new_name).small())
+            .child(Input::new(&new_name).small().cleanable(true))
             .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).child(crate::shell::i18n::text("xlsx.names.scope")))
             .child(
                 h_flex()
@@ -394,7 +394,7 @@ impl SlideEditor {
                     }),
             )
             .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).child(crate::shell::i18n::text("_xlsx.refers-to-or-formula")))
-            .child(Input::new(&new_formula).small())
+            .child(Input::new(&new_formula).small().cleanable(true))
             .child({
                 let (add_name, add_formula) = (name_input.clone(), formula_input.clone());
                 let mut btn_row = h_flex()

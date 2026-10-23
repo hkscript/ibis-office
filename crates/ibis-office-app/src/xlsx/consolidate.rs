@@ -233,7 +233,7 @@ impl SlideEditor {
 
         // 2. 参照範囲 (Reference input)
         body = body.child(div().text_size(px(13.)).font_weight(FontWeight::BOLD).child(text("_xlsx.references")));
-        body = body.child(mark("reference-input", Input::new(&p.reference_input).small().into_any_element()));
+        body = body.child(mark("reference-input", Input::new(&p.reference_input).small().cleanable(true).into_any_element()));
 
         // Add / Add Selection / Delete / Clear All buttons
         let sel_ref = p.selected_ref;

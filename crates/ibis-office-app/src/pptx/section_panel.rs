@@ -3,6 +3,7 @@
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! Named sections: capture slide structure before collecting a name.
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use gpui_kit::component::{Sizable as _,h_flex,v_flex};
 use gpui_kit::component::button::{Button,ButtonVariants as _};
 use gpui_kit::component::input::{Input,InputState};
@@ -83,7 +84,7 @@ impl SlideEditor {
     }
     pub(crate) fn close_section_panel(&mut self,w:&mut Window,cx:&mut Context<Self>) {if let Some(s)=self.pptx_mut() {s.section_panel=None;}self.focus_handle.focus(w,cx);cx.notify();}
     pub(crate) fn pptx_section_panel(&mut self,cx:&mut Context<Self>)->Option<SidebarPanel> {
-        let p=self.pptx()?.section_panel.as_ref()?;let name=p.name.clone();let error=p.error.clone();let mut body=v_flex().gap_2().px(px(18.)).py(px(8.)).child(div().child(crate::shell::i18n::text("_shell.name"))).child(Input::new(&name).small());
+        let p=self.pptx()?.section_panel.as_ref()?;let name=p.name.clone();let error=p.error.clone();let mut body=v_flex().gap_2().px(px(18.)).py(px(8.)).child(div().child(crate::shell::i18n::text("_shell.name"))).child(Input::new(&name).small().cleanable(true));
         if let Some(error)=error {body=body.child(div().text_color(rgb(0xb3261e)).child(error));}
         body=body.child(h_flex().gap_1().child(Button::new("pptx-section-apply").primary().small().label(crate::shell::i18n::text("_shell.apply")).on_click(cx.listener(|e,_,w,cx|e.apply_section_panel(w,cx)))).child(Button::new("pptx-section-cancel").small().ghost().label(crate::shell::i18n::text("_shell.cancel")).on_click(cx.listener(|e,_,w,cx|e.close_section_panel(w,cx)))));
         Some(SidebarPanel {title:crate::shell::i18n::text("pptx.goto.section"),body:body.into_any_element()})

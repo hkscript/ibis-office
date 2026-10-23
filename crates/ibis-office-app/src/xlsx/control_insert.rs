@@ -14,6 +14,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{Sizable as _, v_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::{Command, ControlKind, EmuRect, FormControl, Shape, ShapeId, ShapeKind, SheetCommand};
 
 use crate::shell::chrome::{MenuEntry, MenuItem, SidebarPanel};
@@ -276,13 +277,13 @@ impl SlideEditor {
         ) {
             body = body
                 .child(div().text_size(px(12.)).child(text("xlsx.control-properties.text")))
-                .child(mark("text", Input::new(&p.text).small().into_any_element()))
+                .child(mark("text", Input::new(&p.text).small().cleanable(true).into_any_element()))
                 .child(div().text_size(px(12.)).child(text("xlsx.control-properties.font")))
-                .child(mark("font", Input::new(&p.font).small().into_any_element()))
+                .child(mark("font", Input::new(&p.font).small().cleanable(true).into_any_element()))
                 .child(div().text_size(px(12.)).child(text("xlsx.control-properties.font-size")))
-                .child(mark("font_size", Input::new(&p.font_size).small().into_any_element()))
+                .child(mark("font_size", Input::new(&p.font_size).small().cleanable(true).into_any_element()))
                 .child(div().text_size(px(12.)).child(text("xlsx.control-properties.text-color")))
-                .child(mark("text_color", Input::new(&p.text_color).small().into_any_element()))
+                .child(mark("text_color", Input::new(&p.text_color).small().cleanable(true).into_any_element()))
                 .child(
                     div()
                         .flex()
@@ -332,29 +333,29 @@ impl SlideEditor {
         ) {
             body = body
                 .child(div().text_size(px(12.)).child(text("xlsx.control-properties.link")))
-                .child(mark("link", Input::new(&p.link).small().into_any_element()));
+                .child(mark("link", Input::new(&p.link).small().cleanable(true).into_any_element()));
         }
 
         // 入力範囲 (Drop, List)
         if matches!(kind, ControlKind::Drop | ControlKind::List) {
             body = body
                 .child(div().text_size(px(12.)).child(text("xlsx.control-properties.range")))
-                .child(mark("range", Input::new(&p.range).small().into_any_element()));
+                .child(mark("range", Input::new(&p.range).small().cleanable(true).into_any_element()));
         }
 
         // 最小値・最大値・増分・ページ変化量 (Scroll, Spin)
         if matches!(kind, ControlKind::Scroll | ControlKind::Spin) {
             body = body
                 .child(div().text_size(px(12.)).child(text("xlsx.control-properties.min")))
-                .child(mark("min", Input::new(&p.min).small().into_any_element()))
+                .child(mark("min", Input::new(&p.min).small().cleanable(true).into_any_element()))
                 .child(div().text_size(px(12.)).child(text("xlsx.control-properties.max")))
-                .child(mark("max", Input::new(&p.max).small().into_any_element()))
+                .child(mark("max", Input::new(&p.max).small().cleanable(true).into_any_element()))
                 .child(div().text_size(px(12.)).child(text("xlsx.control-properties.step")))
-                .child(mark("step", Input::new(&p.step).small().into_any_element()));
+                .child(mark("step", Input::new(&p.step).small().cleanable(true).into_any_element()));
             if kind == ControlKind::Scroll {
                 body = body
                     .child(div().text_size(px(12.)).child(text("xlsx.control-properties.page")))
-                    .child(mark("page", Input::new(&p.page).small().into_any_element()));
+                    .child(mark("page", Input::new(&p.page).small().cleanable(true).into_any_element()));
             }
         }
 

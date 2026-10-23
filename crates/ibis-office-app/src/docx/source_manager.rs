@@ -702,6 +702,12 @@ impl SlideEditor {
 
     /// 資料文献の管理サイドバーパネルの描画
     pub(crate) fn doc_source_manager_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
+        self.doc_state()?.source_manager.as_ref()?;
+        self.render_doc_source_manager_panel(cx)
+    }
+
+    #[inline(never)]
+    fn render_doc_source_manager_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
         let (master_list, current_list, active_list, selected_master, selected_current, edit_form, filter_input, message) = {
             let s = self.doc_state()?;
             let mgr = s.source_manager.as_ref()?;
@@ -769,7 +775,7 @@ impl SlideEditor {
                 v_flex()
                     .gap_1()
                     .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child(text("docx.source-manager.form.tag").to_string()))
-                    .child(Input::new(&tag_in).small()),
+                    .child(Input::new(&tag_in).small().cleanable(true)),
             );
 
             // 文献の種類切替ボタン
@@ -802,7 +808,7 @@ impl SlideEditor {
                 v_flex()
                     .gap_1()
                     .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child(text("docx.source-manager.form.author").to_string()))
-                    .child(Input::new(&auth_in).small()),
+                    .child(Input::new(&auth_in).small().cleanable(true)),
             );
 
             // タイトル
@@ -810,7 +816,7 @@ impl SlideEditor {
                 v_flex()
                     .gap_1()
                     .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child(text("docx.source-manager.form.title").to_string()))
-                    .child(Input::new(&title_in).small()),
+                    .child(Input::new(&title_in).small().cleanable(true)),
             );
 
             // 年
@@ -818,7 +824,7 @@ impl SlideEditor {
                 v_flex()
                     .gap_1()
                     .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child(text("docx.source-manager.form.year").to_string()))
-                    .child(Input::new(&yr_in).small()),
+                    .child(Input::new(&yr_in).small().cleanable(true)),
             );
 
             // 発行元
@@ -826,7 +832,7 @@ impl SlideEditor {
                 v_flex()
                     .gap_1()
                     .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child(text("docx.source-manager.form.publisher").to_string()))
-                    .child(Input::new(&pub_in).small()),
+                    .child(Input::new(&pub_in).small().cleanable(true)),
             );
 
             // 都市
@@ -834,7 +840,7 @@ impl SlideEditor {
                 v_flex()
                     .gap_1()
                     .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child(text("docx.source-manager.form.city").to_string()))
-                    .child(Input::new(&city_in).small()),
+                    .child(Input::new(&city_in).small().cleanable(true)),
             );
 
             // URL
@@ -842,7 +848,7 @@ impl SlideEditor {
                 v_flex()
                     .gap_1()
                     .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child(text("docx.source-manager.form.url").to_string()))
-                    .child(Input::new(&url_in).small()),
+                    .child(Input::new(&url_in).small().cleanable(true)),
             );
 
             // フォームアクション
@@ -881,7 +887,7 @@ impl SlideEditor {
         body = body.child(
             v_flex()
                 .gap_1()
-                .child(Input::new(&filter_input).small()),
+                .child(Input::new(&filter_input).small().cleanable(true)),
         );
 
         let query = filter_input.read(cx).value().trim().to_lowercase();

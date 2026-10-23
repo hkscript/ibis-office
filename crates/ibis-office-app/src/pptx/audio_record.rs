@@ -186,7 +186,7 @@ impl SlideEditor {
                 v_flex()
                     .gap_1()
                     .child(div().text_size(px(12.)).text_color(cx.theme().muted_foreground).child(text("pptx.audio.sound-name")))
-                    .child(Input::new(&name_input).small()),
+                    .child(Input::new(&name_input).small().cleanable(true)),
             )
             .child(
                 v_flex()

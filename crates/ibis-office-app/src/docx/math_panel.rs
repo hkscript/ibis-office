@@ -7,6 +7,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Selectable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::flow::{Block, FlowRun};
 use ibis_doc_model::flow_command::{self, FlowCommand};
 use ibis_doc_model::math::{Math, parse_latex, parse_linear};
@@ -425,7 +426,7 @@ impl SlideEditor {
             .gap_3()
             .p_3()
             .child(label("docx.math.hint"))
-            .child(Input::new(&input_field).small())
+            .child(Input::new(&input_field).small().cleanable(true))
             .child(label("docx.math.format-label"))
             .child(format_bar)
             .child(label("docx.math.layout-label"))

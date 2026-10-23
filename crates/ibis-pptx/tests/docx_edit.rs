@@ -3106,7 +3106,7 @@ fn test_doc_grid_and_line_pitch() {
     assert!(doc_str.contains("type=\"lines\""));
     assert!(doc_str.contains("linePitch=\"720\""));
 
-    // 2. 文字数と行数を指定（linesAndChars, charSpace = 200 twips = 127_000 EMU）
+    // 2. 文字数と行数を指定（linesAndChars, charSpace = 10 pt = 40960 (1/4096 pt) = 127_000 EMU）
     let mut page2 = doc_reopened.page;
     page2.doc_grid_type = ibis_doc_model::DocGridType::LinesAndChars;
     page2.line_pitch = Some(457_200);
@@ -3124,7 +3124,8 @@ fn test_doc_grid_and_line_pitch() {
     let doc_xml2 = pkg2.read("word/document.xml").unwrap();
     let doc_str2 = String::from_utf8_lossy(&doc_xml2);
     assert!(doc_str2.contains("type=\"linesAndChars\""));
-    assert!(doc_str2.contains("charSpace=\"200\""));
+    // ECMA-376 §17.6.5: w:charSpace は 1/4096 pt 単位（127_000 EMU = 10 pt = 40960）
+    assert!(doc_str2.contains("charSpace=\"40960\""));
 
     // 3. グリッドなし（type="default"）
     let mut page3 = doc_reopened2.page;
@@ -4644,7 +4645,8 @@ fn test_dropdown_list_control_load_select_save() {
                 combo: false,
             }
         );
-        assert!(p.text().starts_with("企画部"));
+        // E1: DropDownList は段落内で 1 位置を占めるため、位置と 1 文字ずつ対応する FlowParagraph::text() では U+FFFC になる
+        assert!(p.text().starts_with('\u{fffc}'));
     }
 
     // 2. 候補選択の実行（0 -> 1: 開発部）
@@ -4662,7 +4664,7 @@ fn test_dropdown_list_control_load_select_save() {
                 combo: false,
             }
         );
-        assert!(p.text().starts_with("開発部"));
+        assert!(p.text().starts_with('\u{fffc}'));
     }
 
     // 3. Undo (1 -> 0: 企画部)
@@ -4678,7 +4680,7 @@ fn test_dropdown_list_control_load_select_save() {
                 combo: false,
             }
         );
-        assert!(p.text().starts_with("企画部"));
+        assert!(p.text().starts_with('\u{fffc}'));
     }
 
     // 4. Redo (0 -> 1: 開発部)
@@ -4694,7 +4696,7 @@ fn test_dropdown_list_control_load_select_save() {
                 combo: false,
             }
         );
-        assert!(p.text().starts_with("開発部"));
+        assert!(p.text().starts_with('\u{fffc}'));
     }
 
     // 5. 保存と XML 検証
@@ -4803,7 +4805,8 @@ fn test_combo_box_control_load_select_save() {
                 combo: true,
             }
         );
-        assert!(p.text().starts_with("企画部"));
+        // E1: DropDownList は段落内で 1 位置を占めるため、位置と 1 文字ずつ対応する FlowParagraph::text() では U+FFFC になる
+        assert!(p.text().starts_with('\u{fffc}'));
     }
 
     // 2. 候補選択の実行（0 -> 1: 開発部）
@@ -4821,7 +4824,7 @@ fn test_combo_box_control_load_select_save() {
                 combo: true,
             }
         );
-        assert!(p.text().starts_with("開発部"));
+        assert!(p.text().starts_with('\u{fffc}'));
     }
 
     // 3. Undo (1 -> 0: 企画部)
@@ -4837,7 +4840,7 @@ fn test_combo_box_control_load_select_save() {
                 combo: true,
             }
         );
-        assert!(p.text().starts_with("企画部"));
+        assert!(p.text().starts_with('\u{fffc}'));
     }
 
     // 4. Redo (0 -> 1: 開発部)
@@ -4853,7 +4856,7 @@ fn test_combo_box_control_load_select_save() {
                 combo: true,
             }
         );
-        assert!(p.text().starts_with("開発部"));
+        assert!(p.text().starts_with('\u{fffc}'));
     }
 
     // 5. 保存と XML 検証
@@ -7994,3 +7997,22 @@ fn test_docx_format_conversions_txt_rtf_doc_html_odt_pdf() {
     }
 }
 
+
+/// Typed text that starts or ends with a space, or has a run of spaces, is saved with `xml:space="preserve"` (Word drops the
+/// spaces of a `w:t` without it).
+#[test]
+fn typed_spaces_are_saved_with_xml_space_preserve() {
+    for (text, at_end, marker) in [(" lead", false, "> lead"), ("trail ", true, "trail <"), ("in  side", false, ">in  side")] {
+        let data = std::fs::read(path(REPORT)).unwrap();
+        let opened = ibis_pptx::open(data).unwrap();
+        let first = paragraphs(flow(&opened.presentation))[0];
+        let (id, offset) = (first.id, if at_end { first.len() } else { 0 });
+        let mut document = Document::new(opened.presentation.clone());
+        document.execute(vec![Command::Flow(FlowCommand::InsertText { at: FlowPos::new(id, offset), text: text.into(), format: None })]).unwrap();
+        let saved = opened.source.save(document.presentation(), SaveOptions::default()).unwrap();
+        let xml = ibis_pptx::test_files::part_text(&saved, "word/document.xml").unwrap();
+        let at = xml.find(marker).unwrap_or_else(|| panic!("{text:?} in the XML"));
+        let open_tag = &xml[xml[..at].rfind("<w:t").unwrap()..at];
+        assert!(open_tag.contains(r#"xml:space="preserve""#), "{text:?}: {open_tag}");
+    }
+}

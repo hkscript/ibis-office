@@ -103,19 +103,27 @@ fn empty_as_zero(v: Value) -> Value {
 
 fn if_(c: &mut Ctx, a: &[Expr]) -> Value {
     let cond = c.eval_scalar_or_array(&a[0]);
-    let branch = |c: &mut Ctx, i: usize| -> Value {
+    let branch = |c: &mut Ctx, i: usize, keep_ref: bool| -> Value {
         match a.get(i) {
             // IF(FALSE, 1) is FALSE; IF(FALSE, 1,) is 0.
             None => Value::Bool(i == 1),
             Some(Expr::Missing) => Value::Number(0.0),
-            Some(e) => empty_as_zero(c.eval_scalar_or_array(e)),
+            Some(e) => {
+                if keep_ref && !c.in_array_context {
+                    match c.eval(e) {
+                        Value::Ref(r) if r.len() != 1 || !r[0].is_cell() => return Value::Ref(r),
+                        _ => {}
+                    }
+                }
+                empty_as_zero(c.eval_scalar_or_array(e))
+            }
         }
     };
     match cond {
         Value::Array(arr) => {
             // Both branches, chosen element by element.
-            let yes = branch(c, 1);
-            let no = branch(c, 2);
+            let yes = branch(c, 1, false);
+            let no = branch(c, 2, false);
             let values = vec![Value::Array(arr), yes, no];
             c.map_values(values, &mut |_, v| match to_bool(&v[0]) {
                 Ok(true) => v[1].clone(),
@@ -124,8 +132,8 @@ fn if_(c: &mut Ctx, a: &[Expr]) -> Value {
             })
         }
         v => match to_bool(&v) {
-            Ok(true) => branch(c, 1),
-            Ok(false) => branch(c, 2),
+            Ok(true) => branch(c, 1, true),
+            Ok(false) => branch(c, 2, true),
             Err(e) => err(e),
         },
     }

@@ -7,10 +7,11 @@
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::InputState;
 use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::{CellEdit, CellInput, CellValue, Command, SheetCommand};
 
 use crate::shell::chrome::SidebarPanel;
@@ -536,8 +537,8 @@ impl SlideEditor {
             .gap_2()
             .px(px(18.))
             .py(px(8.))
-            .child(Input::new(&query).small())
-            .child(Input::new(&replacement).small())
+            .child(crate::shell::chrome::clearable_text_field(&query))
+            .child(crate::shell::chrome::clearable_text_field(&replacement))
             .child(
                 v_flex()
                     .gap_1()

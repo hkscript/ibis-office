@@ -1245,6 +1245,12 @@ impl SlideEditor {
 
     /// 描画（インク）サイドバーパネルの UI。
     pub(crate) fn docx_ink_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
+        self.doc_state()?.docx_ink.as_ref()?;
+        self.render_docx_ink_panel(cx)
+    }
+
+    #[inline(never)]
+    fn render_docx_ink_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
         let ink = self.doc_state()?.docx_ink.clone()?;
         let selected_count = self.target_docx_ink_positions().len();
 

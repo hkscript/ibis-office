@@ -1827,6 +1827,12 @@ impl SlideEditor {
     }
 
     pub(crate) fn sheet_chart_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
+        self.sheet_state()?.chart_edit.as_ref()?;
+        self.render_sheet_chart_panel(cx)
+    }
+
+    #[inline(never)]
+    fn render_sheet_chart_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
         let p = self.sheet_state()?.chart_edit.as_ref()?;
         let theme = cx.theme().clone();
         let Some((id, chart)) = self.sheet_chart() else {
@@ -2215,7 +2221,7 @@ impl SlideEditor {
             .label(crate::shell::i18n::text("xlsx.chart-series-add"))
             .on_click(cx.listener(|this, _, window, cx| this.add_sheet_chart_series(window, cx)));
         let show_hidden = !chart.plot_vis_only;
-        let labeled = |key: &str, input: &Entity<InputState>| v_flex().gap_1().child(div().text_xs().text_color(theme.muted).child(crate::shell::i18n::text(key))).child(Input::new(input).small());
+        let labeled = |key: &str, input: &Entity<InputState>| v_flex().gap_1().child(div().text_xs().text_color(theme.muted).child(crate::shell::i18n::text(key))).child(Input::new(input).small().cleanable(true));
         // A chartEx chart's own settings: the points that are totals (a waterfall), the bins (a histogram).
         let ex_section = chart.ex_source.as_ref().map(|source| {
             let xml = source.0.xml();
@@ -2285,13 +2291,13 @@ impl SlideEditor {
             }
             section
         });
-        let field = |label: &str, input: &Entity<InputState>| h_flex().gap_2().items_center().child(div().w(px(72.)).child(label.to_string())).child(div().flex_1().child(Input::new(input).small()));
+        let field = |label: &str, input: &Entity<InputState>| h_flex().gap_2().items_center().child(div().w(px(72.)).child(label.to_string())).child(div().flex_1().child(Input::new(input).small().cleanable(true)));
         let body = v_flex()
             .gap_2()
             .px(px(18.))
             .py(px(8.))
             .child(div().font_weight(FontWeight::SEMIBOLD).child(crate::shell::i18n::text("_xlsx.data-range")))
-            .child(Input::new(&p.range).small())
+            .child(Input::new(&p.range).small().cleanable(true))
             .child(
                 h_flex()
                     .gap_2()
@@ -2317,7 +2323,7 @@ impl SlideEditor {
             .child(palette_buttons_2)
             .child(div().font_weight(FontWeight::SEMIBOLD).child(crate::shell::i18n::text("_xlsx.chart-title")))
             .child(Checkbox::new("chart-title-shown").label(crate::shell::i18n::text("_xlsx.show")).checked(titled).on_click(cx.listener(|this, on: &bool, _, cx| this.set_sheet_chart_title_shown(*on, cx))))
-            .child(Input::new(&p.title).small())
+            .child(Input::new(&p.title).small().cleanable(true))
             .child(div().font_weight(FontWeight::SEMIBOLD).child(crate::shell::i18n::text("_shell.legend")))
             .child(places)
             .child(div().font_weight(FontWeight::SEMIBOLD).child(crate::shell::i18n::text("_xlsx.data-labels")))
@@ -2333,7 +2339,7 @@ impl SlideEditor {
             .when(cat_axis.is_some(), |b| {
                 b.child(div().font_weight(FontWeight::SEMIBOLD).child(crate::shell::i18n::text("_xlsx.horizontal-category-axis")))
                     .child(Checkbox::new("chart-cat-title-shown").label(crate::shell::i18n::text("_xlsx.show-axis-title")).checked(cat_titled).on_click(cx.listener(|this, on: &bool, _, cx| this.set_sheet_chart_cat_axis_title_shown(*on, cx))))
-                    .child(Input::new(&p.cat_title).small())
+                    .child(Input::new(&p.cat_title).small().cleanable(true))
                     .child(div().text_xs().text_color(theme.muted).child(crate::shell::i18n::text("_xlsx.axis-type")))
                     .child(axis_type_buttons)
                     .child(Checkbox::new("chart-cat-gridlines").label(crate::shell::i18n::text("_xlsx.gridlines")).checked(cat_gridlines).on_click(cx.listener(|this, on: &bool, _, cx| this.set_sheet_chart_cat_gridlines(*on, cx))))
@@ -2342,7 +2348,7 @@ impl SlideEditor {
             .when(val_axis.is_some(), |b| {
                 b.child(div().font_weight(FontWeight::SEMIBOLD).child(crate::shell::i18n::text("_xlsx.vertical-value-axis")))
                     .child(Checkbox::new("chart-val-title-shown").label(crate::shell::i18n::text("_xlsx.show-axis-title")).checked(val_titled).on_click(cx.listener(|this, on: &bool, _, cx| this.set_sheet_chart_val_axis_title_shown(*on, cx))))
-                    .child(Input::new(&p.val_title).small())
+                    .child(Input::new(&p.val_title).small().cleanable(true))
                     .child(field(&crate::shell::i18n::text("xlsx.chart-axis-min"), &p.min))
                     .child(field(&crate::shell::i18n::text("xlsx.chart-axis-max"), &p.max))
                     .child(field(&crate::shell::i18n::text("_xlsx.major-unit"), &p.unit))
@@ -2356,7 +2362,7 @@ impl SlideEditor {
             .when(sec_val_axis.is_some(), |b| {
                 b.child(div().font_weight(FontWeight::SEMIBOLD).child(crate::shell::i18n::text("_xlsx.secondary-value-axis")))
                     .child(Checkbox::new("chart-sec-val-title-shown").label(crate::shell::i18n::text("_xlsx.show-axis-title")).checked(sec_val_titled).on_click(cx.listener(|this, on: &bool, _, cx| this.set_sheet_chart_sec_val_axis_title_shown(*on, cx))))
-                    .child(Input::new(&p.sec_val_title).small())
+                    .child(Input::new(&p.sec_val_title).small().cleanable(true))
                     .child(div().text_xs().text_color(theme.muted).child(crate::shell::i18n::text("_xlsx.display-units")))
                     .child(sec_disp_unit_buttons)
                     .child(Checkbox::new("chart-sec-gridlines").label(crate::shell::i18n::text("_xlsx.gridlines")).checked(sec_val_gridlines).on_click(cx.listener(|this, on: &bool, _, cx| this.set_sheet_chart_sec_val_axis_gridlines(*on, cx))))
@@ -2367,7 +2373,7 @@ impl SlideEditor {
             .when(ser_axis.is_some(), |b| {
                 b.child(div().font_weight(FontWeight::SEMIBOLD).child(crate::shell::i18n::text("_xlsx.series-axis")))
                     .child(Checkbox::new("chart-ser-title-shown").label(crate::shell::i18n::text("_xlsx.show-axis-title")).checked(ser_titled).on_click(cx.listener(|this, on: &bool, _, cx| this.set_sheet_chart_ser_axis_title_shown(*on, cx))))
-                    .child(Input::new(&p.ser_title).small())
+                    .child(Input::new(&p.ser_title).small().cleanable(true))
                     .child(Checkbox::new("chart-ser-gridlines").label(crate::shell::i18n::text("_xlsx.gridlines")).checked(ser_gridlines).on_click(cx.listener(|this, on: &bool, _, cx| this.set_sheet_chart_ser_axis_gridlines(*on, cx))))
                     .child(Checkbox::new("chart-ser-reversed").label(crate::shell::i18n::text("_xlsx.categories-in-reverse-order")).checked(ser_reversed).on_click(cx.listener(|this, on: &bool, _, cx| this.set_sheet_chart_ser_axis_reversed(*on, cx))))
             })

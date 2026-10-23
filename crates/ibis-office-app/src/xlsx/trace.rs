@@ -8,6 +8,7 @@
 //! 提供する。
 
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_calc::formula::{Expr, parse};
 use crate::render::shape_view::polygon;
 use crate::shell::editor::SlideEditor;
@@ -366,7 +367,7 @@ impl SlideEditor {
                         .w(px(badge_w))
                         .h(px(badge_h))
                         .bg(arrow_color)
-                        .text_color(rgb(0xFFFFFF))
+                        .text_color(crate::shell::palette::doc(0xffffff))
                         .rounded(px(3.0 * scale.max(1.0)))
                         .text_xs()
                         .flex()

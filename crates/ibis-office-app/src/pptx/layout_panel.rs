@@ -7,6 +7,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{h_flex, v_flex, Sizable as _};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::{Command, Layout, LayoutId, Master, MasterId};
 
 use crate::shell::{chrome::SidebarPanel, editor::SlideEditor};
@@ -148,7 +149,7 @@ impl SlideEditor {
     pub(crate) fn layout_name_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
         let p = self.pptx()?.layout_panel.as_ref()?;
         let (name, error) = (p.name.clone(), p.error.clone());
-        let mut body = v_flex().gap_2().px(px(18.)).py(px(8.)).child(div().child(crate::shell::i18n::text("_shell.name"))).child(Input::new(&name).small());
+        let mut body = v_flex().gap_2().px(px(18.)).py(px(8.)).child(div().child(crate::shell::i18n::text("_shell.name"))).child(Input::new(&name).small().cleanable(true));
         if let Some(error) = error {
             body = body.child(div().text_color(rgb(0xb3261e)).child(error));
         }

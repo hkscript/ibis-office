@@ -999,19 +999,51 @@ fn follow(frame: EmuRect, from: EmuRect, to: EmuRect) -> EmuRect {
 ///
 /// Each [`Document::execute`] call is one undo step, however many commands it
 /// holds, so "insert a text box and type into it" can be undone at once.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Document {
     presentation: Presentation,
     undo: Vec<Vec<Command>>,
     redo: Vec<Vec<Command>>,
+    /// The `undo.len()` at which the document was opened or last saved (`None` if that state is no
+    /// longer reachable on the undo/redo stack, or if mutated outside undo history).
+    clean_undo_len: Option<usize>,
     /// The file this document is saved as (its whole path), for what the calculation says of it
     /// (`CELL("filename")`).
     file: Option<String>,
 }
 
+impl Default for Document {
+    fn default() -> Self {
+        Self::new(Presentation::default())
+    }
+}
+
 impl Document {
     pub fn new(presentation: Presentation) -> Self {
-        Self { presentation, undo: Vec::new(), redo: Vec::new(), file: None }
+        Self { presentation, undo: Vec::new(), redo: Vec::new(), clean_undo_len: Some(0), file: None }
+    }
+
+    /// Mark the current state of the document as saved (clean).
+    pub fn mark_clean(&mut self) {
+        self.clean_undo_len = Some(self.undo.len());
+    }
+
+    /// Clear all undo/redo history and mark the document as clean.
+    /// Used when initializing a newly created document or template instance.
+    pub fn reset_history(&mut self) {
+        self.undo.clear();
+        self.redo.clear();
+        self.clean_undo_len = Some(0);
+    }
+
+    /// Mark the document as having unsaved changes.
+    pub fn mark_dirty(&mut self) {
+        self.clean_undo_len = None;
+    }
+
+    /// Whether the document has unsaved changes since it was opened or last saved.
+    pub fn is_dirty(&self) -> bool {
+        self.clean_undo_len != Some(self.undo.len())
     }
 
     /// Tell the document which file it is (`None`: not saved yet).
@@ -1036,6 +1068,11 @@ impl Document {
         !self.undo.is_empty()
     }
 
+    /// How many undo steps there are (a mark to tell whether the document was edited since).
+    pub fn undo_len(&self) -> usize {
+        self.undo.len()
+    }
+
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
     }
@@ -1045,6 +1082,9 @@ impl Document {
     pub fn execute(&mut self, commands: Vec<Command>) -> Result<(), EditError> {
         let inverses = self.apply_all(commands)?;
         if !inverses.is_empty() {
+            if self.clean_undo_len.is_some_and(|clean| clean > self.undo.len()) {
+                self.clean_undo_len = None;
+            }
             self.undo.push(inverses);
             self.redo.clear();
         }
@@ -1058,6 +1098,9 @@ impl Document {
         let mut inverses = self.apply_all(commands)?;
         if inverses.is_empty() {
             return Ok(());
+        }
+        if self.clean_undo_len.is_some_and(|clean| clean >= self.undo.len()) {
+            self.clean_undo_len = None;
         }
         match self.undo.last_mut() {
             Some(step) => {
@@ -1074,6 +1117,9 @@ impl Document {
     /// user abandoned (such as a new text box left empty).
     pub fn retract_last(&mut self) -> bool {
         let Some(step) = self.undo.pop() else { return false };
+        if self.clean_undo_len.is_some_and(|clean| clean > self.undo.len()) {
+            self.clean_undo_len = None;
+        }
         self.apply_all(step).is_ok()
     }
 

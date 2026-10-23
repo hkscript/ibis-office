@@ -200,9 +200,9 @@ impl SlideEditor {
                             .into_any_element(),
                     )),
             )
-            .child(mark("xlsx.goal-seek.formula", Input::new(&p.formula).small().into_any_element()))
+            .child(mark("xlsx.goal-seek.formula", Input::new(&p.formula).small().cleanable(true).into_any_element()))
             .child(div().text_size(px(13.)).child(text("_xlsx.to-value")))
-            .child(mark("xlsx.goal-seek.target", Input::new(&p.target).small().into_any_element()))
+            .child(mark("xlsx.goal-seek.target", Input::new(&p.target).small().cleanable(true).into_any_element()))
             .child(
                 h_flex()
                     .items_center()
@@ -218,7 +218,7 @@ impl SlideEditor {
                             .into_any_element(),
                     )),
             )
-            .child(mark("xlsx.goal-seek.changing", Input::new(&p.changing).small().into_any_element()))
+            .child(mark("xlsx.goal-seek.changing", Input::new(&p.changing).small().cleanable(true).into_any_element()))
             .child(div().text_size(px(12.)).child(SharedString::from(p.message.clone())))
             .child(
                 h_flex()

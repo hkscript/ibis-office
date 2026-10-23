@@ -839,7 +839,7 @@ impl SlideEditor {
                                 .into_any_element(),
                         )),
                 )
-                .child(mark("input", Input::new(&p.input).small().into_any_element()));
+                .child(mark("input", Input::new(&p.input).small().cleanable(true).into_any_element()));
         }
         let has_second = second_caption.is_some() && (current != Tool::Random || current_dist == Dist::Discrete);
         if has_second {
@@ -860,7 +860,7 @@ impl SlideEditor {
                                     .into_any_element(),
                             )),
                     )
-                    .child(mark("input2", Input::new(&p.input2).small().into_any_element()));
+                    .child(mark("input2", Input::new(&p.input2).small().cleanable(true).into_any_element()));
             }
         }
 
@@ -932,7 +932,7 @@ impl SlideEditor {
         // Numbers.
         let params = current.params(current_dist);
         for (i, (label, _)) in params.iter().enumerate() {
-            body = body.child(caption(label)).child(mark(&format!("param-{i}"), Input::new(&p.params[i]).small().into_any_element()));
+            body = body.child(caption(label)).child(mark(&format!("param-{i}"), Input::new(&p.params[i]).small().cleanable(true).into_any_element()));
         }
 
         // Options.
@@ -981,7 +981,7 @@ impl SlideEditor {
         }
         body = body
             .child(out_header)
-            .child(mark("output", Input::new(&p.output).small().into_any_element()));
+            .child(mark("output", Input::new(&p.output).small().cleanable(true).into_any_element()));
         if !p.message.is_empty() {
             body = body.child(div().text_size(px(12.)).child(SharedString::from(p.message.clone())));
         }

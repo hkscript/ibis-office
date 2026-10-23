@@ -10,6 +10,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::{CellEdit, CellInput, CellValue, Command, Hyperlink, Rgb, SheetCommand, StyleChange};
 
 use crate::shell::chrome::SidebarPanel;
@@ -187,11 +188,11 @@ impl SlideEditor {
             .px(px(18.))
             .py(px(8.))
             .child(div().text_size(px(12.)).child(current))
-            .child(Input::new(&address).small())
+            .child(Input::new(&address).small().cleanable(true))
             .child(div().text_size(px(11.)).text_color(rgb(0x666666)).child(crate::shell::i18n::text("xlsx.link-display-text")))
-            .child(Input::new(&display_text).small())
+            .child(Input::new(&display_text).small().cleanable(true))
             .child(div().text_size(px(11.)).text_color(rgb(0x666666)).child(crate::shell::i18n::text("xlsx.link-tooltip")))
-            .child(Input::new(&tooltip).small());
+            .child(Input::new(&tooltip).small().cleanable(true));
 
         if !places.is_empty() {
             let mut place_row = h_flex().gap_1().flex_wrap();

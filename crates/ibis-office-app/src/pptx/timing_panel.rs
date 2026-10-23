@@ -7,6 +7,7 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::{Command, SlideId, Transition};
 use crate::pptx::SlidePopup;
 use crate::shell::chrome::SidebarPanel;
@@ -194,10 +195,10 @@ impl SlideEditor {
                     this.open_timing_panel_context_menu(event.position, window, cx);
                 }),
             )
-            .child(div().text_size(px(13.)).child(crate::shell::i18n::text("pptx.timing-panel.transition-duration-s"))).child(Input::new(&duration).small())
+            .child(div().text_size(px(13.)).child(crate::shell::i18n::text("pptx.timing-panel.transition-duration-s"))).child(Input::new(&duration).small().cleanable(true))
             .child(Button::new("pptx-timing-click").small().ghost().label(if click { crate::shell::i18n::text("pptx.timing-panel.mouse-click") } else { crate::shell::i18n::text("pptx.timing-panel.mouse-click-2") }).on_click(cx.listener(|e, _, _, cx| e.toggle_timing_panel(false, cx))))
             .child(Button::new("pptx-timing-auto").small().ghost().label(if automatic { crate::shell::i18n::text("pptx.timing-panel.after") } else { crate::shell::i18n::text("pptx.timing-panel.after-2") }).on_click(cx.listener(|e, _, _, cx| e.toggle_timing_panel(true, cx))))
-            .child(div().text_size(px(13.)).child(crate::shell::i18n::text("pptx.timing-panel.advance-after-s"))).child(Input::new(&after).small());
+            .child(div().text_size(px(13.)).child(crate::shell::i18n::text("pptx.timing-panel.advance-after-s"))).child(Input::new(&after).small().cleanable(true));
         if let Some(error) = error { body = body.child(div().text_size(px(12.)).text_color(rgb(0xb3261e)).child(error)); }
         body = body.child(h_flex().gap_1()
             .child(Button::new("pptx-timing-apply").primary().small().label(crate::shell::i18n::text("_shell.apply")).on_click(cx.listener(|e, _, w, cx| e.apply_timing_panel(w, cx))))

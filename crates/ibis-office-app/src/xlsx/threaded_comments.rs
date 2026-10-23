@@ -301,7 +301,7 @@ impl SlideEditor {
         // Input field and send button
         let input_area = v_flex()
             .gap_1()
-            .child(mark("input", Input::new(&input).small().into_any_element()))
+            .child(mark("input", Input::new(&input).small().cleanable(true).into_any_element()))
             .child(
                 h_flex()
                     .justify_end()

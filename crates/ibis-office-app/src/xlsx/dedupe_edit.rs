@@ -190,7 +190,7 @@ impl SlideEditor {
                             .into_any_element(),
                     )),
             )
-            .child(mark("range", Input::new(&p.range).small().into_any_element()))
+            .child(mark("range", Input::new(&p.range).small().cleanable(true).into_any_element()))
             .child(mark(
                 "header",
                 Button::new("dedupe-header")

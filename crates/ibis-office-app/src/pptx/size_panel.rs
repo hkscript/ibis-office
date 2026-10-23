@@ -8,6 +8,7 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::EmuSize;
 use crate::shell::chrome::SidebarPanel;
 use crate::shell::editor::SlideEditor;
@@ -115,11 +116,11 @@ impl SlideEditor {
                 .child(choice("pptx-size-maximize", "pptx.size-panel.maximize", ScaleMode::Maximize))
                 .child(choice("pptx-size-fit", "pptx.size-panel.ensure-fit", ScaleMode::Fit)))
             .child(div().text_size(px(13.)).child(crate::shell::i18n::text("pptx.frame-panel.width-cm")))
-            .child(Input::new(&width).small())
+            .child(Input::new(&width).small().cleanable(true))
             .child(div().text_size(px(13.)).child(crate::shell::i18n::text("pptx.frame-panel.height-cm")))
-            .child(Input::new(&height).small())
+            .child(Input::new(&height).small().cleanable(true))
             .child(div().text_size(px(13.)).child(crate::shell::i18n::text("pptx.size-panel.first-slide-number")))
-            .child(Input::new(&first).small());
+            .child(Input::new(&first).small().cleanable(true));
         if let Some(error) = error { body = body.child(div().text_size(px(12.)).text_color(rgb(0xb3261e)).child(error)); }
         let body = body.child(h_flex().gap_1()
             .child(Button::new("pptx-size-apply").primary().small().label(crate::shell::i18n::text("_shell.apply")).on_click(cx.listener(|e, _, w, cx| e.apply_slide_size_panel(w, cx))))

@@ -9,6 +9,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::{
     AnimationClass, AnimationLook, AnimationSide, AutoShape, CameraPreset, Command, EmuRect, Fill,
     Insets, ShapeId, ShapeKind, SlideId, Tilt, Transition,
@@ -398,6 +399,14 @@ impl SlideEditor {
     }
 
     pub(crate) fn threed_model_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
+        if !self.pptx()?.threed_panel.as_ref().is_some_and(|p| p.open) {
+            return None;
+        }
+        self.render_threed_model_panel(cx)
+    }
+
+    #[inline(never)]
+    fn render_threed_model_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
         let p = self.pptx()?.threed_panel.clone()?;
         if !p.open {
             return None;

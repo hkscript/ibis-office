@@ -3170,7 +3170,16 @@ pub(crate) fn right_click_menu_on_the_slide() {
     if hit_empty {
         s.right_click(empty);
         assert!(s.with(|e, _| e.selected_ids().is_empty()));
-        assert_eq!(s.with(|e, _| e.shape_context_menu_entries().len()), 3);
+        // The blank-slide menu has the slide's own commands (new slide, layout, background…) after the three clipboard ones.
+        let ids = s.with(|e, _| e.shape_context_menu_entries().iter().filter_map(|m| match m {
+            crate::shell::chrome::MenuEntry::Item(i) => Some(i.id.to_string()),
+            crate::shell::chrome::MenuEntry::Submenu(sub) => Some(sub.id.to_string()),
+            _ => None,
+        }).collect::<Vec<_>>());
+        for want in ["edit.paste", "pptx.new-slide", "pptx.layout", "pptx.background"] {
+            assert!(ids.iter().any(|i| i == want), "{want} in {ids:?}");
+        }
+        assert!(!ids.iter().any(|i| i == "pptx.alt-text" || i == "pptx.order"), "no shape commands without a shape: {ids:?}");
     }
 }
 
@@ -5485,12 +5494,9 @@ pub(crate) fn new_open_save_and_copy_presentation() {
     drop(s_copy);
 
     // 4. 新規プレゼンテーション作成（new_file）
-    let mut s_new = Scenario::open("test/editing/pptx-plan.pptx");
-    // ファイルを閉じる
-    s_new.update(|e, window, cx| {
-        e.close_file(&crate::CloseFile, window, cx);
-    });
-    assert!(!s_new.with(|e, _| e.has_document), "ファイルを閉じるとドキュメントなし状態になる");
+    // スタート ウィンドウ（⌘W はウィンドウごと閉じるので、ドキュメントのないウィンドウから）
+    let mut s_new = Scenario::start_view();
+    assert!(!s_new.with(|e, _| e.has_document), "スタート ウィンドウはドキュメントなし状態");
 
     // 新規作成
     s_new.update(|e, window, cx| {
@@ -15549,7 +15555,7 @@ pub(crate) fn threed_model_views_animations_record_preview_screen_reader_and_set
 }
 
 pub(crate) fn all() -> Vec<(&'static str, fn())> {
-    vec![
+    let mut all: Vec<(&'static str, fn())> = vec![
         ("pptx::threed_model_views_animations_record_preview_screen_reader_and_settings", threed_model_views_animations_record_preview_screen_reader_and_settings),
         ("pptx::odp_opens_as_a_pptx", odp_opens_as_a_pptx),
         ("pptx::legacy_ppt_rich_slide", legacy_ppt_rich_slide),
@@ -15874,6 +15880,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("pptx::ink_convert_to_text_and_math", ink_convert_to_text_and_math),
         ("pptx::audio_record_and_media_compression", audio_record_and_media_compression),
         ("pptx::audit001_dump_menu_ids", audit001_dump_menu_ids),
+        ("pptx::menu_shortcuts_can_be_pressed_and_are_unique", menu_shortcuts_can_be_pressed_and_are_unique),
         ("pptx::audit010_id_mapping_consistency", audit010_id_mapping_consistency),
         ("pptx::insert_3d_model_and_embedded_object", insert_3d_model_and_embedded_object),
         ("pptx::slideshow_current_slide_and_blank_screen", slideshow_current_slide_and_blank_screen),
@@ -15904,7 +15911,11 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("pptx::context_menu_inspect_compatibility_photo_album_and_master_views", context_menu_inspect_compatibility_photo_album_and_master_views),
         ("pptx::context_menu_find_math_ink_and_replace_fonts", context_menu_find_math_ink_and_replace_fonts),
         ("pptx::context_menu_frame_theme_timing_and_alt_text_panels", context_menu_frame_theme_timing_and_alt_text_panels),
-    ]
+        ("pptx::context_menu_links_header_footer_notes_marks_and_properties_panels", context_menu_links_header_footer_notes_marks_and_properties_panels),
+    ];
+    #[cfg(target_os = "macos")]
+    all.extend(super::corpus_report::all());
+    all
 }
 
 
@@ -17678,6 +17689,70 @@ pub(crate) fn audio_record_and_media_compression() {
     undo_all_and_redo(&mut s);
 }
 
+
+/// The shortcuts the menus show: each can be pressed (the key is one a keyboard gives, in the form `run_menu_shortcut` compares), and
+/// no two enabled items of a state have the same one (the first would take it). The ids in `UNPRESSABLE` show a key a keystroke
+/// does not give in that form (a character made with ⇧: another place handles it); a new one fails.
+pub(crate) fn menu_shortcuts_can_be_pressed_and_are_unique() {
+    use crate::shell::chrome::MenuEntry;
+    use crate::pptx::slide_view::{parse_shortcut, shortcut_of};
+    const UNPRESSABLE: &[&str] = &["text.superscript"];
+    fn walk(entries: &[MenuEntry], out: &mut Vec<(String, &'static str, bool)>) {
+        for entry in entries {
+            match entry {
+                MenuEntry::Item(item) => out.extend(item.shortcut.map(|sc| (item.id.to_string(), sc, item.enabled()))),
+                MenuEntry::Submenu(sub) => walk(&sub.items, out),
+                _ => {}
+            }
+        }
+    }
+    let mut s = Scenario::open("test/editing/pptx-plan.pptx");
+    let mut items = Vec::new();
+    s.with(|e, _| {
+        for (_, entries) in &e.menus().menus {
+            walk(entries, &mut items);
+        }
+    });
+    let mut unpressable = Vec::new();
+    let mut same: std::collections::BTreeMap<(u8, String), Vec<String>> = Default::default();
+    for (id, shown, connected) in &items {
+        let Some(want) = parse_shortcut(shown) else {
+            unpressable.push(format!("{id} {shown}: no key"));
+            continue;
+        };
+        // Pressing the label's key gives the same form back (its keystroke, as GPUI names the key, compared in `run_menu_shortcut`).
+        let name = match want.1.as_str() {
+            "↑" => "up".to_string(),
+            "↓" => "down".to_string(),
+            "←" => "left".to_string(),
+            "→" => "right".to_string(),
+            "↩" => "enter".to_string(),
+            "⌫" => "backspace".to_string(),
+            "ESC" => "escape".to_string(),
+            other => other.to_lowercase(),
+        };
+        let keystroke = gpui_kit::Keystroke { modifiers: gpui_kit::Modifiers { platform: want.0 & 1 != 0, control: want.0 & 2 != 0, alt: want.0 & 4 != 0, shift: want.0 & 8 != 0, ..Default::default() }, key: name.clone(), key_char: None };
+        let pressed = shortcut_of(&keystroke);
+        if pressed.as_ref() != Some(&want) && !UNPRESSABLE.contains(&id.as_str()) && !matches!(want.1.as_str(), "ESC" | "ENTER" | "TAB" | "SPACE") {
+            unpressable.push(format!("{id} {shown}: pressed as {pressed:?}, the item has {want:?}"));
+        }
+        if *connected && (want.0 & 7 != 0 || want.1.starts_with('F') && want.1.len() >= 2) {
+            same.entry(want).or_default().push(id.clone());
+        }
+    }
+    let conflicts: Vec<_> = same
+        .iter()
+        .filter_map(|(k, ids)| {
+            let mut ids = ids.clone();
+            ids.sort();
+            ids.dedup();
+            (ids.len() > 1).then(|| format!("{k:?}: {ids:?}"))
+        })
+        .collect();
+    assert!(unpressable.is_empty(), "shortcuts shown that cannot be pressed: {unpressable:?}");
+    assert!(conflicts.is_empty(), "two enabled menu items with one shortcut (the first would take it): {conflicts:?}");
+}
+
 /// PPTX-AUDIT-001, PPTX-AUDIT-002: tasks/doc/pptx-menu-ids.txt, for `scripts/gen-pptx-ribbon-map.py` (what the menus really have).
 pub(crate) fn audit001_dump_menu_ids() {
     let mut s = Scenario::open("test/editing/pptx-plan.pptx");
@@ -17710,8 +17785,7 @@ pub(crate) fn audit001_dump_menu_ids() {
     let status = s.with(|e, _| e.status.clone());
     assert!(status.is_some(), "thesaurus set status: {:?}", status);
 
-    let path = crate::shell::scenario::repo_root().join("tasks/doc/pptx-menu-ids.txt");
-    std::fs::write(path, ids.join("\n")).unwrap();
+    crate::shell::scenario::dump_menu_ids("pptx-menu-ids.txt", &ids);
 }
 
 /// PPTX-AUDIT-010: tasks/doc/ids-pptx.md の整合性を検証（機能IDとシナリオの紐付け、欠落や未結びつきの監査）。
@@ -21801,5 +21875,327 @@ pub(crate) fn context_menu_frame_theme_timing_and_alt_text_panels() {
 
     undo_all_and_redo(&mut s);
 }
+
+/// PPTX-AUDIT-003 (Batch 36): リンクの挿入・編集パネル、スライドのヘッダーとフッターパネル、
+/// ノートと配布資料のヘッダーとフッターパネル、文書プロパティ・カスタムプロパティパネルの右クリックメニュー検証。
+pub(crate) fn context_menu_links_header_footer_notes_marks_and_properties_panels() {
+    use ibis_doc_model::{NotesDate, SlideLink};
+    let mut s = Scenario::open("test/editing/pptx-plan.pptx");
+
+    // 1. リンクの挿入・編集パネル (#pptx-link-panel) の右クリックメニュー (PPTX-OBJECT-023, 024, PPTX-ACCESS-008, 009)
+    let (shape0_id, slide2_id) = s.with(|e, _| (e.slide().shapes[0].id, e.presentation().slides[1].id));
+    s.click_shape(0);
+    s.update(|e, w, cx| {
+        e.slide_open_link_panel(w, cx);
+    });
+    assert!(s.with(|e, _| e.pptx().unwrap().link_panel.is_some()));
+
+    // このドキュメント内の場所モードへ切替 → スライド 2 を選択して適用 → 右クリックからリンク先へ移動
+    s.update(|e, w, cx| {
+        let entries = e.link_panel_context_menu_entries(cx);
+        for key in [
+            "_shell.apply",
+            "_shell.view",
+            "edit.copy",
+            "pptx.links.remove-link",
+            "pptx.links.web-page-file",
+            "pptx.links.place-document",
+            "_shell.close",
+        ] {
+            assert!(
+                crate::shell::scenario::find_item(&entries, key).is_some(),
+                "missing link panel context menu item: {key}"
+            );
+        }
+        let place_item = crate::shell::scenario::find_item(&entries, "pptx.links.place-document").unwrap();
+        assert!(!place_item.checked);
+        (place_item.handler.as_ref().unwrap())(e, w, cx);
+    });
+    assert!(!s.with(|e, _| e.pptx().unwrap().link_panel.as_ref().unwrap().web));
+
+    s.update(|e, w, cx| {
+        e.link_panel_select_place(SlideLink::Slide(slide2_id), cx);
+        let entries = e.link_panel_context_menu_entries(cx);
+        let apply_item = crate::shell::scenario::find_item(&entries, "_shell.apply").unwrap();
+        (apply_item.handler.as_ref().unwrap())(e, w, cx);
+    });
+    assert!(s.with(|e, _| e.pptx().unwrap().link_panel.is_none()));
+    assert_eq!(
+        s.with(|e, _| e.slide().shape_links.get(&shape0_id).cloned()),
+        Some(SlideLink::Slide(slide2_id))
+    );
+
+    // 再度リンクパネルを開き、右クリック「表示 (_shell.view)」でスライド 2 へジャンプすることを確認
+    s.click_shape(0);
+    s.update(|e, w, cx| {
+        e.slide_open_link_panel(w, cx);
+        let entries = e.link_panel_context_menu_entries(cx);
+        let follow_item = crate::shell::scenario::find_item(&entries, "_shell.view").unwrap();
+        assert!(!follow_item.disabled);
+        (follow_item.handler.as_ref().unwrap())(e, w, cx);
+    });
+    assert_eq!(s.with(|e, _| e.current_slide), slide2_id);
+
+    // スライド 1 に戻って Web ページ URL リンクとヒント（ScreenTip）を設定・コピー・適用
+    s.page(1);
+    s.click_shape(0);
+    s.update(|e, w, cx| {
+        e.slide_open_link_panel(w, cx);
+        let entries = e.link_panel_context_menu_entries(cx);
+        let web_item = crate::shell::scenario::find_item(&entries, "pptx.links.web-page-file").unwrap();
+        (web_item.handler.as_ref().unwrap())(e, w, cx);
+        let panel = e.pptx().unwrap().link_panel.as_ref().unwrap();
+        panel.url.update(cx, |f, cx| f.set_value("https://ibis.ne.jp/audit36", w, cx));
+        panel.tooltip.update(cx, |f, cx| f.set_value("Audit 36 ScreenTip", w, cx));
+
+        let entries_after = e.link_panel_context_menu_entries(cx);
+        let copy_item = crate::shell::scenario::find_item(&entries_after, "edit.copy").unwrap();
+        assert!(!copy_item.disabled);
+        (copy_item.handler.as_ref().unwrap())(e, w, cx);
+
+        let apply_item = crate::shell::scenario::find_item(&entries_after, "_shell.apply").unwrap();
+        (apply_item.handler.as_ref().unwrap())(e, w, cx);
+    });
+    assert_eq!(
+        s.with(|e, _| e.slide().shape_links.get(&shape0_id).cloned()),
+        Some(SlideLink::Url("https://ibis.ne.jp/audit36".to_string()))
+    );
+    assert_eq!(
+        s.with(|e, _| e.slide().shape_link_tooltips.get(&shape0_id).cloned()),
+        Some("Audit 36 ScreenTip".to_string())
+    );
+
+    // 2. スライドのヘッダーとフッターパネル (#pptx-header-footer-panel) の右クリックメニュー (PPTX-MASTER-019, 020)
+    s.update(|e, w, cx| {
+        e.open_header_footer(w, cx);
+    });
+    assert!(s.with(|e, _| e.pptx().unwrap().header_footer.is_some()));
+
+    s.update(|e, w, cx| {
+        let entries = e.header_footer_context_menu_entries();
+        for key in [
+            "_shell.apply",
+            "pptx.notes-marks-panel.apply-all",
+            "pptx.find.clear",
+            "_shell.date-time",
+            "pptx.notes-marks-panel.update-automatically",
+            "pptx.header-footer.slide-number",
+            "_shell.footer",
+            "pptx.header-footer.don-t-show-title-slide",
+            "pptx.notes-header-footer",
+            "_shell.close",
+        ] {
+            assert!(
+                crate::shell::scenario::find_item(&entries, key).is_some(),
+                "missing header-footer context menu item: {key}"
+            );
+        }
+        // 一旦すべてクリアしてから日付・スライド番号・フッター・タイトルスライド非表示を右クリックで ON にする
+        let clear_item = crate::shell::scenario::find_item(&entries, "pptx.find.clear").unwrap();
+        (clear_item.handler.as_ref().unwrap())(e, w, cx);
+
+        for key in [
+            "_shell.date-time",
+            "pptx.header-footer.slide-number",
+            "_shell.footer",
+            "pptx.header-footer.don-t-show-title-slide",
+        ] {
+            let entries2 = e.header_footer_context_menu_entries();
+            let item = crate::shell::scenario::find_item(&entries2, key).unwrap();
+            (item.handler.as_ref().unwrap())(e, w, cx);
+        }
+        let hf = e.pptx().unwrap().header_footer.as_ref().unwrap();
+        hf.date_text.update(cx, |f, cx| f.set_value("2026-10-18", w, cx));
+        hf.footer_text.update(cx, |f, cx| f.set_value("Batch36 Slide Footer", w, cx));
+
+        let entries3 = e.header_footer_context_menu_entries();
+        let apply_all = crate::shell::scenario::find_item(&entries3, "pptx.notes-marks-panel.apply-all").unwrap();
+        (apply_all.handler.as_ref().unwrap())(e, w, cx);
+    });
+    assert!(s.with(|e, _| e.pptx().unwrap().header_footer.is_none()));
+    assert!(s.with(|e, _| e.presentation().header_footer.date));
+    assert!(s.with(|e, _| e.presentation().header_footer.footer));
+    assert!(s.with(|e, _| e.presentation().header_footer.number));
+    assert!(!s.with(|e, _| e.presentation().header_footer.on_title_slides));
+
+    // スライドのヘッダーとフッターパネルから右クリックで「ノートと配布資料のヘッダーとフッター」へ切替
+    s.update(|e, w, cx| {
+        e.open_header_footer(w, cx);
+        let entries = e.header_footer_context_menu_entries();
+        let switch_notes = crate::shell::scenario::find_item(&entries, "pptx.notes-header-footer").unwrap();
+        (switch_notes.handler.as_ref().unwrap())(e, w, cx);
+    });
+    assert!(s.with(|e, _| e.pptx().unwrap().header_footer.is_none()));
+    assert!(s.with(|e, _| e.pptx().unwrap().notes_marks_panel.is_some()));
+
+    // 3. ノートと配布資料のヘッダーとフッターパネル (#pptx-notes-marks-panel) の右クリックメニュー (PPTX-NOTES-006, 010)
+    s.update(|e, w, cx| {
+        let entries = e.notes_marks_context_menu_entries();
+        for key in [
+            "pptx.notes-marks-panel.apply-all",
+            "pptx.find.clear",
+            "_shell.header",
+            "_shell.date-time",
+            "pptx.notes-marks-panel.update-automatically",
+            "_xlsx.page-number",
+            "_shell.footer",
+            "_shell.header-footer",
+            "_shell.close",
+        ] {
+            assert!(
+                crate::shell::scenario::find_item(&entries, key).is_some(),
+                "missing notes-marks context menu item: {key}"
+            );
+        }
+        // 一旦すべてクリアしてからヘッダー・フッター・ページ番号を右クリックで有効化して適用
+        let clear_item = crate::shell::scenario::find_item(&entries, "pptx.find.clear").unwrap();
+        (clear_item.handler.as_ref().unwrap())(e, w, cx);
+    });
+    assert!(!s.with(|e, _| e.pptx().unwrap().notes_marks_panel.as_ref().unwrap().header));
+    assert!(!s.with(|e, _| e.pptx().unwrap().notes_marks_panel.as_ref().unwrap().date));
+
+    s.update(|e, w, cx| {
+        for key in ["_shell.header", "_shell.footer", "_xlsx.page-number"] {
+            let entries = e.notes_marks_context_menu_entries();
+            let item = crate::shell::scenario::find_item(&entries, key).unwrap();
+            (item.handler.as_ref().unwrap())(e, w, cx);
+        }
+        let panel = e.pptx().unwrap().notes_marks_panel.as_ref().unwrap();
+        panel.header_text.update(cx, |f, cx| f.set_value("Notes Header 36", w, cx));
+        panel.footer_text.update(cx, |f, cx| f.set_value("Notes Footer 36", w, cx));
+
+        let entries_apply = e.notes_marks_context_menu_entries();
+        let apply_item = crate::shell::scenario::find_item(&entries_apply, "pptx.notes-marks-panel.apply-all").unwrap();
+        (apply_item.handler.as_ref().unwrap())(e, w, cx);
+    });
+    assert!(s.with(|e, _| e.pptx().unwrap().notes_marks_panel.is_none()));
+    assert_eq!(
+        s.with(|e, _| e.presentation().notes_marks.header.clone()),
+        Some("Notes Header 36".to_string())
+    );
+    assert_eq!(
+        s.with(|e, _| e.presentation().notes_marks.footer.clone()),
+        Some("Notes Footer 36".to_string())
+    );
+    assert_eq!(s.with(|e, _| e.presentation().notes_marks.date.clone()), None::<NotesDate>);
+    assert!(s.with(|e, _| e.presentation().notes_marks.number));
+
+    // 4. 文書プロパティ・カスタムプロパティパネル (#pptx-properties-panel) の右クリックメニュー (PPTX-FILE-008, 009, 011)
+    s.update(|e, w, cx| {
+        e.open_presentation_properties_panel(w, cx);
+    });
+    assert!(s.with(|e, _| e.pptx().unwrap().properties_panel.is_some()));
+
+    s.update(|e, w, cx| {
+        let entries = e.properties_panel_context_menu_entries(None);
+        for key in [
+            "_shell.apply",
+            "fix.common.add",
+            "pptx.properties-panel.embed-fonts",
+            "pptx.inspect.remove-properties",
+            "pptx.inspect-document",
+            "pptx.check-accessibility",
+            "pptx.compatibility-check",
+            "_shell.close",
+        ] {
+            assert!(
+                crate::shell::scenario::find_item(&entries, key).is_some(),
+                "missing properties panel context menu item: {key}"
+            );
+        }
+        let panel = e.pptx().unwrap().properties_panel.as_ref().unwrap();
+        panel.title.update(cx, |f, cx| f.set_value("Batch 36 Presentation", w, cx));
+        panel.creator.update(cx, |f, cx| f.set_value("Secret Author", w, cx));
+        panel.new_custom_name.update(cx, |f, cx| f.set_value("AuditBatch", w, cx));
+        panel.new_custom_val.update(cx, |f, cx| f.set_value("36", w, cx));
+
+        let entries2 = e.properties_panel_context_menu_entries(None);
+        let add_custom = crate::shell::scenario::find_item(&entries2, "fix.common.add").unwrap();
+        assert!(!add_custom.disabled);
+        (add_custom.handler.as_ref().unwrap())(e, w, cx);
+        // The panel holds its edits until 適用.
+        let apply_entries = e.properties_panel_context_menu_entries(None);
+        let apply = crate::shell::scenario::find_item(&apply_entries, "_shell.apply").unwrap();
+        (apply.handler.as_ref().unwrap())(e, w, cx);
+    });
+    assert_eq!(s.with(|e, _| e.presentation().properties.custom.len()), 1);
+    assert_eq!(s.with(|e, _| e.presentation().properties.custom[0].name.clone()), "AuditBatch");
+
+    // カスタムプロパティ行の右クリックメニューでコピー＆一時追加分の削除を検証
+    s.update(|e, w, cx| {
+        let row_entries = e.properties_panel_context_menu_entries(Some(0));
+        let copy_item = crate::shell::scenario::find_item(&row_entries, "edit.copy").unwrap();
+        assert!(!copy_item.disabled);
+        (copy_item.handler.as_ref().unwrap())(e, w, cx);
+
+        // 2件目を追加してから行右クリック「削除」で消す
+        let panel = e.pptx().unwrap().properties_panel.as_ref().unwrap();
+        panel.new_custom_name.update(cx, |f, cx| f.set_value("TempProp", w, cx));
+        panel.new_custom_val.update(cx, |f, cx| f.set_value("TempVal", w, cx));
+        let entries_add = e.properties_panel_context_menu_entries(None);
+        let add_item = crate::shell::scenario::find_item(&entries_add, "fix.common.add").unwrap();
+        (add_item.handler.as_ref().unwrap())(e, w, cx);
+        let apply_entries = e.properties_panel_context_menu_entries(None);
+        let apply = crate::shell::scenario::find_item(&apply_entries, "_shell.apply").unwrap();
+        (apply.handler.as_ref().unwrap())(e, w, cx);
+    });
+    assert_eq!(s.with(|e, _| e.presentation().properties.custom.len()), 2);
+
+    s.update(|e, w, cx| {
+        let row1_entries = e.properties_panel_context_menu_entries(Some(1));
+        let del_item = crate::shell::scenario::find_item(&row1_entries, "edit.delete").unwrap();
+        assert!(!del_item.disabled);
+        (del_item.handler.as_ref().unwrap())(e, w, cx);
+
+        // 個人情報欄をクリアしてから適用して閉じる
+        let entries_clear = e.properties_panel_context_menu_entries(None);
+        let clear_personal =
+            crate::shell::scenario::find_item(&entries_clear, "pptx.inspect.remove-properties").unwrap();
+        (clear_personal.handler.as_ref().unwrap())(e, w, cx);
+
+        let apply_entries = e.properties_panel_context_menu_entries(None);
+        let apply = crate::shell::scenario::find_item(&apply_entries, "_shell.apply").unwrap();
+        (apply.handler.as_ref().unwrap())(e, w, cx);
+        let entries_close = e.properties_panel_context_menu_entries(None);
+        let close_item = crate::shell::scenario::find_item(&entries_close, "_shell.close").unwrap();
+        (close_item.handler.as_ref().unwrap())(e, w, cx);
+    });
+    assert!(s.with(|e, _| e.pptx().unwrap().properties_panel.is_none()));
+    assert_eq!(s.with(|e, _| e.presentation().properties.custom.len()), 1);
+    assert_eq!(
+        s.with(|e, _| e.presentation().properties.title.clone()),
+        Some("Batch 36 Presentation".to_string())
+    );
+    assert_eq!(s.with(|e, _| e.presentation().properties.creator.clone()), None);
+
+    // 5. スクリーンショット・保存・再読込・Undo/Redo ラウンドトリップ検証
+    s.screenshot("context_menu_links_header_footer_notes_marks_and_properties_panels");
+    s.save_as("context_menu_links_header_footer_notes_marks_and_properties_panels.pptx");
+    let reloaded = s.reopen();
+    assert_eq!(
+        reloaded.slides[0].shape_links.get(&shape0_id),
+        Some(&SlideLink::Url("https://ibis.ne.jp/audit36".to_string()))
+    );
+    assert_eq!(
+        reloaded.slides[0].shape_link_tooltips.get(&shape0_id).map(|t| t.as_str()),
+        Some("Audit 36 ScreenTip")
+    );
+    assert!(reloaded.header_footer.date);
+    assert!(reloaded.header_footer.footer);
+    assert!(reloaded.header_footer.number);
+    assert!(!reloaded.header_footer.on_title_slides);
+    assert_eq!(reloaded.notes_marks.header.as_deref(), Some("Notes Header 36"));
+    assert_eq!(reloaded.notes_marks.footer.as_deref(), Some("Notes Footer 36"));
+    assert_eq!(reloaded.notes_marks.date, None);
+    assert!(reloaded.notes_marks.number);
+    assert_eq!(reloaded.properties.title.as_deref(), Some("Batch 36 Presentation"));
+    assert_eq!(reloaded.properties.creator, None);
+    assert_eq!(reloaded.properties.custom.len(), 1);
+    assert_eq!(reloaded.properties.custom[0].name, "AuditBatch");
+
+    undo_all_and_redo(&mut s);
+}
+
+
 
 

@@ -329,6 +329,7 @@ fn chart_from_cells(chart: &Chart, workbook: &Presentation, refs: &[SeriesRefs],
             let mut extra = group.series.last().cloned().expect("a series");
             extra.point_fills.clear();
             extra.point_strokes.clear();
+            extra.point_explosions.clear();
             if let Some(labels) = extra.labels.as_mut() {
                 labels.points.clear();
             }

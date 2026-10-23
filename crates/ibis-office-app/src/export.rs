@@ -182,6 +182,7 @@ impl Render for SlidePicture {
         self.shape_positions.borrow_mut().clear();
         let shape_positions = self.shape_positions.clone();
         let part = |origin: (f32, f32), inset: (f32, f32), view: Size<Pixels>| {
+            crate::render::rich_text::set_at_x_offset(inset.0 - origin.0);
             div().absolute().left(px(inset.0)).top(px(inset.1)).w(view.width).h(view.height).overflow_hidden().child(
                 div()
                     .absolute()
@@ -189,11 +190,12 @@ impl Render for SlidePicture {
                     .top(px(-origin.1))
                     .size_full()
                     .child(slide_backdrop(&self.slide, scale, res))
-                    .children(self.slide.shown_shapes().map(|s| shape_element(s, s.frame, scale, res, None))),
+                    .children(self.slide.shown_shapes().filter(|s| !res.print || self.slide.shape_prints.get(&s.id).copied().unwrap_or(true)).map(|s| shape_element(s, s.frame, scale, res, None))),
             )
         };
         let extra: Vec<Div> = self.extra.iter().map(|&(o, i, v)| part(o, i, v)).collect();
-        div().relative().w(self.size.width).h(self.size.height).overflow_hidden().bg(rgb(0xffffff)).children(extra).child(
+        crate::render::rich_text::set_at_x_offset(self.inset.0 - self.origin.0);
+        let picture = div().relative().w(self.size.width).h(self.size.height).overflow_hidden().bg(rgb(0xffffff)).children(extra).child(
             div().absolute().left(px(self.inset.0)).top(px(self.inset.1)).w(self.view.width).h(self.view.height).overflow_hidden().child(
                 div()
                     .absolute()
@@ -201,7 +203,7 @@ impl Render for SlidePicture {
                     .top(px(-self.origin.1))
                     .size_full()
                     .child(slide_backdrop(&self.slide, scale, res))
-                    .children(self.slide.shown_shapes().map(|s| {
+                    .children(self.slide.shown_shapes().filter(|s| !res.print || self.slide.shape_prints.get(&s.id).copied().unwrap_or(true)).map(|s| {
                         if s.text_body().is_some_and(|b| !b.is_empty()) {
                             let pos = crate::render::rich_text::TextPositions::default();
                             shape_positions.borrow_mut().push((s.id, pos.clone()));
@@ -226,7 +228,10 @@ impl Render for SlidePicture {
                 .left_0()
                 .size_full(),
             )
-        })
+        });
+        // The elements are all built: the offset is not for the other windows.
+        crate::render::rich_text::set_at_x_offset(0.0);
+        picture
     }
 }
 
@@ -273,7 +278,7 @@ fn paint_marks(marks: &[crate::xlsx::header_footer::PageMark], origin: Point<Pix
 /// (EMU).
 pub(crate) type Titles = (Option<(i64, i64)>, Option<(i64, i64)>);
 
-fn print_titles(presentation: &Presentation, slide: &Slide) -> Titles {
+pub(crate) fn print_titles(presentation: &Presentation, slide: &Slide) -> Titles {
     let Some(workbook) = presentation.workbook.as_ref() else { return (None, None) };
     let Some(index) = workbook.sheets.iter().position(|s| s.slide == Some(slide.id)) else { return (None, None) };
     let Some(name) = workbook.names.iter().find(|n| n.sheet == Some(index) && n.name.eq_ignore_ascii_case("_xlnm.Print_Titles")) else { return (None, None) };
@@ -292,7 +297,7 @@ fn print_titles(presentation: &Presentation, slide: &Slide) -> Titles {
     )
 }
 
-fn sheet_pages(slide: &Slide, area: EmuRect, titles: Titles, headings: (f64, f64)) -> Option<(SheetPrint, f64, Vec<EmuRect>)> {
+pub(crate) fn sheet_pages(slide: &Slide, area: EmuRect, titles: Titles, headings: (f64, f64)) -> Option<(SheetPrint, f64, Vec<EmuRect>)> {
     let (frame, sheet) = slide.shapes.iter().find_map(|s| match &s.kind {
         ibis_doc_model::ShapeKind::Sheet(sheet) => Some((s.frame, sheet)),
         _ => None,
@@ -375,9 +380,10 @@ fn page_spans(edges: &[i64], breaks: &[i64], start: i64, end: i64, room: f64, ti
             Some(b) => *b,
             None if limit == end => end,
             None => {
-                // The furthest edge that fits; a cell larger than the page is cut.
+                // The furthest edge that fits. A column (row) wider than the page gets a page of its
+                // own, cut at the page's edge: Excel does not go on with the rest of it on the next.
                 let i = edges.partition_point(|e| *e <= limit);
-                edges[..i].last().copied().filter(|e| *e > at).unwrap_or(limit)
+                edges[..i].last().copied().filter(|e| *e > at).or_else(|| edges.get(i).copied().filter(|e| *e > at)).unwrap_or(limit)
             }
         };
         out.push((at, next));
@@ -406,7 +412,52 @@ pub(crate) fn preview_pages(presentation: &Presentation, slide: &Slide, resource
     sheet_pages(slide, area, titles, headings).map(|(_, scale, pages)| (scale, pages)).unwrap_or((1.0, Vec::new()))
 }
 
-fn export_area(presentation: &Presentation, slide: &Slide) -> EmuRect {
+/// What Excel for Windows prints a sheet's columns and rows at, against the
+/// sizes it shows them at on the screen (96 dpi pixels): it lays a printed page
+/// out in the printer's units: a column comes out at the Normal font's printed digit width over
+/// its screen one (`print_column_factor`: 0.917 for ＭＳ Ｐゴシック 11, 1.008 for 游ゴシック 11) and a
+/// row 0.907 of its height. Measured on Excel 365's PDFs of a sheet of
+/// 9.44-character columns (57 pt on the screen, 52.46 pt printed) and 18 pt rows (16.32 pt);
+/// `IBIS_PRINT_COLUMNS` and `IBIS_PRINT_ROWS` override them for measuring.
+fn windows_print_geometry(presentation: &mut Presentation) {
+    if presentation.workbook.is_none() || ibis_pptx::EXCEL_METRICS != ibis_pptx::ExcelMetrics::Windows {
+        return;
+    }
+    let factor = |name: &str, default: f64| std::env::var(name).ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(default);
+    let style = presentation.workbook.as_ref().and_then(|w| w.default_style.clone()).unwrap_or_default();
+    let font_pt = if style.font_size > 0 { style.font_size as f64 / 100.0 } else { 11.0 };
+    let by_font = ibis_pptx::EXCEL_METRICS.print_column_factor(style.font.as_deref(), font_pt);
+    let (cf, rf) = (factor("IBIS_PRINT_COLUMNS", by_font), factor("IBIS_PRINT_ROWS", 1.0));
+    if (cf - 1.0).abs() < 1e-9 && (rf - 1.0).abs() < 1e-9 {
+        return;
+    }
+    let by = |v: i64, f: f64| (v as f64 * f).round() as i64;
+    for slide in &mut presentation.slides {
+        if !slide.shapes.iter().any(|s| matches!(s.kind, ibis_doc_model::ShapeKind::Sheet(_))) {
+            continue;
+        }
+        if let Some(size) = &mut slide.size {
+            *size = ibis_doc_model::EmuSize::new(by(size.width, cf), by(size.height, rf));
+        }
+        for shape in &mut slide.shapes {
+            let f = shape.frame;
+            // A picture or a chart keeps its own size (Excel prints it at the size it is, 411 pt wide
+            // in a page of 419.7 pt of columns); it is put where its cell now is. The sheet itself is
+            // all its cells.
+            let is_sheet = matches!(shape.kind, ibis_doc_model::ShapeKind::Sheet(_));
+            shape.frame = ibis_doc_model::EmuRect::new(by(f.x, cf), by(f.y, rf), if is_sheet { by(f.width, cf) } else { f.width }, if is_sheet { by(f.height, rf) } else { f.height });
+            if let ibis_doc_model::ShapeKind::Sheet(sheet) = &mut shape.kind {
+                let sheet = std::sync::Arc::make_mut(sheet);
+                sheet.columns.iter_mut().for_each(|c| *c = by(*c, cf));
+                sheet.rows.iter_mut().for_each(|r| *r = by(*r, rf));
+                sheet.default_column = by(sheet.default_column, cf);
+                sheet.default_row = by(sheet.default_row, rf);
+            }
+        }
+    }
+}
+
+pub(crate) fn export_area(presentation: &Presentation, slide: &Slide) -> EmuRect {
     let size = presentation.size_of(slide);
     let whole = ibis_doc_model::EmuRect::new(0, 0, size.width, size.height);
     let Some(sheet) = slide.shapes.iter().find_map(|s| match &s.kind {
@@ -454,6 +505,7 @@ fn black_and_white(slide: &mut Slide) {
 /// out as in the editor) and its headless renderer if it has one, and the
 /// platform, to be kept as long as the app.
 pub(crate) fn headless_app() -> (Rc<dyn Platform>, HeadlessAppContext) {
+    crate::xlsx::sheet_view::release_layouts();
     // On Windows the headless platform has no DirectWrite (its text system
     // lays out nothing): the full one, which opens no window either.
     let platform = gpui_kit::platform::current_platform(cfg!(not(windows)));
@@ -534,9 +586,17 @@ pub fn export(mut presentation: Presentation, options: &Options) -> Result<(), S
     crate::docx::flow_layout::expand_pages(&mut presentation, &resources, options.file_name.as_deref());
     let ts = cx.update(|app| app.text_system().clone());
     crate::xlsx::pivot::fit_built_pivots(&mut presentation, &resources, &ts);
+    windows_print_geometry(&mut presentation);
     lap("fields, pages, pivots", &mut lap_at);
     let count = presentation.slides.len();
-    let numbers: Vec<usize> = if options.slides.is_empty() { (1..=count).collect() } else { options.slides.clone() };
+    // Without `--slides`, the slides PowerPoint prints: the hidden ones are left out (their numbers
+    // still count). A deck of hidden slides only comes out whole.
+    let numbers: Vec<usize> = if options.slides.is_empty() {
+        let shown: Vec<usize> = (1..=count).filter(|&n| presentation.flow.is_some() || presentation.workbook.is_some() || !presentation.slides[n - 1].hidden).collect();
+        if shown.is_empty() { (1..=count).collect() } else { shown }
+    } else {
+        options.slides.clone()
+    };
     if let Some(n) = numbers.iter().find(|n| **n > count) {
         return Err(format!("Slide {n} does not exist ({count} slides in total)"));
     }
@@ -565,7 +625,29 @@ pub fn export(mut presentation: Presentation, options: &Options) -> Result<(), S
     crate::render::chart_view::VECTOR_EXPORT.with(|v| v.set(vector.is_some()));
     // The window a vector PDF's pages are drawn in, and its size.
     let mut page_window: Option<(WindowHandle<SlidePicture>, Size<Pixels>)> = None;
-    for &number in &numbers {
+    // The pages the sheets printed make (`&P` and `&N` count through all of them).
+    let sheet_page_counts: Vec<usize> = if vector.is_some() {
+        numbers
+            .iter()
+            .map(|&number| {
+                let mut slide = presentation.slides[number - 1].clone();
+                black_and_white(&mut slide);
+                let area = export_area(&presentation, &slide);
+                let titles = print_titles(&presentation, &slide);
+                let default_style = presentation.workbook.as_ref().and_then(|w| w.default_style.clone()).unwrap_or_default();
+                let headings = slide.shapes.iter().find_map(|s| match &s.kind {
+                    ibis_doc_model::ShapeKind::Sheet(sheet) => Some(crate::xlsx::header_footer::heading_size(sheet, &default_style, &resources)),
+                    _ => None,
+                }).unwrap_or((0.0, 0.0));
+                sheet_pages(&slide, area, titles, headings).map_or(0, |(_, _, p)| p.len())
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let total_sheet_pages: usize = sheet_page_counts.iter().sum();
+    let mut sheet_pages_before = 0usize;
+    for (position, &number) in numbers.iter().enumerate() {
         let mut slide = presentation.slides[number - 1].clone();
         black_and_white(&mut slide);
         let area = export_area(&presentation, &slide);
@@ -577,11 +659,21 @@ pub fn export(mut presentation: Presentation, options: &Options) -> Result<(), S
             _ => None,
         }).unwrap_or((0.0, 0.0));
         resources.print_scale.set(sheet_pages(&slide, area, titles, headings).map_or(1.0, |(_, scale, _)| scale));
+        {
+            // Where the pages of the sheet start, in the sheet's own EMU.
+            let frame = slide.shapes.iter().find_map(|s| matches!(s.kind, ibis_doc_model::ShapeKind::Sheet(_)).then_some(s.frame));
+            let breaks = match (frame, sheet_pages(&slide, area, titles, headings)) {
+                (Some(frame), Some((_, _, pages))) => (pages.iter().map(|p| p.y - frame.y).collect(), pages.iter().map(|p| p.x - frame.x).collect()),
+                _ => Default::default(),
+            };
+            *resources.print_breaks.borrow_mut() = Arc::new(breaks);
+        }
         // A worksheet in a PDF comes out on its paper, a page at a time.
         if let Some(writer) = &mut vector
             && let Some((print, scale, sheet_pages)) = sheet_pages(&slide, area, titles, headings)
         {
-            print_sheet(&mut cx, writer, slide, &print, scale, &sheet_pages, titles, headings, density, &resources, &default_style, options.file_name.as_deref().unwrap_or(""))?;
+            print_sheet(&mut cx, writer, slide, &print, scale, &sheet_pages, titles, headings, density, &resources, &default_style, options.file_name.as_deref().unwrap_or(""), (sheet_pages_before, total_sheet_pages))?;
+            sheet_pages_before += sheet_page_counts.get(position).copied().unwrap_or(0);
             continue;
         }
         // The renderer's textures reach 16 384 pixels; a longer sheet comes
@@ -644,7 +736,7 @@ pub fn export(mut presentation: Presentation, options: &Options) -> Result<(), S
                 .unwrap_or_default();
             let text_system = cx.text_system().clone();
             let page_pt = (area.width as f32 / 12_700.0, area.height as f32 / 12_700.0);
-            writer.add_page(records, f32::from(window_size.width), page_pt, density, &mut |id| text_system.font_data(id));
+            writer.add_page(records, f32::from(window_size.width), page_pt, density, &mut |id| (text_system.font_data(id), text_system.synthetic_style(id)));
             continue;
         }
         let resources = resources.clone();
@@ -764,6 +856,8 @@ fn print_sheet(
     resources: &Rc<Resources>,
     default_style: &ibis_doc_model::CellStyle,
     file_name: &str,
+    // The pages before this sheet's and all the sheets' pages (for `&P` and `&N`).
+    (pages_before, pages_in_all): (usize, usize),
 ) -> Result<(), String> {
     // A pixel a point: the PDF is vector graphics, so the size drawn at
     // matters only for layout (and drawing larger takes longer).
@@ -818,6 +912,9 @@ fn print_sheet(
         let title_columns = titles.1.filter(|(_, end)| page.x >= *end);
         let (tw, th) = (title_columns.map_or(0, |(a, b)| b - a), title_rows.map_or(0, |(a, b)| b - a));
         let view = (page.width as f64 * scale, page.height as f64 * scale);
+        // (A page of one over-wide column is cut at the paper's printable edge.)
+        let view = (view.0.min((paper_w - left - right) as f64), view.1.min((paper_h - top - bottom) as f64));
+        let (more_columns, more_rows) = (pages.iter().any(|q| q.x >= page.x + page.width), pages.iter().any(|q| q.y >= page.y + page.height));
         let whole = ((page.width + tw) as f64 * scale, (page.height + th) as f64 * scale);
         let room = ((paper_w - left - right) as f64, (paper_h - top - bottom) as f64);
         let corner_at = (
@@ -845,8 +942,11 @@ fn print_sheet(
                 picture.extra = extra;
                 picture.origin = (page.x as f32 * px_per_emu, page.y as f32 * px_per_emu);
                 picture.inset = ((inset.0 * PX_PER_EMU) as f32, (inset.1 * PX_PER_EMU) as f32);
-                picture.view = gpui_kit::size(px((view.0 * PX_PER_EMU) as f32), px((view.1 * PX_PER_EMU) as f32));
-                picture.marks = crate::xlsx::header_footer::page_marks(print, default_style, scale as f32, i as u32 + 1, pages.len() as u32, &sheet_name, file_name, &picture.resources);
+                // The next page's first row or column must not show in this one (its fill lies
+                // a hundredth of a point inside the clip once the corner has been put on a whole point).
+                let (cut_x, cut_y) = (if more_columns { 0.25 } else { 0.0 }, if more_rows { 0.25 } else { 0.0 });
+                picture.view = gpui_kit::size(px((view.0 * PX_PER_EMU) as f32 - cut_x), px((view.1 * PX_PER_EMU) as f32 - cut_y));
+                picture.marks = crate::xlsx::header_footer::page_marks(print, default_style, scale as f32, (pages_before + i) as u32 + 1, pages_in_all.max(pages_before + pages.len()) as u32, &sheet_name, file_name, &picture.resources);
                 picture.rules.clear();
                 if print.headings && let Some(sheet) = picture.slide.shapes.iter().find_map(|s| match &s.kind {
                     ibis_doc_model::ShapeKind::Sheet(sheet) => Some((s.frame, sheet.clone())),
@@ -939,7 +1039,7 @@ fn print_sheet(
                 file.write_all(text.as_bytes()).ok();
             }
         }
-        writer.add_page_shifted(records, f32::from(window_size.width), page_pt, density, shift, &mut |id| text_system.font_data(id));
+        writer.add_page_shifted(records, f32::from(window_size.width), page_pt, density, shift, &mut |id| (text_system.font_data(id), text_system.synthetic_style(id)));
         adding += adding_started.elapsed();
     }
     if std::env::var_os("IBIS_DEBUG_TIMING").is_some() {
@@ -1116,14 +1216,14 @@ pub(crate) fn layout_tsv(
 ) -> String {
     use ibis_doc_model::{Geometry, Placeholder, ShapeKind};
     let mut out = String::from("z\tlayer\tkind\tx\ty\twidth\theight\ttext_x\ttext_y\ttext_width\ttext_height\toverflow\tdetail\n");
-    let shapes = slide.shown_backdrop().iter().map(|s| ("backdrop", s)).chain(slide.shown_shapes().map(|s| ("slide", s)));
+    let shapes = slide.shown_backdrop().iter().map(|s| ("backdrop", s)).chain(slide.shown_shapes().filter(|s| slide.shape_prints.get(&s.id).copied().unwrap_or(true)).map(|s| ("slide", s)));
     for (z, (layer, shape)) in shapes.enumerate() {
         let has_text = shape.text_body().is_some_and(|b| !b.is_empty());
         let (kind, detail) = match &shape.kind {
             _ if has_text => ("text", shape.text_body().map(|b| b.text().chars().take(40).collect::<String>()).unwrap_or_default()),
             ShapeKind::TextBox(_) => ("text", String::new()),
             ShapeKind::Auto(a) => match &a.geometry {
-                _ if matches!(a.fill, ibis_doc_model::Fill::Image(_) | ibis_doc_model::Fill::TileImage { .. }) => ("picture", "図形の画像塗り".into()), // i18n-ok（layout TSV の書き出し。試験・確認用のファイルに入り、画面には出ない）
+                _ if matches!(a.fill, ibis_doc_model::Fill::Image(_) | ibis_doc_model::Fill::TileImage { .. } | ibis_doc_model::Fill::Blip(_)) => ("picture", "図形の画像塗り".into()), // i18n-ok（layout TSV の書き出し。試験・確認用のファイルに入り、画面には出ない）
                 Geometry::Formula(g) => ("shape", g.preset.clone().unwrap_or_else(|| "custom".into())),
                 _ => ("shape", String::new()),
             },
@@ -1264,6 +1364,33 @@ mod tests {
         assert!(parse_slides("x").is_err());
     }
 
+
+    /// The page break preview draws its lines at the edges of these pages: a
+    /// manual row break starts a page, and the page before it ends there
+    /// (GitHub #22).
+    #[test]
+    fn preview_pages_break_at_the_manual_breaks() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../test/editing/xlsx-sales.xlsx");
+        let mut presentation = ibis_pptx::read_xlsx(&std::fs::read(path).unwrap()).unwrap();
+        let slide = presentation.slides.first_mut().unwrap();
+        let mut frame_y = 0;
+        let mut break_y = 0;
+        for shape in &mut slide.shapes {
+            if let ibis_doc_model::ShapeKind::Sheet(sheet) = &mut shape.kind {
+                let sheet = std::sync::Arc::make_mut(sheet);
+                sheet.print.row_breaks = vec![3];
+                sheet.print.fit_to = None;
+                frame_y = shape.frame.y;
+                break_y = frame_y + sheet.row_offsets()[3];
+            }
+        }
+        let area = super::export_area(&presentation, &presentation.slides[0]);
+        let (_, scale, pages) = super::sheet_pages(&presentation.slides[0], area, (None, None), (0.0, 0.0)).unwrap();
+        assert!(scale > 0.0);
+        assert!(pages.iter().any(|p| p.y == break_y), "a page starts at the break: {pages:?} / {break_y}");
+        assert!(pages.iter().any(|p| p.y + p.height == break_y), "the page before it ends there: {pages:?} / {break_y}");
+        assert!(pages.iter().all(|p| p.y >= frame_y));
+    }
     #[test]
     fn pages_hold_whole_cells() {
         let edges = [0, 40, 80, 120, 300, 340];

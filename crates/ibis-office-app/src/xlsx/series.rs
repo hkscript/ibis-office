@@ -464,9 +464,9 @@ impl SlideEditor {
             if !p.trend {
                 body = body
                     .child(div().text_size(px(13.)).child(text("fix.series.step-value")))
-                    .child(mark("step", Input::new(&p.step).small().into_any_element()))
+                    .child(mark("step", Input::new(&p.step).small().cleanable(true).into_any_element()))
                     .child(div().text_size(px(13.)).child(text("fix.series.stop-value")))
-                    .child(mark("stop", Input::new(&p.stop).small().into_any_element()));
+                    .child(mark("stop", Input::new(&p.stop).small().cleanable(true).into_any_element()));
             }
         }
         body = body

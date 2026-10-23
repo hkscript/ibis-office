@@ -11,6 +11,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Disableable as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use gpui_kit::prelude::FluentBuilder as _;
 use ibis_doc_model::{Command, ShapeId};
 
@@ -200,7 +201,7 @@ impl SlideEditor {
                 Some((r, field)) if *r == id => h_flex()
                     .flex_1()
                     .gap_1()
-                    .child(div().flex_1().child(Input::new(field).small()))
+                    .child(div().flex_1().child(Input::new(field).small().cleanable(true)))
                     .child(Button::new(("sel-rename-ok", n)).primary().small().label("OK").on_click(cx.listener(|e, _, w, cx| e.finish_renaming(w, cx))))
                     .into_any_element(),
                 _ => div()

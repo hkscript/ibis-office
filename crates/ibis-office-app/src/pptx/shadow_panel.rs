@@ -6,6 +6,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::{Color, Command, Shape, ShapeKind, SlideId, Shadow};
 use crate::shell::chrome::SidebarPanel;
 use crate::shell::editor::SlideEditor;
@@ -68,7 +69,7 @@ impl SlideEditor {
     pub(crate) fn shadow_panel(&mut self,cx:&mut Context<Self>)->Option<SidebarPanel> {
         let p=self.pptx()?.shadow_panel.as_ref()?;let fields=p.fields.clone();let error=p.error.clone();let title=crate::shell::i18n::format("_pptx.outer-shadow-count-shapes", &[("count", &p.targets.len())]);
         let mut body=v_flex().gap_2().px(px(18.)).py(px(8.));
-        for (label,field) in [crate::shell::i18n::text("pptx.shadow-panel.blur-pt"),crate::shell::i18n::text("pptx.gradient-panel.color-rgb-rrggbb"),crate::shell::i18n::text("pptx.gradient-panel.intensity-percent"),crate::shell::i18n::text("pptx.shadow-panel.distance-pt"),crate::shell::i18n::text("pptx.gradient-panel.angle-degrees")].into_iter().zip(fields) {body=body.child(div().text_size(px(13.)).child(label)).child(Input::new(&field).small());}
+        for (label,field) in [crate::shell::i18n::text("pptx.shadow-panel.blur-pt"),crate::shell::i18n::text("pptx.gradient-panel.color-rgb-rrggbb"),crate::shell::i18n::text("pptx.gradient-panel.intensity-percent"),crate::shell::i18n::text("pptx.shadow-panel.distance-pt"),crate::shell::i18n::text("pptx.gradient-panel.angle-degrees")].into_iter().zip(fields) {body=body.child(div().text_size(px(13.)).child(label)).child(Input::new(&field).small().cleanable(true));}
         if let Some(error)=error {body=body.child(div().text_size(px(12.)).text_color(rgb(0xb3261e)).child(error));}
         body=body.child(h_flex().gap_1().child(Button::new("pptx-shadow-apply").primary().small().label(crate::shell::i18n::text("_shell.apply")).on_click(cx.listener(|e,_,w,cx|e.apply_shadow_panel(w,cx)))).child(Button::new("pptx-shadow-cancel").small().ghost().label(crate::shell::i18n::text("_shell.cancel")).on_click(cx.listener(|e,_,w,cx|e.close_shadow_panel(w,cx)))));
         Some(SidebarPanel {title:title.into(),body:body.into_any_element()})

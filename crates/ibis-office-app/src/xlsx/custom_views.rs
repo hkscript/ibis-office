@@ -343,25 +343,25 @@ impl SlideEditor {
                     for (i, v) in views.iter().enumerate() {
                         let is_selected = Some(i) == sel_idx;
                         let item_el = div()
+                            .id(SharedString::from(format!("cv-btn-{i}")))
+                            .w_full()
                             .px(px(6.))
                             .py(px(4.))
                             .rounded_sm()
                             .text_size(px(12.))
+                            .cursor_pointer()
                             .bg(if is_selected { cx.theme().accent.opacity(0.2) } else { hsla(0.0, 0.0, 0.0, 0.0) })
-                            .child(SharedString::from(v.name.clone()));
+                            .hover(|s| s.bg(cx.theme().muted))
+                            .child(SharedString::from(v.name.clone()))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(p) = this.wb_mut().panels.custom_views.as_mut() {
+                                    p.selected_index = Some(i);
+                                }
+                                cx.notify();
+                            }));
                         list_box = list_box.child(mark(
                             &format!("custom-view-item-{i}"),
-                            Button::new(format!("cv-btn-{i}"))
-                                .small()
-                                .ghost()
-                                .child(item_el)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if let Some(p) = this.wb_mut().panels.custom_views.as_mut() {
-                                        p.selected_index = Some(i);
-                                    }
-                                    cx.notify();
-                                }))
-                                .into_any_element(),
+                            item_el.into_any_element(),
                         ));
                     }
                 }
@@ -396,17 +396,14 @@ impl SlideEditor {
                 ));
                 row1 = row1.child(mark(
                     "custom-view-add",
-                    Button::new("cv-add-btn").primary()
+                    Button::new("cv-add-btn")
                         .small()
                         .disabled(has_tables)
-                        .label(text("_xlsx.add"))
+                        .label(text("xlsx.solver.add"))
                         .on_click(cx.listener(|this, _, window, cx| this.open_add_custom_view(window, cx)))
                         .into_any_element(),
                 ));
-                body = body.child(row1);
-
-                let mut row2 = h_flex().gap_2();
-                row2 = row2.child(mark(
+                row1 = row1.child(mark(
                     "custom-view-del",
                     Button::new("cv-del-btn")
                         .small()
@@ -415,26 +412,13 @@ impl SlideEditor {
                         .on_click(cx.listener(|this, _, _, cx| this.delete_selected_custom_view(cx)))
                         .into_any_element(),
                 ));
-                row2 = row2.child(mark(
-                    "custom-view-close",
-                    Button::new("cv-close-btn")
-                        .small()
-                        .ghost()
-                        .label(text("_shell.close"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.wb_mut().panels.custom_views = None;
-                            this.sidebar_open = false;
-                            cx.notify();
-                        }))
-                        .into_any_element(),
-                ));
-                body = body.child(row2);
+                body = body.child(row1);
             }
             CustomViewDialogMode::Add => {
                 body = body.child(div().text_size(px(13.)).font_weight(FontWeight::BOLD).child(text("_xlsx.add-view")));
 
                 body = body.child(div().text_size(px(12.)).child(text("_xlsx.name")));
-                body = body.child(mark("custom-view-name", Input::new(&p.name_input).small().into_any_element()));
+                body = body.child(mark("custom-view-name", Input::new(&p.name_input).small().cleanable(true).into_any_element()));
 
                 let inc_print = p.include_print_settings;
                 let inc_hidden = p.include_hidden;

@@ -9,6 +9,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use gpui_kit::prelude::FluentBuilder as _;
 use ibis_doc_model::{Command, Shape, ShapeId, ShapeKind};
 
@@ -214,7 +215,7 @@ impl SlideEditor {
                 // 名前またはリネーム入力欄
                 if is_renaming && let Some(field) = &renaming_field {
                     let input_field = field.clone();
-                    row = row.child(div().flex_1().child(Input::new(&input_field).small()));
+                    row = row.child(div().flex_1().child(Input::new(&input_field).small().cleanable(true)));
                 } else {
                     let row_label = label.clone();
                     let name_clickable = div()

@@ -263,7 +263,7 @@ impl SlideEditor {
                 }).absolute().top_0().left_0().size_full())
                 .into_any_element()
         };
-        let row = |id: &str, label: &str, input: &Entity<InputState>| h_flex().gap_2().child(div().w(px(120.)).text_sm().child(text(label))).child(div().flex_1().child(mark(id, Input::new(input).small().into_any_element())));
+        let row = |id: &str, label: &str, input: &Entity<InputState>| h_flex().gap_2().child(div().w(px(120.)).text_sm().child(text(label))).child(div().flex_1().child(mark(id, Input::new(input).small().cleanable(true).into_any_element())));
         let toggle = |id: &'static str, label: &str, on: bool, f: fn(&mut NewStylePanel)| {
             mark(
                 id,
@@ -299,7 +299,7 @@ impl SlideEditor {
             .child(h_flex().gap_1().child(toggle("bold", "_shell.bold", p.bold, |p| p.bold = !p.bold)).child(toggle("italic", "docx.common.italic", p.italic, |p| p.italic = !p.italic)))
             .child(div().h(px(8.)))
             .child(div().text_size(px(13.)).child(crate::shell::i18n::format("fix.style-new.style-name-based", &[("name", &caret)])))
-            .child(mark("rebase", Input::new(&p.rebase).small().into_any_element()))
+            .child(mark("rebase", Input::new(&p.rebase).small().cleanable(true).into_any_element()))
             .child(mark("rebase-apply", Button::new("new-style-rebase").small().ghost().label(text("fix.style-new.change-base")).on_click(cx.listener(|this, _, _, cx| this.rebase_caret_style(cx))).into_any_element()));
         Some(SidebarPanel { title: text("fix.style-new.new-style"), body: body.into_any_element() })
     }

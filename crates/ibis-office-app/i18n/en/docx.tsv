@@ -272,7 +272,6 @@ docx.view.marks.tabs	Tab Characters
 docx.view.marks.paragraph	Paragraph Marks
 docx.view.marks.line-breaks	Line Breaks
 docx.view.marks.hidden	Hidden Text
-docx.show-outline	Show Outline
 docx.page-break	Page Break
 docx.column-break	Column Break
 docx.header-footer	Header & Footer
@@ -2185,3 +2184,4 @@ docx.template.parse-error	Parse error: {error}
 docx.template.no-word-data	The template has no Word document data.
 docx.template.no-document	No document is open.
 docx.template.updated-count	{title} ({n})
+docx.view.view-mode	View Mode

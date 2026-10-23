@@ -656,7 +656,7 @@ impl SlideEditor {
             v_flex()
                 .gap_1()
                 .child(div().text_size(px(11.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(text(current_target.input_label_key())))
-                .child(mark("goto-input", Input::new(&p.value_input).small().into_any_element()))
+                .child(mark("goto-input", Input::new(&p.value_input).small().cleanable(true).into_any_element()))
         );
 
         // 4. ブックマークまたは見出し選択可能リスト

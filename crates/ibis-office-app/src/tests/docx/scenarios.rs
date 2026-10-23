@@ -14,7 +14,7 @@ const STATEMENT: &str = "test/benchmark/securities-registration-statement.docx";
 
 /// The scenarios, for `FormatEditor::scenarios`.
 pub(crate) fn all() -> Vec<(&'static str, fn())> {
-    vec![
+    let all: Vec<(&'static str, fn())> = vec![
         ("docx::screenshot_docx_comments_panel", screenshot_docx_comments_panel),
         ("docx::spelling_check", spelling_check),
         ("docx::review018_grammar_and_spelling_check", review018_grammar_and_spelling_check),
@@ -42,6 +42,13 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("docx::a11_hidden_source", a11_hidden_source),
         ("docx::a11_format_brush", a11_format_brush),
         ("docx::edit012_format_brush_repeat", edit012_format_brush_repeat),
+        ("docx::edit007_cut_and_copy", edit007_cut_and_copy),
+        ("docx::edit016_word_shortcuts", edit016_word_shortcuts),
+        ("docx::fcode_document_info_fields", fcode_document_info_fields),
+        ("docx::float003_wrap_tight_through_top_bottom", float003_wrap_tight_through_top_bottom),
+        ("docx::view007_scroll_pages_vertically", view007_scroll_pages_vertically),
+        ("docx::edit010_paste_plain", edit010_paste_plain),
+        ("docx::list012_level_with_tab", list012_level_with_tab),
         ("docx::bullet001_bullet_symbol_and_font", bullet001_bullet_symbol_and_font),
         ("docx::split_buttons_bullets_numbering_shading", split_buttons_bullets_numbering_shading),
         ("docx::split_button_underline_kinds", split_button_underline_kinds),
@@ -162,6 +169,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("docx::d4_section_start_types", d4_section_start_types),
         ("docx::d4_section_nonbody_rejected", d4_section_nonbody_rejected),
         ("docx::d3_header_and_page_number", d3_header_and_page_number),
+        ("docx::header015_tall_header_pushes_body_down", header015_tall_header_pushes_body_down),
         ("docx::b7_find_and_replace", b7_find_and_replace),
         ("docx::e1_link", e1_link),
         ("docx::a2_table_of_contents", a2_table_of_contents),
@@ -242,6 +250,9 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("docx::ja019_text_language", ja019_text_language),
         ("docx::list002_picture_bullet", list002_picture_bullet),
         ("docx::image015_drag_text_box", image015_drag_text_box),
+        ("docx::image015_text_box_panel_follows_box", image015_text_box_panel_follows_box),
+        ("docx::image015_panel_applies_live", image015_panel_applies_live),
+        ("docx::image015_inline_text_box_edit", image015_inline_text_box_edit),
         ("docx::image011_insert_shape", image011_insert_shape),
         ("docx::image011_draw_shape", image011_draw_shape),
         ("docx::image014_connectors", image014_connectors),
@@ -424,7 +435,8 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("docx::file010_012_013_sec019_document_conversions", file010_012_013_sec019_document_conversions),
         ("docx::access007_009_cloud020_screen_reader_read_aloud_and_customize", access007_009_cloud020_screen_reader_read_aloud_and_customize),
         ("docx::audit_core_editing_formatting_layout_and_review", audit_core_editing_formatting_layout_and_review),
-    ]
+    ];
+    all.into_iter().chain(super::corpus_report::all()).collect()
 }
 
 /// The paragraphs directly in the body.
@@ -1598,7 +1610,7 @@ fn a2_table_of_contents() {
     assert_eq!(s.selection().map(|(_, c)| c.para), Some(chapter2));
     // The outline: its item goes there as well.
     s.key("cmd-up");
-    s.menu("docx.show-outline");
+    s.menu("docx.navigation-pane");
     let item = s.with(|e, _| e.outline().into_iter().find(|(_, t, _)| t == "第2章 計画").map(|(_, _, id)| id));
     assert_eq!(item, Some(chapter2));
     s.update(|e, _, cx| e.jump_to(chapter2, cx));
@@ -2265,7 +2277,7 @@ fn h10_comments() {
     use crate::shell::format::FormatEditor as _;
     assert_eq!(s.with(|e, _| crate::docx::Document::show_comments(e).map(|(on, _)| on)), Some(true));
     s.type_text("ここを確認してください");
-    s.key("enter");
+    s.key("cmd-enter");
     let comments = |s: &mut Scenario| s.with(|e, _| flow(e.presentation()).comments.clone());
     let cs = comments(&mut s);
     assert_eq!(cs.len(), 1);
@@ -2281,7 +2293,7 @@ fn h10_comments() {
     assert_eq!(s.selection().map(|(_, c)| c.offset), Some(3), "back over the character (to the start mark's inside)");
     s.update(|e, window, cx| e.reply_to(parent, window, cx));
     s.type_text("確認しました");
-    s.key("enter");
+    s.key("cmd-enter");
     assert_eq!(comments(&mut s).iter().filter(|c| c.parent == Some(parent)).count(), 1, "the answer");
     s.update(|e, _, cx| e.resolve(parent, true, cx));
     assert!(comments(&mut s).iter().all(|c| c.done), "resolved with its answer");
@@ -6646,7 +6658,7 @@ fn page003_page_setup_panel() {
     for (i, v) in [(0, "20"), (1, "20"), (2, "25"), (3, "15"), (4, "10")] {
         page_setup_field(&mut s, i, v);
     }
-    page_setup_click(&mut s, "mirror");
+    page_setup_click(&mut s, "page-mirror");
     page_setup_click(&mut s, "apply");
     let page = s.with(|e, _| flow(e.presentation()).page);
     let mm = |v: f64| (v * 36_000.0) as i64;
@@ -7765,6 +7777,208 @@ fn page020_page_color() {
     s.save_as("page020-none.docx");
     let reloaded_none = s.reopen();
     assert!(flow(&reloaded_none).page_color.is_none());
+}
+
+/// DOCX-VIEW-001/007: the print layout stacks the pages vertically; scrolling the wheel moves on through the pages and back.
+fn view007_scroll_pages_vertically() {
+    let mut s = Scenario::open(REPORT);
+    let count = s.with(|e, _| e.presentation().slides.len());
+    assert!(count >= 2, "the report has several pages ({count})");
+    assert_eq!(s.with(|e, _| e.visible_page()), 0, "opens at the first page");
+    for _ in 0..40 { s.wheel((600.0, 500.0), -400.0); }
+    let down = s.with(|e, _| e.visible_page());
+    assert!(down >= 1 && down < count, "scrolled down to page index {down}");
+    let status = s.status_texts().join(" ");
+    assert!(status.contains(&format!("{}", down + 1)), "the status bar shows the page: {status}");
+    for _ in 0..80 { s.wheel((600.0, 500.0), 400.0); }
+    assert_eq!(s.with(|e, _| e.visible_page()), 0, "scrolled back to the first page");
+}
+
+/// DOCX-FLOAT-003/004: a picture's wrap switched to tight, through and top-and-bottom from the menu (one step of undo each),
+/// kept in the file (`wp:wrapTight`, `wp:wrapThrough`, `wp:wrapTopAndBottom`).
+fn float003_wrap_tight_through_top_bottom() {
+    use ibis_doc_model::PictureWrapType as W;
+    let mut s = Scenario::open(REPORT);
+    let (id, offset) = s.with(|e, _| {
+        for p in body(flow(e.presentation())) {
+            let mut offset = 0;
+            for r in &p.runs {
+                if let FlowRunKind::Picture { .. } = r.kind {
+                    return (p.id, offset);
+                }
+                offset += r.len();
+            }
+        }
+        panic!("a picture in REPORT");
+    });
+    s.click_text(FlowPos::new(id, offset));
+    for (menu, kind, xml) in [("docx.picture.wrap.tight", W::Tight, "wrapTight"), ("docx.picture.wrap.through", W::Through, "wrapThrough"), ("docx.picture.wrap.top-and-bottom", W::TopAndBottom, "wrapTopAndBottom")] {
+        let before = s.document();
+        s.menu(menu);
+        assert_eq!(s.with(|e, _| e.picture_wrap_at_caret()), Some(kind), "{menu}");
+        assert_eq!(s.menu_state(menu), Some((true, true)), "{menu} is checked");
+        s.key("cmd-z");
+        assert_eq!(s.document(), before, "{menu}: one undo");
+        s.key("cmd-shift-z");
+        let path = s.save_as(&format!("float003-{xml}.docx"));
+        let xml_text = ibis_pptx::test_files::part_text(&std::fs::read(&path).unwrap(), "word/document.xml").unwrap();
+        assert!(xml_text.contains(&format!("<wp:{xml}")), "{menu} is saved as wp:{xml}");
+        s.menu("docx.picture.wrap.inline");
+    }
+}
+
+/// DOCX-FCODE-021/033/034/044/046/050/055: the document-information fields (FILENAME, KEYWORDS, LASTSAVEDBY, NUMCHARS, NUMWORDS,
+/// PRINTDATE, REVNUM) inserted at the caret show their value, and are kept as fields in the saved file.
+fn fcode_document_info_fields() {
+    let mut s = Scenario::open(REPORT);
+    s.key("cmd-down");
+    s.key("enter");
+    let codes = ["FILENAME", "KEYWORDS", "LASTSAVEDBY", "NUMCHARS", "NUMWORDS", "PRINTDATE", "REVNUM"];
+    for code in codes {
+        s.update(|e, _, cx| {
+            let doc = e.flow().unwrap();
+            let range = e.ordered_selection();
+            let (cmds, new_pos) = ibis_doc_model::flow_command::insert_field_at_range(doc, range, code, false).unwrap();
+            if e.run_flow(cmds, cx) {
+                e.set_caret(new_pos, false, cx);
+            }
+        });
+        s.type_text(" ");
+    }
+    let fields = |doc: &FlowDocument| -> Vec<(String, String)> {
+        body(doc).iter().flat_map(|p| p.runs.iter()).filter_map(|r| if let FlowRunKind::Field { instruction, shown } = &r.kind { Some((instruction.clone(), shown.clone())) } else { None }).collect()
+    };
+    // The values come with the update of the fields (F9).
+    s.update(|e, _, cx| {
+        let doc = e.flow().unwrap();
+        let cmds = ibis_doc_model::updated_fields_in_range(doc, None, None);
+        for cmd in cmds {
+            e.execute(vec![ibis_doc_model::Command::Flow(cmd)], cx);
+        }
+    });
+    let shown = fields(&s.document());
+    for code in codes {
+        assert!(shown.iter().any(|(i, _)| i.trim() == code), "{code} is a field: {shown:?}");
+    }
+    let value = |code: &str| shown.iter().find(|(i, _)| i.trim() == code).map(|(_, v)| v.clone()).unwrap();
+    assert!(!value("FILENAME").is_empty(), "the file's name");
+    assert!(value("NUMWORDS").trim().parse::<u32>().is_ok_and(|n| n > 0), "NUMWORDS: {}", value("NUMWORDS"));
+    assert!(value("NUMCHARS").trim().parse::<u32>().is_ok_and(|n| n > 0), "NUMCHARS: {}", value("NUMCHARS"));
+    let path = s.save_as("fcode-info.docx");
+    let xml = ibis_pptx::test_files::part_text(&std::fs::read(&path).unwrap(), "word/document.xml").unwrap();
+    for code in codes {
+        assert!(xml.contains(&format!(" {code} ")) || xml.contains(&format!(" {code}\"")) || xml.contains(&format!("{code} \\")) || xml.contains(&format!(">{code}<")) || xml.contains(&format!(" {code}<")), "{code} is kept as a field in the file");
+    }
+    let saved = s.reopen();
+    let text: String = body(flow(&saved)).iter().map(|p| p.text()).collect::<Vec<_>>().join("\n");
+    assert!(text.contains(value("NUMWORDS").trim()) && text.contains(value("NUMCHARS").trim()), "the values are in the file's text: {text}");
+}
+
+/// Word's Mac shortcuts that the menus show or that people type: ⌘⇧D (double underline), ⌘⇧W (words only), ⌘⌥F (footnote), ⌘⌥E
+/// (endnote) and ⌘⇧L (bullets); each toggles back or makes one step of undo.
+fn edit016_word_shortcuts() {
+    use ibis_doc_model::UnderlineStyle as U;
+    let mut s = Scenario::open(REPORT);
+    let (index, id) = {
+        let doc = s.document();
+        let (i, p) = body(&doc).into_iter().enumerate().find(|(_, p)| p.len() >= 12 && !p.text().contains('\u{fffc}') && p.list.is_none() && p.runs.iter().all(|r| !r.style.underline)).expect("a plain paragraph");
+        (i, p.id)
+    };
+    s.click_text(FlowPos::new(id, 2));
+    for _ in 0..4 { s.key("shift-right"); }
+    let style = |s: &mut Scenario| para(&s.document(), id).runs.iter().find(|r| r.style.underline).map(|r| r.style.underline_style);
+    assert_eq!(style(&mut s), None);
+    s.key("cmd-shift-d");
+    assert_eq!(style(&mut s), Some(U::Double), "⌘⇧D: double underline");
+    s.key("cmd-shift-d");
+    assert_eq!(style(&mut s), None, "⌘⇧D again takes it off");
+    s.key("cmd-shift-w");
+    assert_eq!(style(&mut s), Some(U::Words), "⌘⇧W: words only");
+    s.key("cmd-shift-w");
+    assert_eq!(style(&mut s), None);
+    s.click_text(FlowPos::new(id, 6));
+    let notes = |s: &mut Scenario| (s.document().footnotes.len(), s.document().endnotes.len());
+    s.key("cmd-alt-f");
+    assert_eq!(notes(&mut s), (1, 0), "⌘⌥F: a footnote");
+    s.type_text("fn");
+    s.click_text(FlowPos::new(id, 9));
+    s.key("cmd-alt-e");
+    assert_eq!(notes(&mut s), (1, 1), "⌘⌥E: an endnote");
+    s.type_text("en");
+    s.click_text(FlowPos::new(id, 0));
+    assert!(s.with(|e, _| body(flow(e.presentation()))[index].list.is_none()));
+    s.key("cmd-shift-l");
+    assert!(s.with(|e, _| body(flow(e.presentation()))[index].list.is_some()), "⌘⇧L: a bullet");
+    s.key("cmd-shift-l");
+    assert!(s.with(|e, _| body(flow(e.presentation()))[index].list.is_none()), "⌘⇧L again takes it off");
+}
+
+/// DOCX-EDIT-007: copy leaves the text, cut removes it (one step of undo); both put it on the clipboard and paste puts it back; saved and read back.
+fn edit007_cut_and_copy() {
+    let mut s = Scenario::open(REPORT);
+    let (index, id, text) = text_paragraph(&mut s, 8);
+    let first: String = text.chars().take(3).collect();
+    s.click_text(FlowPos::new(id, 0));
+    for _ in 0..3 { s.key("shift-right"); }
+    s.key("cmd-c");
+    assert_eq!(s.paragraph(index).1, text, "copy leaves the text");
+    assert_eq!(s.update(|_, _, cx| cx.read_from_clipboard().and_then(|c| c.text())).as_deref(), Some(first.as_str()));
+    let before = s.document();
+    s.key("cmd-x");
+    assert_eq!(s.paragraph(index).1, text.chars().skip(3).collect::<String>(), "cut removes it");
+    s.key("cmd-z");
+    assert_eq!(s.document(), before, "one undo restores the text");
+    s.key("cmd-shift-z");
+    s.key("cmd-v");
+    assert_eq!(s.paragraph(index).1, text, "paste puts it back");
+    s.save_as("edit007.docx");
+    let saved = s.reopen();
+    assert_eq!(body(flow(&saved))[index].text(), text);
+}
+
+/// DOCX-EDIT-010: paste as plain text (⇧⌘V) takes the destination's character format, not the copied one.
+fn edit010_paste_plain() {
+    let mut s = Scenario::open(REPORT);
+    let (index, id, text) = text_paragraph(&mut s, 8);
+    let first: String = text.chars().take(3).collect();
+    let len = text.chars().count();
+    s.click_text(FlowPos::new(id, 0));
+    for _ in 0..3 { s.key("shift-right"); }
+    s.key("cmd-b");
+    s.key("cmd-c");
+    assert!(para(&s.document(), id).runs[0].style.bold, "the copied text is bold");
+    let tail_bold = |s: &mut Scenario| para(&s.document(), id).runs.last().unwrap().style.bold;
+    s.click_text(FlowPos::new(id, len));
+    assert!(!tail_bold(&mut s), "the end of the paragraph is not bold");
+    s.key("cmd-shift-v");
+    assert_eq!(s.paragraph(index).1, format!("{}{}", text, first));
+    assert!(!tail_bold(&mut s), "plain paste: the pasted text is not bold");
+    s.key("cmd-z");
+    assert_eq!(s.paragraph(index).1, text, "one undo removes the pasted text");
+    s.key("cmd-v");
+    assert!(tail_bold(&mut s), "ordinary paste keeps the copied format (bold)");
+}
+
+/// DOCX-LIST-006/012: Tab at the start of a list item makes it a deeper level, Shift+Tab a shallower one; kept in the file.
+fn list012_level_with_tab() {
+    let mut s = Scenario::open(REPORT);
+    let (index, id, _) = text_paragraph(&mut s, 10);
+    s.click_text(FlowPos::new(id, 0));
+    s.toolbar("bullets");
+    let level = |s: &mut Scenario| s.with(|e, _| body(flow(e.presentation()))[index].list.map(|l| l.level));
+    assert_eq!(level(&mut s), Some(0));
+    s.key("tab");
+    assert_eq!(level(&mut s), Some(1), "Tab: one level deeper");
+    s.key("tab");
+    assert_eq!(level(&mut s), Some(2));
+    s.key("shift-tab");
+    assert_eq!(level(&mut s), Some(1), "Shift+Tab: one level up");
+    s.key("cmd-z");
+    assert_eq!(level(&mut s), Some(2), "undo");
+    s.key("cmd-shift-z");
+    s.save_as("list012.docx");
+    let saved = s.reopen();
+    assert_eq!(body(flow(&saved))[index].list.map(|l| l.level), Some(1));
 }
 
 /// DOCX-EDIT-009: 貼付先の書式へ統合 (Paste and Match Style / Match Destination Formatting)
@@ -10820,6 +11034,7 @@ fn sec011_018_inspect_document_and_compatibility() {
 /// 「グリッドなし」への切替、エディタメソッド（set_line_pitch / set_doc_grid）を検証。
 fn ja015_doc_grid_and_line_pitch() {
     let mut s = Scenario::open(REPORT);
+    s.size(1200.0, 1000.0);
 
     // 1. メニューからページ設定パネルを開く（docx.page.doc-grid）
     s.menu("docx.page.doc-grid");
@@ -12891,7 +13106,7 @@ fn opt003_user_name_and_author() {
     }
     s.menu("insert.comment");
     s.type_text("ユーザー名テスト用コメント");
-    s.key("enter");
+    s.key("cmd-enter");
     let comment_text = |c: &ibis_doc_model::Comment| -> String {
         c.blocks.iter().filter_map(|b| if let Block::Paragraph(p) = b { Some(p.text()) } else { None }).collect::<Vec<_>>().join("\n")
     };
@@ -14465,13 +14680,13 @@ fn view017_white_space() {
 fn view009_zoom_page_modes() {
     let mut s = Scenario::open(REPORT);
 
-    // 1. Initial state: Document starts at 100% zoom
-    assert!(s.with(|e, _| e.is_zoom_100()), "initial zoom should be 100%");
+    // 1. Initial state: Document starts at 141% zoom (#154)
+    assert!(!s.with(|e, _| e.is_zoom_100()), "initial zoom should be 141%, not 100%");
     assert!(!s.with(|e, _| e.is_zoom_page_width()), "page-width should not be checked initially");
     assert!(!s.with(|e, _| e.is_zoom_one_page()), "one-page should not be checked initially");
     assert!(!s.with(|e, _| e.is_zoom_multiple_pages()), "multiple-pages should not be checked initially");
-    assert_eq!(s.with(|e, _| e.zoom), Some(1.0));
-    assert_eq!(s.menu_state("docx.view.zoom-100"), Some((true, true)));
+    assert_eq!(s.with(|e, _| e.zoom), Some(1.41));
+    assert_eq!(s.menu_state("docx.view.zoom-100"), Some((true, false)));
     assert_eq!(s.menu_state("docx.view.page-width"), Some((true, false)));
     assert_eq!(s.menu_state("docx.view.one-page"), Some((true, false)));
     assert_eq!(s.menu_state("docx.view.multiple-pages"), Some((true, false)));
@@ -14687,6 +14902,13 @@ fn form006_dropdown_list_control() {
     s.click_text(FlowPos::new(id, 0));
     s.menu("insert.dropdown-list");
 
+    fn dropdown_shown(p: &FlowParagraph) -> Option<&str> {
+        match p.runs.first().map(|r| &r.kind) {
+            Some(FlowRunKind::DropDownList { items, selected, .. }) => items.get(*selected).map(|(s, _)| s.as_str()),
+            _ => None,
+        }
+    }
+
     let doc = s.document();
     let p = para(&doc, id);
     assert!(
@@ -14696,7 +14918,9 @@ fn form006_dropdown_list_control() {
         ),
         "inserted dropdown list should initially select first item"
     );
-    assert!(p.text().starts_with("選択肢 1"));
+    // E1: DropDownList は段落内で 1 位置を占めるため、FlowParagraph::text() では U+FFFC になる
+    assert!(p.text().starts_with('\u{fffc}'));
+    assert_eq!(dropdown_shown(p), Some("選択肢 1"));
 
     // 3. Cycle dropdown selection via single click on the control
     s.click_text(FlowPos::new(id, 0));
@@ -14709,7 +14933,7 @@ fn form006_dropdown_list_control() {
         ),
         "clicking dropdown should cycle to item 1 (選択肢 2)"
     );
-    assert!(p.text().starts_with("選択肢 2"));
+    assert_eq!(dropdown_shown(p), Some("選択肢 2"));
 
     // 4. Cycle dropdown selection via Format/Form menu
     s.menu("docx.form.dropdown.cycle");
@@ -14722,7 +14946,7 @@ fn form006_dropdown_list_control() {
         ),
         "menu docx.form.dropdown.cycle should cycle to item 2 (選択肢 3)"
     );
-    assert!(p.text().starts_with("選択肢 3"));
+    assert_eq!(dropdown_shown(p), Some("選択肢 3"));
 
     // 5. Cycle dropdown selection again (wraps around to 0)
     s.menu("docx.form.dropdown.cycle");
@@ -14735,7 +14959,7 @@ fn form006_dropdown_list_control() {
         ),
         "cycling past the last item should wrap around to item 0 (選択肢 1)"
     );
-    assert!(p.text().starts_with("選択肢 1"));
+    assert_eq!(dropdown_shown(p), Some("選択肢 1"));
 
     // 6. Undo and Redo verification
     s.key("cmd-z");
@@ -14747,7 +14971,7 @@ fn form006_dropdown_list_control() {
         ),
         "undo should revert to item 2"
     );
-    assert!(para(&doc, id).text().starts_with("選択肢 3"));
+    assert_eq!(dropdown_shown(para(&doc, id)), Some("選択肢 3"));
 
     s.key("cmd-shift-z");
     let doc = s.document();
@@ -14758,7 +14982,7 @@ fn form006_dropdown_list_control() {
         ),
         "redo should restore to item 0"
     );
-    assert!(para(&doc, id).text().starts_with("選択肢 1"));
+    assert_eq!(dropdown_shown(para(&doc, id)), Some("選択肢 1"));
 
     // 7. Save and reopen document verification
     s.save_as("docx-form006-dropdown.docx");
@@ -14771,7 +14995,7 @@ fn form006_dropdown_list_control() {
         ),
         "reopened document should preserve selected item 0"
     );
-    assert!(p_saved.text().starts_with("選択肢 1"));
+    assert_eq!(dropdown_shown(p_saved), Some("選択肢 1"));
 
     // 8. Reload saved and cycle again in live editor via click
     s.reload_saved();
@@ -14784,7 +15008,7 @@ fn form006_dropdown_list_control() {
         ),
         "reloaded document cycles to item 1 on click"
     );
-    assert!(para(&doc, id).text().starts_with("選択肢 2"));
+    assert_eq!(dropdown_shown(para(&doc, id)), Some("選択肢 2"));
 
     s.save_as("docx-form006-dropdown-cycled.docx");
     let saved2 = s.reopen();
@@ -14796,11 +15020,18 @@ fn form006_dropdown_list_control() {
         ),
         "second reopened document preserves cycled item 1"
     );
-    assert!(p_saved2.text().starts_with("選択肢 2"));
+    assert_eq!(dropdown_shown(p_saved2), Some("選択肢 2"));
 }
 
 fn form005_combo_box_control() {
     let mut s = Scenario::open(REPORT);
+
+    fn dropdown_shown(p: &FlowParagraph) -> Option<&str> {
+        match p.runs.first().map(|r| &r.kind) {
+            Some(FlowRunKind::DropDownList { items, selected, .. }) => items.get(*selected).map(|(s, _)| s.as_str()),
+            _ => None,
+        }
+    }
 
     // 1. Initial menu availability
     assert_eq!(s.menu_state("insert.combo-box"), Some((true, false)));
@@ -14820,7 +15051,9 @@ fn form005_combo_box_control() {
         ),
         "inserted combo box should initially select first item"
     );
-    assert!(p.text().starts_with("項目 1"));
+    // E1: DropDownList は段落内で 1 位置を占めるため、FlowParagraph::text() では U+FFFC になる
+    assert!(p.text().starts_with('\u{fffc}'));
+    assert_eq!(dropdown_shown(p), Some("項目 1"));
 
     // 3. Cycle combo box selection via single click on the control
     s.click_text(FlowPos::new(id, 0));
@@ -14833,7 +15066,7 @@ fn form005_combo_box_control() {
         ),
         "clicking combo box should cycle to item 1 (項目 2)"
     );
-    assert!(p.text().starts_with("項目 2"));
+    assert_eq!(dropdown_shown(p), Some("項目 2"));
 
     // 4. Cycle combo box selection via Format/Form menu
     s.menu("docx.form.dropdown.cycle");
@@ -14846,7 +15079,7 @@ fn form005_combo_box_control() {
         ),
         "menu docx.form.dropdown.cycle should cycle to item 2 (項目 3)"
     );
-    assert!(p.text().starts_with("項目 3"));
+    assert_eq!(dropdown_shown(p), Some("項目 3"));
 
     // 5. Cycle combo box selection again (wraps around to 0)
     s.menu("docx.form.dropdown.cycle");
@@ -14859,7 +15092,7 @@ fn form005_combo_box_control() {
         ),
         "cycling past the last item should wrap around to item 0 (項目 1)"
     );
-    assert!(p.text().starts_with("項目 1"));
+    assert_eq!(dropdown_shown(p), Some("項目 1"));
 
     // 6. Undo and Redo verification
     s.key("cmd-z");
@@ -14871,7 +15104,7 @@ fn form005_combo_box_control() {
         ),
         "undo should revert to item 2"
     );
-    assert!(para(&doc, id).text().starts_with("項目 3"));
+    assert_eq!(dropdown_shown(para(&doc, id)), Some("項目 3"));
 
     s.key("cmd-shift-z");
     let doc = s.document();
@@ -14882,7 +15115,7 @@ fn form005_combo_box_control() {
         ),
         "redo should restore to item 0"
     );
-    assert!(para(&doc, id).text().starts_with("項目 1"));
+    assert_eq!(dropdown_shown(para(&doc, id)), Some("項目 1"));
 
     // 7. Save and reopen document verification
     s.save_as("docx-form005-combobox.docx");
@@ -14895,7 +15128,7 @@ fn form005_combo_box_control() {
         ),
         "reopened document should preserve combo box and selected item 0"
     );
-    assert!(p_saved.text().starts_with("項目 1"));
+    assert_eq!(dropdown_shown(p_saved), Some("項目 1"));
 
     // 8. Reload saved and cycle again in live editor via click
     s.reload_saved();
@@ -14908,7 +15141,7 @@ fn form005_combo_box_control() {
         ),
         "reloaded document cycles to item 1 on click"
     );
-    assert!(para(&doc, id).text().starts_with("項目 2"));
+    assert_eq!(dropdown_shown(para(&doc, id)), Some("項目 2"));
 
     s.save_as("docx-form005-combobox-cycled.docx");
     let saved2 = s.reopen();
@@ -14920,7 +15153,7 @@ fn form005_combo_box_control() {
         ),
         "second reopened document preserves cycled item 1"
     );
-    assert!(p_saved2.text().starts_with("項目 2"));
+    assert_eq!(dropdown_shown(p_saved2), Some("項目 2"));
 }
 
 fn form007_date_picker_control() {
@@ -18010,7 +18243,7 @@ fn image015_wrap_beside_text_box() {
         let doc = e.flow().unwrap().clone();
         let laid = super::flow_layout::pages(&doc, &e.resources);
         let items = &laid.pages[0].items;
-        let right = items.iter().find_map(|i| match i { super::flow_layout::Item::Shape { x, w, .. } => Some(x + w), _ => None }).expect("the box");
+        let right = items.iter().rev().find_map(|i| match i { super::flow_layout::Item::Shape { x, w, .. } => Some(x + w), _ => None }).expect("the box");
         let texts: Vec<(f32, String)> = items.iter().filter_map(|i| match i { super::flow_layout::Item::Text { x, y, text, size, .. } if *size > 20.0 && *y < 260.0 => Some((*x, text.to_string())), _ => None }).collect();
         (right, texts)
     });
@@ -18018,7 +18251,7 @@ fn image015_wrap_beside_text_box() {
     let spacing = s.with(|e, _| {
         let doc = e.flow().unwrap().clone();
         let laid = super::flow_layout::pages(&doc, &e.resources);
-        laid.pages[0].items.iter().find_map(|i| match i {
+        laid.pages[0].items.iter().rev().find_map(|i| match i {
             super::flow_layout::Item::Shape { shape, .. } => match &shape.kind {
                 ibis_doc_model::ShapeKind::Auto(a) => a.text.as_ref().and_then(|t| t.paragraphs.first().and_then(|p| p.line_spacing)),
                 _ => None,
@@ -18294,7 +18527,7 @@ fn review022_comment_navigation() {
         }
         s.menu("insert.comment");
         s.type_text("確認");
-        s.key("enter");
+        s.key("cmd-enter");
     }
     let caret_para = |s: &mut Scenario| s.selection().map(|(_, c)| c.para).unwrap();
     s.click_text(FlowPos::new(top, 0));
@@ -18493,7 +18726,7 @@ fn image011_insert_shape() {
     let ibis_doc_model::ShapeKind::Auto(a) = &shape.kind else { panic!("an auto shape") };
     assert_eq!(a.geometry.preset_name(), Some("rightArrow"));
     assert!(matches!(&a.fill, ibis_doc_model::Fill::Solid(c) if c.rgb == ibis_doc_model::Rgb(0x4472C4)));
-    assert!(a.text.is_none());
+    assert_eq!(a.text.as_ref().map(|t| t.text()), Some(String::new()));
     assert!(s.with(|e, _| e.text_box_at_caret().is_some_and(|i| i.has_text)), "the shape is selected and can hold text");
     assert_eq!(s.menu_state("docx.textbox.edit"), Some((true, false)));
 
@@ -20905,8 +21138,7 @@ fn options015_dump_menu_ids() {
         out
     });
     assert!(ids.len() > 200, "the menus have items: {}", ids.len());
-    let path = crate::shell::scenario::repo_root().join("tasks/doc/docx-menu-ids.txt");
-    std::fs::write(path, ids.join("\n")).unwrap();
+    crate::shell::scenario::dump_menu_ids("docx-menu-ids.txt", &ids);
 }
 
 /// DOCX-REVIEW-014 / DOCX-REVIEW-015: a word typed in a table's cell is an insertion in that cell, and a word made bold a formatting change.
@@ -26079,9 +26311,9 @@ fn audit_core_editing_formatting_layout_and_review() {
     // 5. DOCX-HEADER-003 (evenAndOddHeaders) & DOCX-TOC-013 (Outline Navigation Pane)
     s.menu("docx.section.even-odd");
     assert!(s.document().even_and_odd, "even_and_odd toggled on");
-    s.menu("docx.show-outline");
+    s.menu("docx.navigation-pane");
     assert!(s.with(|e, _| e.outline_open), "navigation outline pane opened");
-    s.menu("docx.show-outline");
+    s.menu("docx.navigation-pane");
     assert!(!s.with(|e, _| e.outline_open), "navigation outline pane closed");
 
     // 6. Save and reopen roundtrip
@@ -26093,3 +26325,189 @@ fn audit_core_editing_formatting_layout_and_review() {
 
 
 
+
+/// GitHub issue #10: a header that ends below the top margin pushes the
+/// body down (Word starts the body at the larger of the margin and the
+/// header's end), so no body line overlaps a header line.
+fn header015_tall_header_pushes_body_down() {
+    let root = crate::shell::scenario::repo_root();
+    let data = ibis_pptx::test_files::docx_with_tall_header(&std::fs::read(root.join(REPORT)).unwrap());
+    let input = root.join("target/scenario-input/docx-tall-header.docx");
+    std::fs::create_dir_all(input.parent().unwrap()).unwrap();
+    std::fs::write(&input, &data).unwrap();
+    let mut s = Scenario::open("target/scenario-input/docx-tall-header.docx");
+    let pages = s.with(|e, _| super::flow_layout::pages(&e.presentation().flow.clone().unwrap(), &e.resources));
+    for (n, pg) in pages.pages.iter().enumerate().take(3) {
+        let ys = |header: bool| -> Vec<f32> {
+            pg.items.iter().filter_map(|it| match it {
+                super::flow_layout::Item::Text { y, text, .. } if (text.contains("ヘッダーの行") || text.contains("架空商店 社内資料")) == header => Some(*y),
+                _ => None,
+            }).collect()
+        };
+        let (header, body) = (ys(true), ys(false));
+        assert_eq!(header.len(), 6, "page {n}: the header's own line and the five added");
+        let header_last = header.iter().cloned().fold(f32::MIN, f32::max);
+        let body_first = body.iter().cloned().fold(f32::MAX, f32::min);
+        assert!(body_first > header_last, "page {n}: the body ({body_first}) starts below the header's last line ({header_last})");
+    }
+}
+
+/// GitHub issue #14: a new text box is centred across the column (its left is
+/// not 0), the open panel shows its place again after the box is dragged, and
+/// a second box inserted gets its own panel (and a click on the first one
+/// brings the first one's back).
+fn image015_text_box_panel_follows_box() {
+    let mut s = Scenario::open(REPORT);
+    let (_, id1, _) = text_paragraph(&mut s, 10);
+    let (_, id2, _) = text_paragraph(&mut s, 14);
+    let panel = |s: &mut Scenario| -> (FlowPos, Vec<String>) {
+        s.with(|e, cx| {
+            let st = e.doc_state().unwrap().text_box.as_ref().expect("the panel is open");
+            (st.initial.at, st.geometry.iter().map(|g| g.read(cx).value().to_string()).collect())
+        })
+    };
+    s.click_text(FlowPos::new(id1, 3));
+    s.menu("insert.text-box");
+    let (at1, geometry1) = panel(&mut s);
+    assert_eq!(at1.para, id1);
+    assert!(geometry1[2].parse::<f32>().unwrap() > 10.0, "centred, not at the left edge: {geometry1:?}");
+    s.update(|e, _, cx| e.set_text_box_text(e.text_box_at_caret().unwrap().at, "first", cx));
+    // Dragged: the panel shows the new place.
+    s.click_text(FlowPos::new(id1, 1));
+    let (page, frame) = s.with(|e, _| {
+        let doc = e.flow().unwrap().clone();
+        let laid = super::flow_layout::pages(&doc, &e.resources);
+        laid.pages.iter().enumerate().find_map(|(i, pg)| pg.items.iter().find_map(|item| match item {
+            super::flow_layout::Item::Shape { shape, x, y, w, h } if matches!(&shape.kind, ibis_doc_model::ShapeKind::Auto(a) if a.text.as_ref().is_some_and(|t| t.text() == "first")) => Some((i, (*x, *y, *w, *h))),
+            _ => None,
+        })).expect("the box is on a page")
+    });
+    let (origin, k) = s.with(|e, _| e.page_origin(page)).expect("the page is placed");
+    let center = (f32::from(origin.x) + (frame.0 + frame.2 / 2.0) * k, f32::from(origin.y) + (frame.1 + frame.3 / 2.0) * k);
+    s.drag(center, (center.0 + 40.0 * k, center.1 + 20.0 * k));
+    let (_, moved) = panel(&mut s);
+    let left0: f32 = geometry1[2].parse().unwrap();
+    let left1: f32 = moved[2].parse().unwrap();
+    assert!((left1 - left0 - 40.0).abs() < 1.0, "the panel shows the dragged place: {geometry1:?} -> {moved:?}");
+    // A second box, elsewhere: its own panel.
+    s.click_text(FlowPos::new(id2, 3));
+    s.menu("insert.text-box");
+    let (at2, _) = panel(&mut s);
+    assert_eq!(at2.para, id2, "the panel is for the second box");
+    s.update(|e, _, cx| e.set_text_box_text(e.text_box_at_caret().unwrap().at, "second", cx));
+    // Back on the first box with a click: the panel follows.
+    let (page, frame) = s.with(|e, _| {
+        let doc = e.flow().unwrap().clone();
+        let laid = super::flow_layout::pages(&doc, &e.resources);
+        laid.pages.iter().enumerate().find_map(|(i, pg)| pg.items.iter().find_map(|item| match item {
+            super::flow_layout::Item::Shape { shape, x, y, w, h } if matches!(&shape.kind, ibis_doc_model::ShapeKind::Auto(a) if a.text.as_ref().is_some_and(|t| t.text() == "first")) => Some((i, (*x, *y, *w, *h))),
+            _ => None,
+        })).expect("the first box is on a page")
+    });
+    let (origin, k) = s.with(|e, _| e.page_origin(page)).expect("the page is placed");
+    s.click((f32::from(origin.x) + (frame.0 + frame.2 / 2.0) * k, f32::from(origin.y) + (frame.1 + frame.3 / 2.0) * k));
+    let (at_now, _) = panel(&mut s);
+    assert_eq!(at_now.para, id1, "the panel follows the box clicked");
+}
+
+/// todo-fix #82: the text box panel has no 適用 button; a changed value shows in the box at once, the
+/// changes typed in one field are one step of undo, and a button (bold) is a step of its own.
+fn image015_panel_applies_live() {
+    let mut s = Scenario::open(REPORT);
+    let (_, id, _) = text_paragraph(&mut s, 10);
+    s.click_text(FlowPos::new(id, 3));
+    s.menu("insert.text-box");
+    let size = |s: &mut Scenario| -> (i64, i64) {
+        let doc = s.document();
+        para(&doc, id).runs.iter().find_map(|r| match &r.kind { FlowRunKind::Shape(shape) => Some((shape.frame.width, shape.frame.height)), _ => None }).unwrap()
+    };
+    let bold = |s: &mut Scenario| -> Option<bool> {
+        let doc = s.document();
+        para(&doc, id).runs.iter().find_map(|r| match &r.kind {
+            FlowRunKind::Shape(shape) => match &shape.kind { ibis_doc_model::ShapeKind::Auto(a) => a.text.as_ref().and_then(|t| t.paragraphs[0].runs.first().map(|r| r.style.bold)).flatten(), _ => None },
+            _ => None,
+        })
+    };
+    // Typed in the panel's text.
+    s.update(|e, window, cx| {
+        let t = e.doc_state().unwrap().text_box.as_ref().unwrap().text.clone();
+        t.update(cx, |i, cx| i.replace_all("Text", window, cx));
+    });
+    let before = s.document();
+    let width = |s: &mut Scenario, v: &'static str| s.update(|e, window, cx| {
+        let f = e.doc_state().unwrap().text_box.as_ref().unwrap().geometry[0].clone();
+        f.update(cx, |i, cx| i.replace_all(v, window, cx));
+    });
+    width(&mut s, "2");
+    width(&mut s, "20");
+    width(&mut s, "200");
+    assert_eq!(size(&mut s).0, 200 * 12_700, "the width is the box's without a button");
+    s.update(|e, _, cx| {
+        e.doc_state_mut().unwrap().text_box.as_mut().unwrap().bold = true;
+        e.apply_text_box(cx);
+    });
+    assert_eq!(bold(&mut s), Some(true));
+    s.menu("edit.undo");
+    assert_eq!(bold(&mut s), None, "bold is a step of its own");
+    assert_eq!(size(&mut s).0, 200 * 12_700);
+    s.menu("edit.undo");
+    assert_eq!(s.document(), before, "the width typed in one field is one step");
+}
+
+/// todo-fix #81: a double click on a text box edits its text in place; Esc ends it with one step of undo.
+fn image015_inline_text_box_edit() {
+    let mut s = Scenario::open(REPORT);
+    let (_, id, _) = text_paragraph(&mut s, 10);
+    s.click_text(FlowPos::new(id, 3));
+    s.menu("insert.text-box");
+    s.update(|e, window, cx| {
+        let t = e.doc_state().unwrap().text_box.as_ref().unwrap().text.clone();
+        t.update(cx, |i, cx| i.replace_all("first", window, cx));
+    });
+    let text_of = |s: &mut Scenario| -> Option<String> {
+        let doc = s.document();
+        para(&doc, id).runs.iter().find_map(|r| match &r.kind {
+            FlowRunKind::Shape(shape) => match &shape.kind { ibis_doc_model::ShapeKind::Auto(a) => a.text.as_ref().map(|t| t.text()), _ => None },
+            _ => None,
+        })
+    };
+    assert_eq!(text_of(&mut s).as_deref(), Some("first"));
+    let box_win_rect = |s: &mut Scenario| -> (f32, f32, f32, f32) {
+        let (page, frame) = s.with(|e, _| {
+            let doc = e.flow().unwrap().clone();
+            let laid = super::flow_layout::pages(&doc, &e.resources);
+            laid.pages.iter().enumerate().find_map(|(i, pg)| pg.items.iter().rev().find_map(|item| match item {
+                super::flow_layout::Item::Shape { x, y, w, h, .. } => Some((i, (*x, *y, *w, *h))),
+                _ => None,
+            })).expect("the box is on a page")
+        });
+        let (origin, k) = s.with(|e, _| e.page_origin(page)).expect("the page is placed");
+        (f32::from(origin.x) + frame.0 * k, f32::from(origin.y) + frame.1 * k, frame.2 * k, frame.3 * k)
+    };
+    let before = s.document();
+    let (bx, by, bw, bh) = box_win_rect(&mut s);
+    s.double_click((bx + bw / 2.0, by + bh / 2.0));
+    assert!(s.with(|e, _| e.doc_state().is_some_and(|d| d.box_edit.is_some())), "the box is edited in place");
+    s.key("cmd-a");
+    s.type_text("first second");
+    s.type_text(" third");
+    s.screenshot("01-editing-in-place");
+    assert_eq!(text_of(&mut s).as_deref(), Some("first second third"), "updated live while editing");
+    s.key("escape");
+    assert!(s.with(|e, _| e.doc_state().is_some_and(|d| d.box_edit.is_none())));
+    assert_eq!(text_of(&mut s).as_deref(), Some("first second third"));
+    // Double-clicking near the left edge vs right edge places the caret at the clicked position.
+    let (bx, by, bw, _bh) = box_win_rect(&mut s);
+    s.double_click((bx + 6.0, by + 12.0));
+    s.settle();
+    let left_sel = s.with(|e, _| e.doc_state().unwrap().box_edit.as_ref().unwrap().edit.range());
+    assert_eq!(left_sel, 0..0, "double-click near left edge places caret at start");
+    s.key("escape");
+    s.double_click((bx + bw - 6.0, by + 12.0));
+    s.settle();
+    let right_sel = s.with(|e, _| e.doc_state().unwrap().box_edit.as_ref().unwrap().edit.range());
+    assert!(right_sel.start > 5, "double-click near right edge places caret after start: {right_sel:?}");
+    s.key("escape");
+    s.menu("edit.undo");
+    assert_eq!(s.document(), before, "the whole edit is one step");
+}

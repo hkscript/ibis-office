@@ -2180,3 +2180,12 @@ pptx.smartart.color.green-short	緑
 pptx.smartart.color.outline-short	枠線
 pptx.smartart.select-prompt	SmartArt 図表を選択してください。
 pptx.smartart.item.item-b	項目 B
+pptx.find.clear	クリア
+pptx.inspect.remove-properties	プロパティと個人情報を削除
+pptx.chart.legend.trendline.linear	線形 ({series})
+pptx.chart.legend.trendline.exp	指数 ({series})
+pptx.chart.legend.trendline.log	対数 ({series})
+pptx.chart.legend.trendline.poly	多項式 ({series})
+pptx.chart.legend.trendline.power	累乗 ({series})
+pptx.chart.legend.trendline.moving-avg	{period} 区間移動平均 ({series})
+pptx.tools.word-count	スライド {slides}、単語 {words}、文字（空白を除く） {chars}

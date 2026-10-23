@@ -172,7 +172,7 @@ _shell.black	黒
 _shell.red	赤
 _shell.blue	青
 _shell.green	緑
-_shell.type-a-comment-and-press-enter	コメントを入力して Enter
+_shell.type-a-comment-and-press-enter	コメントを入力（⌘Enter で投稿）
 _shell.reply	返信
 _shell.resolved	（解決済み）
 _shell.resolve	解決
@@ -334,7 +334,6 @@ _shell.picture-not-supported	画像（未対応）
 _shell.open	開く
 _shell.new-comment-m	コメントを追加（⌥⌘M）
 _shell.hide-comments	コメントを非表示
-_shell.hide-outline	概要を非表示
 _shell.hide-sidebar	サイドバーを非表示
 _shell.undo-z	元に戻す（⌘Z）
 _shell.redo-z	やり直し（⇧⌘Z）
@@ -592,7 +591,6 @@ _shell.freeze	固定
 _shell.show-gridlines	グリッド線を表示
 _shell.show-formula-bar	数式バーを表示
 _shell.print-layout	印刷レイアウト
-_shell.show-outline	概要を表示
 _shell.zoom-in	拡大
 _shell.zoom-out	縮小
 _shell.fit-to-window	画面に合わせる
@@ -803,3 +801,26 @@ grammar.capitalization	文頭の大文字化
 editor.csv.loading-first	CSV を読み込み中... (100,000 行読み込み済み)
 editor.csv.loaded	CSV 読み込み完了 ({rows} 行)
 editor.csv.loading	CSV を読み込み中... ({rows} 行読み込み済み)
+shell.embed.download	ダウンロード
+shell.embed.close	閉じる
+settings.view.scrollbars-always	スクロール バーを常に表示する
+file.save-format.docx	Word 文書 (.docx)
+file.save-format.dotx	Word テンプレート (.dotx)
+file.save-format.odt	OpenDocument テキスト (.odt)
+file.save-format.xlsx	Excel ブック (.xlsx)
+file.save-format.xltx	Excel テンプレート (.xltx)
+file.save-format.xls	Excel 97-2003 ブック (.xls)
+file.save-format.ods	OpenDocument スプレッドシート (.ods)
+file.save-format.csv	CSV UTF-8 (.csv)
+file.save-format.tsv	テキスト（タブ区切り）(.tsv)
+file.save-format.pptx	PowerPoint プレゼンテーション (.pptx)
+file.save-format.ppsx	PowerPoint スライド ショー (.ppsx)
+file.save-format.potx	PowerPoint テンプレート (.potx)
+file.save-format.odp	OpenDocument プレゼンテーション (.odp)
+file.print-opened-pdf	PDF を既定のアプリで開きました
+menu.window	ウィンドウ
+window.open-in-word	Wordで開く
+window.open-in-excel	Excelで開く
+window.open-in-powerpoint	PowerPointで開く
+window.open-in-office.confirm-title	確認
+window.open-in-office.specify-path	{app}のパスを指定してください。

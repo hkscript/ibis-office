@@ -11,6 +11,7 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 
 use ibis_pptx::repair::{repair_document, RepairLogLevel, RepairMode, RepairReport};
 
@@ -393,7 +394,7 @@ impl SlideEditor {
                         h_flex()
                             .gap_1()
                             .items_center()
-                            .child(div().flex_1().child(Input::new(&file_input).small()))
+                            .child(div().flex_1().child(Input::new(&file_input).small().cleanable(true)))
                             .child(
                                 Button::new("docx-repair-browse-btn")
                                     .small()

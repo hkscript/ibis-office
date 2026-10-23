@@ -28,32 +28,32 @@ Our aim is simple: a document made in Microsoft Office should look the same when
 <table>
   <tr>
     <td align="center">
-      <a href="https://github.com/ibisjp/ibis-office/releases/download/v0.8.3/ibisOffice-0.8.3-Windows.zip">
+      <a href="https://github.com/ibisjp/ibis-office/releases/download/v0.8.4/ibisOffice-0.8.4-Windows.zip">
         <img src="asset/download-windows.svg" alt="Download for Windows" height="54">
       </a><br>
-      <a href="https://github.com/ibisjp/ibis-office/releases/download/v0.8.3/ibisOffice-0.8.3-Windows.zip"><code>ibisOffice-0.8.3-Windows.zip</code></a><br>
+      <a href="https://github.com/ibisjp/ibis-office/releases/download/v0.8.4/ibisOffice-0.8.4-Windows.zip"><code>ibisOffice-0.8.4-Windows.zip</code></a><br>
       <small>Windows 10 / 11 (64-bit)</small>
     </td>
     <td align="center">
-      <a href="https://github.com/ibisjp/ibis-office/releases/download/v0.8.3/ibisOffice-0.8.3-macOS.zip">
+      <a href="https://github.com/ibisjp/ibis-office/releases/download/v0.8.4/ibisOffice-0.8.4-macOS.zip">
         <img src="asset/download-mac.svg" alt="Download for Mac" height="54">
       </a><br>
-      <a href="https://github.com/ibisjp/ibis-office/releases/download/v0.8.3/ibisOffice-0.8.3-macOS.zip"><code>ibisOffice-0.8.3-macOS.zip</code></a><br>
+      <a href="https://github.com/ibisjp/ibis-office/releases/download/v0.8.4/ibisOffice-0.8.4-macOS.zip"><code>ibisOffice-0.8.4-macOS.zip</code></a><br>
       <small>macOS 11 or later (Apple silicon)</small>
     </td>
     <td align="center">
-      <a href="https://github.com/ibisjp/ibis-office/releases/download/v0.8.3/ibisOffice-0.8.3-Linux.AppImage">
+      <a href="https://github.com/ibisjp/ibis-office/releases/download/v0.8.4/ibisOffice-0.8.4-Linux.AppImage">
         <img src="asset/download-linux.svg" alt="Download for Linux" height="54">
       </a><br>
-      <a href="https://github.com/ibisjp/ibis-office/releases/download/v0.8.3/ibisOffice-0.8.3-Linux.AppImage"><code>ibisOffice-0.8.3-Linux.AppImage</code></a><br>
+      <a href="https://github.com/ibisjp/ibis-office/releases/download/v0.8.4/ibisOffice-0.8.4-Linux.AppImage"><code>ibisOffice-0.8.4-Linux.AppImage</code></a><br>
       <small>Linux x86_64</small>
     </td>
   </tr>
 </table>
 
-- **Windows**: download and unzip `ibisOffice-0.8.3-Windows.zip`, then run `ibisOffice.exe` in the `ibisOffice` folder.
-- **macOS**: download and unzip `ibisOffice-0.8.3-macOS.zip`, then move `ibisOffice.app` to your Applications folder.
-- **Linux**: download `ibisOffice-0.8.3-Linux.AppImage`, allow it to run as a program (`chmod +x`), and double-click. Runs on major desktop Linux distributions (glibc 2.31 or later: Ubuntu, Debian, Fedora, Arch Linux, etc.). No installation or FUSE is needed.
+- **Windows**: download and unzip `ibisOffice-0.8.4-Windows.zip`, then run `ibisOffice.exe` in the `ibisOffice` folder.
+- **macOS**: download and unzip `ibisOffice-0.8.4-macOS.zip`, then move `ibisOffice.app` to your Applications folder.
+- **Linux**: download `ibisOffice-0.8.4-Linux.AppImage`, allow it to run as a program (`chmod +x`), and double-click. Runs on major desktop Linux distributions (glibc 2.31 or later: Ubuntu, Debian, Fedora, Arch Linux, etc.). No installation or FUSE is needed.
 - **Try the web version**: open the [playground](https://ibisjp.github.io/ibis-office/) in your browser — no installation (a browser with WebGPU). Open the sample Word, Excel and PowerPoint documents and try it right away.
 - **Changelog**: see [CHANGELOG.md](CHANGELOG.md) for release notes and recent updates.
 - **Watch the video**: an introduction to ibisOffice (YouTube).
@@ -61,6 +61,7 @@ Our aim is simple: a document made in Microsoft Office should look the same when
   [![ibisOffice introduction video](asset/video-en.jpg)](https://www.youtube.com/watch?v=nk2BRzMC2vw)
 
 - **Command-line interface**: for batch headless conversion to PDF/PNG, print settings, and performance benchmarking, see [Command-Line Options](docs/cli-options.md).
+- **Embedding the browser version**: optional Close and Download buttons that hand the embedding page an event, see [Embedding](docs/web-embedding.md).
 
 ## Goals
 
@@ -184,8 +185,9 @@ cd ibis-office
 cargo build --release
 ```
 
-- Requires the latest stable Rust.
-- On macOS, `scripts/bundle-macos.sh` builds the app at `target/release/ibisOffice.app`.
+- On Windows, build with `cargo build --release -p ibis-office-app` (the whole workspace includes a Linux-only crate); the app is `target\release\ibisOffice.exe`.
+- On macOS, `scripts/bundle-macos.sh --release` builds the app at `target/release/ibisOffice.app`.
+- On Linux, `scripts/bundle-linux.sh --release` builds an AppImage at `target/dist/ibisOffice-<version>-Linux.AppImage`, and `scripts/bundle-flatpak.sh --release` a Flatpak bundle at `target/dist/ibisOffice-<version>-Linux-<arch>.flatpak` (needs `flatpak-builder`).
 - For the browser edition, build with `scripts/build-web.sh --release` and serve `www/` (browsers with WebGPU: Chrome, Edge, Safari 26 or later).
 
 ## Implemented Features

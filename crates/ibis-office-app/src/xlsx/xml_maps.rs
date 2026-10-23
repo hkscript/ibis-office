@@ -12,6 +12,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{Selectable as _, Sizable as _, v_flex, h_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 
 use crate::shell::chrome::SidebarPanel;
 use crate::shell::editor::SlideEditor;
@@ -230,7 +231,7 @@ impl SlideEditor {
         let mut body = v_flex().gap_2().p(px(8.));
 
         body = body.child(div().text_size(px(11.)).font_weight(FontWeight::BOLD).child(text("xlsx.xml-map-properties.name")));
-        body = body.child(mark("xml-map-name-input", Input::new(&p.name).small().into_any_element()));
+        body = body.child(mark("xml-map-name-input", Input::new(&p.name).small().cleanable(true).into_any_element()));
 
         body = body.child(div().text_size(px(11.)).text_color(rgb(0x666666)).child(format!("{}: {}", text("xlsx.xml-map-properties.root-element"), root)));
         body = body.child(div().text_size(px(11.)).text_color(rgb(0x666666)).child(format!("{}: {}", text("xlsx.xml-map-properties.schema"), schema)));

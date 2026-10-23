@@ -9,6 +9,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{Disableable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::{Border, CellInput, CellRange, CellStyle, CellValue, Command, PutCell, Rgb, Sheet, SheetCommand, SheetTable, TableStyleInfo, TableTotal};
 
 use crate::shell::chrome::SidebarPanel;
@@ -440,7 +441,7 @@ impl SlideEditor {
             .px(px(18.))
             .py(px(8.))
             .child(text("_xlsx.table-name"))
-            .child(h_flex().gap_1().child(div().flex_1().child(Input::new(&p.name).small())).child(Button::new("table-rename").small().label(text("_xlsx.change")).on_click(cx.listener(|this, _, _, cx| this.rename_table(cx)))))
+            .child(h_flex().gap_1().child(div().flex_1().child(Input::new(&p.name).small().cleanable(true))).child(Button::new("table-rename").small().label(text("_xlsx.change")).on_click(cx.listener(|this, _, _, cx| this.rename_table(cx)))))
             .child(div().pt(px(6.)).child(text("_xlsx.table-style-options")))
             .child(Button::new("table-header").small().label(check(t.header_rows > 0, "docx.table-design.header-row")).on_click(cx.listener(move |this, _, _, cx| this.toggle_header_row(index, cx))))
             .child(Button::new("table-totals").small().label(check(t.totals_rows > 0, "docx.table-design.total-row")).on_click(cx.listener(move |this, _, _, cx| this.toggle_totals_row(index, cx))))
@@ -1057,7 +1058,7 @@ impl SlideEditor {
             .px(px(18.))
             .py(px(8.))
             .child(text("xlsx.new-table-style.name"))
-            .child(mark("name", Input::new(&p.name).small().into_any_element()))
+            .child(mark("name", Input::new(&p.name).small().cleanable(true).into_any_element()))
             .child(div().pt(px(6.)).child(text("_xlsx.table-style-options")))
             .child(Button::new("custom-row-stripes").small().label(check(row_stripes, "_xlsx.banded-rows")).on_click(cx.listener(|this, _, _, cx| {
                 if let Some(p) = this.wb_mut().panels.new_table_style.as_mut() {

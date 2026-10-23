@@ -7,6 +7,6 @@
 //!   cargo test --release -p ibis-office-app --test scenarios [-- <part of a name> | !<part of a name to leave out>]
 
 fn main() {
-    let filter: Vec<String> = std::env::args().skip(1).filter(|a| !a.starts_with('-')).collect();
-    std::process::exit(ibis_office_app::run_scenarios(&filter));
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    std::process::exit(ibis_office_app::run_scenarios(&args));
 }

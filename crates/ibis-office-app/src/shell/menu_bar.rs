@@ -19,8 +19,9 @@ use gpui_kit::component::{Icon, Selectable as _, Sizable as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::base::ElementExt as _;
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 
-use crate::shell::chrome::{APP_BG, MenuEntry, fill_menu};
+use crate::shell::chrome::{APP_BG, MenuEntry, fill_menu_entries, menu_width_for_entries};
 use crate::shell::editor::SlideEditor;
 use crate::shell::icons::Material;
 
@@ -73,7 +74,7 @@ pub(crate) fn visible(entries: &[MenuEntry], start: usize, height: f32) -> Visib
         return Visible { start: 0, end: entries.len(), cut: false };
     }
     // Two fixed rows (▲ ▼) take the room of two lines.
-    let budget = height - MENU_PADDING - 2.0 * ITEM_HEIGHT;
+    let budget = (height - MENU_PADDING - 2.0 * ITEM_HEIGHT).max(ITEM_HEIGHT);
     // The last start that still fills the window to the end.
     let mut max_start = entries.len();
     let mut used = 0.0;
@@ -82,8 +83,289 @@ pub(crate) fn visible(entries: &[MenuEntry], start: usize, height: f32) -> Visib
         used += height_of(&entries[max_start]);
     }
     let start = start.min(max_start);
-    let end = start + lines_from(entries, start, budget);
+    let end = (start + lines_from(entries, start, budget)).max((start + 1).min(entries.len()));
     Visible { start, end, cut: true }
+}
+
+struct SubmenuScroll {
+    entries: Rc<Vec<MenuEntry>>,
+    start: usize,
+    width: f32,
+    editor: WeakEntity<SlideEditor>,
+    popup: WeakEntity<PopupMenu>,
+    bars: [Bounds<Pixels>; 2],
+    dragging: bool,
+    scroll_task: Option<Task<()>>,
+}
+
+impl SubmenuScroll {
+    fn on_bar(&self, dir: i32, at: Point<Pixels>) -> bool {
+        let mut bounds = self.bars[usize::from(dir > 0)];
+        let slack = px(ITEM_HEIGHT);
+        if dir > 0 {
+            bounds.origin.y -= slack;
+        }
+        bounds.size.height += slack;
+        bounds.contains(&at)
+    }
+}
+
+fn scroll_submenu_to(state: &Rc<std::cell::RefCell<SubmenuScroll>>, start: usize, window: &mut Window, cx: &mut App) -> bool {
+    let room = SlideEditor::submenu_room(window);
+    let (popup, changed) = {
+        let mut s = state.borrow_mut();
+        let view = visible(&s.entries, start, room);
+        if view.start == s.start {
+            return false;
+        }
+        s.start = view.start;
+        (s.popup.clone(), true)
+    };
+    if changed {
+        let state_rebuild = state.clone();
+        popup
+            .update(cx, |popup, cx| {
+                popup.rebuild(window, cx, move |menu, window, cx| fill_submenu_window(menu, &state_rebuild, window, cx));
+            })
+            .ok();
+        window.refresh();
+    }
+    changed
+}
+
+fn scroll_submenu_by(state: &Rc<std::cell::RefCell<SubmenuScroll>>, lines: i32, window: &mut Window, cx: &mut App) -> bool {
+    let current = state.borrow().start;
+    let next = (current as i64 + lines as i64).max(0) as usize;
+    scroll_submenu_to(state, next, window, cx)
+}
+
+fn submenu_hover_scroll(state: &Rc<std::cell::RefCell<SubmenuScroll>>, dir: i32, hovered: bool, window: &mut Window, cx: &mut App) {
+    if !hovered {
+        state.borrow_mut().scroll_task = None;
+        return;
+    }
+    if state.borrow().scroll_task.is_some() {
+        return;
+    }
+    scroll_submenu_by(state, dir, window, cx);
+    let state_loop = state.clone();
+    let task = window.spawn(cx, async move |cx| {
+        loop {
+            cx.background_executor().timer(std::time::Duration::from_millis(SCROLL_MS)).await;
+            let go = cx
+                .update(|window, cx| {
+                    let on_row = state_loop.borrow().on_bar(dir, window.mouse_position());
+                    if !on_row {
+                        return false;
+                    }
+                    scroll_submenu_by(&state_loop, dir, window, cx)
+                })
+                .unwrap_or(false);
+            if !go {
+                state_loop.borrow_mut().scroll_task = None;
+                break;
+            }
+        }
+    });
+    state.borrow_mut().scroll_task = Some(task);
+}
+
+fn submenu_scroll_row(
+    dir: i32,
+    with_overlay: bool,
+    view: Visible,
+    entries: Rc<Vec<MenuEntry>>,
+    state: &Rc<std::cell::RefCell<SubmenuScroll>>,
+) -> PopupMenuItem {
+    let state = state.clone();
+    PopupMenuItem::element(move |_, _| {
+        let state_hover = state.clone();
+        let state_click = state.clone();
+        let state_prepaint = state.clone();
+        let state_canvas = state.clone();
+        let entries_canvas = entries.clone();
+        div()
+            .id(if dir < 0 { "submenu-scroll-up" } else { "submenu-scroll-down" })
+            .occlude()
+            .relative()
+            .w_full()
+            .h(px(ITEM_HEIGHT - 2.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                Icon::new(Material(if dir < 0 { "keyboard_arrow_up" } else { "keyboard_arrow_down" }))
+                    .size(px(18.))
+                    .text_color(rgb(0x5f6368)),
+            )
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                scroll_submenu_by(&state_click, dir, window, cx);
+                cx.stop_propagation();
+            })
+            .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_hover(move |hovered, window, cx| {
+                submenu_hover_scroll(&state_hover, dir, *hovered, window, cx);
+            })
+            .on_prepaint(move |bounds, _, _| {
+                state_prepaint.borrow_mut().bars[usize::from(dir > 0)] = bounds;
+            })
+            .when(with_overlay, |d| {
+                d.child(
+                    canvas(
+                        |bounds, _, _| bounds,
+                        move |bounds, _, window, _| {
+                            let total = entries_canvas.len().max(1);
+                            let items_h: f32 = entries_canvas[view.start..view.end].iter().map(height_of).sum();
+                            let up_h = if view.start > 0 { ITEM_HEIGHT } else { 0.0 };
+                            let down_h = if view.end < total { ITEM_HEIGHT } else { 0.0 };
+                            let total_h = up_h + items_h + down_h;
+                            let menu_top = if dir < 0 {
+                                bounds.origin.y
+                            } else {
+                                bounds.origin.y + bounds.size.height - px(total_h)
+                            };
+                            let menu_bounds = Bounds::new(
+                                point(bounds.origin.x - px(4.), menu_top - px(4.)),
+                                size(bounds.size.width + px(8.), px(total_h + 8.0)),
+                            );
+                            let track_top = menu_top + px(up_h);
+                            let track_bounds = Bounds::new(
+                                point(bounds.origin.x + bounds.size.width - px(10.), track_top),
+                                size(px(12.), px(items_h.max(16.0))),
+                            );
+                            let shown = ((view.end - view.start) as f32 / total as f32).clamp(0.05, 1.0);
+                            let top_frac = (view.start as f32 / total as f32).clamp(0.0, 1.0 - shown);
+                            let thumb_h = (items_h * shown).max(16.0);
+                            let thumb_y = track_top + px((items_h - thumb_h).max(0.0) * (if shown < 1.0 { top_frac / (1.0 - shown) } else { 0.0 }));
+                            let thumb_bounds = Bounds::new(
+                                point(bounds.origin.x + bounds.size.width - px(6.), thumb_y),
+                                size(px(7.), px(thumb_h)),
+                            );
+                            window.paint_quad(
+                                gpui::fill(thumb_bounds, crate::shell::palette::shade(0.0, 0.28)).corner_radii(px(3.5)),
+                            );
+
+                            let state_wheel = state_canvas.clone();
+                            window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+                                if phase == DispatchPhase::Capture && menu_bounds.contains(&event.position) {
+                                    let dy = f32::from(event.delta.pixel_delta(px(ITEM_HEIGHT)).y);
+                                    let lines = (-dy / ITEM_HEIGHT).round() as i32;
+                                    let lines = if lines == 0 && dy != 0.0 {
+                                        if dy < 0.0 { 1 } else { -1 }
+                                    } else {
+                                        lines
+                                    };
+                                    if lines != 0 {
+                                        scroll_submenu_by(&state_wheel, lines, window, cx);
+                                    }
+                                    cx.stop_propagation();
+                                }
+                            });
+
+                            let scroll_at = {
+                                let state_at = state_canvas.clone();
+                                move |y: Pixels, window: &mut Window, cx: &mut App| {
+                                    let h = f32::from(track_bounds.size.height).max(1.0);
+                                    let fraction = (f32::from(y - track_bounds.origin.y) / h).clamp(0.0, 1.0);
+                                    let start = ((fraction - shown / 2.0) * total as f32).round().max(0.0) as usize;
+                                    scroll_submenu_to(&state_at, start, window, cx);
+                                }
+                            };
+
+                            let state_down = state_canvas.clone();
+                            let scroll_down = scroll_at.clone();
+                            window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+                                if phase == DispatchPhase::Capture && event.button == MouseButton::Left && track_bounds.contains(&event.position) {
+                                    state_down.borrow_mut().dragging = true;
+                                    scroll_down(event.position.y, window, cx);
+                                    cx.stop_propagation();
+                                } else if phase == DispatchPhase::Bubble && menu_bounds.contains(&event.position) {
+                                    cx.stop_propagation();
+                                }
+                            });
+
+                            let state_move = state_canvas.clone();
+                            let scroll_move = scroll_at;
+                            window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                                if phase == DispatchPhase::Capture && event.dragging() && state_move.borrow().dragging {
+                                    scroll_move(event.position.y, window, cx);
+                                    cx.stop_propagation();
+                                }
+                            });
+
+                            let state_up = state_canvas;
+                            window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+                                if phase == DispatchPhase::Capture && event.button == MouseButton::Left {
+                                    state_up.borrow_mut().dragging = false;
+                                } else if phase == DispatchPhase::Bubble && menu_bounds.contains(&event.position) {
+                                    cx.stop_propagation();
+                                }
+                            });
+                        },
+                    )
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+                )
+            })
+    })
+    .disabled(true)
+}
+
+fn fill_submenu_window(
+    menu: PopupMenu,
+    state: &Rc<std::cell::RefCell<SubmenuScroll>>,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    let room = SlideEditor::submenu_room(window);
+    let (entries, view, width, editor) = {
+        let mut s = state.borrow_mut();
+        let view = visible(&s.entries, s.start, room);
+        s.start = view.start;
+        (s.entries.clone(), view, s.width, s.editor.clone())
+    };
+    let mut menu = menu.min_w(px(width)).max_w(px(width)).scrollable(false);
+    let has_up = view.cut && view.start > 0;
+    let has_down = view.cut && view.end < entries.len();
+    if has_up {
+        menu = menu.item(submenu_scroll_row(-1, true, view, entries.clone(), state));
+    }
+    menu = fill_menu_entries(menu, &entries[view.start..view.end], &editor, window, cx);
+    if has_down {
+        menu = menu.item(submenu_scroll_row(1, !has_up, view, entries, state));
+    }
+    menu
+}
+
+/// Fill a submenu or dropdown `PopupMenu` with `entries`, using the same `▲`/`▼` hover rows,
+/// mouse-wheel scrolling, and always-visible scrollbar as the main menu bar when the entries
+/// exceed the available window height (#136).
+pub(crate) fn fill_scrollable_popup_menu(
+    menu: PopupMenu,
+    entries: Vec<MenuEntry>,
+    width: f32,
+    editor: &WeakEntity<SlideEditor>,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    let room = SlideEditor::submenu_room(window);
+    let view = visible(&entries, 0, room);
+    if !view.cut {
+        return fill_menu_entries(menu.min_w(px(width)).max_w(px(width)).scrollable(false), &entries, editor, window, cx);
+    }
+    let state = Rc::new(std::cell::RefCell::new(SubmenuScroll {
+        entries: Rc::new(entries),
+        start: 0,
+        width,
+        editor: editor.clone(),
+        popup: cx.entity().downgrade(),
+        bars: Default::default(),
+        dragging: false,
+        scroll_task: None,
+    }));
+    fill_submenu_window(menu, &state, window, cx)
 }
 
 /// The menu that is open.
@@ -132,15 +414,21 @@ type Bars = Rc<std::cell::RefCell<[Bounds<Pixels>; 2]>>;
 fn scroll_row(dir: i32, editor: &WeakEntity<SlideEditor>, bars: &Bars) -> PopupMenuItem {
     let (editor, bars) = (editor.clone(), bars.clone());
     PopupMenuItem::element(move |_, _| {
-        let (editor, bars) = (editor.clone(), bars.clone());
+        let (editor, editor_click, bars) = (editor.clone(), editor.clone(), bars.clone());
         div()
             .id(if dir < 0 { "menu-scroll-up" } else { "menu-scroll-down" })
+            .occlude()
             .w_full()
             .h(px(ITEM_HEIGHT - 2.))
             .flex()
             .items_center()
             .justify_center()
             .child(Icon::new(Material(if dir < 0 { "keyboard_arrow_up" } else { "keyboard_arrow_down" })).size(px(18.)).text_color(rgb(0x5f6368)))
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                editor_click.update(cx, |this, cx| this.scroll_menu_by(dir, window, cx)).ok();
+                cx.stop_propagation();
+            })
+            .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_hover(move |hovered, window, cx| {
                 editor.update(cx, |this, cx| this.menu_hover_scroll(dir, *hovered, window, cx)).ok();
             })
@@ -151,12 +439,12 @@ fn scroll_row(dir: i32, editor: &WeakEntity<SlideEditor>, bars: &Bars) -> PopupM
 }
 
 fn fill_window(menu: PopupMenu, open: &OpenMenuParts, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
-    let OpenMenuParts { entries, view, editor, bars } = open;
-    let mut menu = menu;
+    let OpenMenuParts { entries, view, editor, bars, width } = open;
+    let mut menu = menu.min_w(px(*width)).max_w(px(*width)).scrollable(false);
     if view.cut && view.start > 0 {
         menu = menu.item(scroll_row(-1, editor, bars));
     }
-    menu = fill_menu(menu, &entries[view.start..view.end], editor, window, cx);
+    menu = fill_menu_entries(menu, &entries[view.start..view.end], editor, window, cx);
     if view.cut && view.end < entries.len() {
         menu = menu.item(scroll_row(1, editor, bars));
     }
@@ -168,6 +456,7 @@ struct OpenMenuParts {
     view: Visible,
     editor: WeakEntity<SlideEditor>,
     bars: Bars,
+    width: f32,
 }
 
 impl SlideEditor {
@@ -176,18 +465,30 @@ impl SlideEditor {
         f32::from(window.viewport_size().height) - BAR_BOTTOM - WINDOW_MARGIN
     }
 
+    /// How tall a submenu opened from a row inside a menu may be in this window (#136).
+    /// Submenus open below their parent row (e.g., row 8 in `ツール > 変更履歴の記録`),
+    /// so we reserve room for the parent row offset so the submenu never overflows the bottom of the window.
+    pub(crate) fn submenu_room(window: &Window) -> f32 {
+        Self::submenu_room_for_viewport(f32::from(window.viewport_size().height))
+    }
+
+    pub(crate) fn submenu_room_for_viewport(viewport_h: f32) -> f32 {
+        ((viewport_h - BAR_BOTTOM - WINDOW_MARGIN) - 240.0).clamp(160.0, 460.0)
+    }
+
     /// Open menu `ix` (closing the one that is open).
     pub(crate) fn open_menu_at(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let menus = self.menus();
         let Some((_, entries)) = menus.menus.into_iter().nth(ix) else {
             return;
         };
+        let width = menu_width_for_entries(&entries).max(MENU_WIDTH);
         let entries = Rc::new(entries);
         let editor = cx.entity().downgrade();
         let view = visible(&entries, 0, Self::menu_room(window));
         let bars: Bars = Default::default();
-        let parts = OpenMenuParts { entries: entries.clone(), view, editor, bars: bars.clone() };
-        let popup = PopupMenu::build(window, cx, move |menu, window, cx| fill_window(menu.min_w(px(MENU_WIDTH)), &parts, window, cx));
+        let parts = OpenMenuParts { entries: entries.clone(), view, editor, bars: bars.clone(), width };
+        let popup = PopupMenu::build(window, cx, move |menu, window, cx| fill_window(menu, &parts, window, cx));
         popup.focus_handle(cx).focus(window, cx);
         let dismiss = cx.subscribe_in(&popup, window, |this, _, _: &DismissEvent, window, cx| {
             this.open_menu = None;
@@ -216,7 +517,8 @@ impl SlideEditor {
             return;
         }
         open.start = view.start;
-        let parts = OpenMenuParts { entries: open.entries.clone(), view, editor, bars: open.bars.clone() };
+        let width = menu_width_for_entries(&open.entries).max(MENU_WIDTH);
+        let parts = OpenMenuParts { entries: open.entries.clone(), view, editor, bars: open.bars.clone(), width };
         open.popup.update(cx, |popup, cx| popup.rebuild(window, cx, move |menu, window, cx| fill_window(menu, &parts, window, cx)));
         cx.notify();
     }
@@ -286,14 +588,16 @@ impl SlideEditor {
             let start = ((fraction - shown / 2.0) * total as f32).round().max(0.0) as usize;
             this.scroll_menu_to(start, window, cx);
         };
+        let top_inset = MENU_PADDING / 2.0 + if view.start > 0 { ITEM_HEIGHT } else { 0.0 };
+        let bottom_inset = MENU_PADDING / 2.0 + if view.end < total { ITEM_HEIGHT } else { 0.0 };
         let cell = self.open_menu.as_ref().map(|o| o.bar.clone()).unwrap_or_default();
         let (down, drag) = (cell.clone(), cell.clone());
         div()
             .id("menu-scrollbar")
             .group("menu-scrollbar")
             .absolute()
-            .top(px(MENU_PADDING / 2.0 + ITEM_HEIGHT))
-            .bottom(px(MENU_PADDING / 2.0 + ITEM_HEIGHT))
+            .top(px(top_inset))
+            .bottom(px(bottom_inset))
             .right_0()
             .w(px(12.))
             .on_prepaint(move |bounds, _, _| cell.set(bounds))
@@ -322,8 +626,8 @@ impl SlideEditor {
                     .top(relative(top))
                     .h(relative(shown))
                     .rounded(px(4.))
-                    .bg(hsla(0.0, 0.0, 0.0, 0.0))
-                    .group_hover("menu-scrollbar", |s| s.bg(hsla(0.0, 0.0, 0.0, 0.38))),
+                    .bg(crate::shell::palette::shade(0.0, 0.28))
+                    .group_hover("menu-scrollbar", |s| s.bg(crate::shell::palette::shade(0.0, 0.45))),
             )
     }
 
@@ -391,6 +695,10 @@ impl SlideEditor {
                     .occlude()
                     .top_1()
                     .relative()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_mouse_up(MouseButton::Right, |_, _, cx| cx.stop_propagation())
                     .child(open.popup.clone())
                     // Over the menu (an element with a handler that does not occlude,
                     // as the menu itself occludes what is behind it): the wheel.
@@ -407,5 +715,40 @@ impl SlideEditor {
                     .when(view.cut, |d| d.child(self.render_menu_scrollbar(view, total, cx))),
             ),
         )
+        .with_priority(gpui_kit::base::POPUP_PRIORITY)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SlideEditor, visible};
+    use crate::shell::chrome::{MenuEntry, MenuItem};
+
+    #[test]
+    fn submenu_room_cuts_long_track_changes_submenu_and_reaches_last_item() {
+        let mut entries: Vec<MenuEntry> = Vec::new();
+        for i in 0..23 {
+            if i == 5 || i == 13 {
+                entries.push(MenuEntry::Separator);
+            }
+            let id: &'static str = if i == 22 {
+                "docx.track.change-user-name"
+            } else {
+                "docx.track.item"
+            };
+            entries.push(MenuItem::new(id, format!("Item {i}")).into());
+        }
+        assert_eq!(entries.len(), 25);
+
+        let room = SlideEditor::submenu_room_for_viewport(800.0);
+        let initial = visible(&entries, 0, room);
+        assert!(initial.cut, "25-entry submenu in an 800px window must be scrollable (cut: true)");
+        assert_eq!(initial.start, 0);
+        assert!(initial.end < entries.len());
+
+        let scrolled_to_end = visible(&entries, entries.len(), room);
+        assert!(scrolled_to_end.cut);
+        assert_eq!(scrolled_to_end.end, entries.len(), "Scrolling to the bottom must include the last item (docx.track.change-user-name)");
+        assert!(scrolled_to_end.start > 0);
     }
 }

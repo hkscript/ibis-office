@@ -13,10 +13,11 @@ use std::rc::Rc;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::sheet_command::SortBy;
 use ibis_doc_model::{AutoFilter, CellRange, CellValue, ColumnFilter, Command, Rgb, SheetCommand};
 
@@ -723,7 +724,7 @@ impl SlideEditor {
         })
         .h_full();
         menu.child(div().h(px(1.)).my_1().bg(theme.border))
-            .child(Input::new(&p.search).small())
+            .child(crate::shell::chrome::clearable_text_field(&p.search))
             .child(div().h(px(200.)).border_1().border_color(theme.border).rounded_sm().child(list))
             .child(
                 h_flex()
@@ -847,7 +848,7 @@ impl SlideEditor {
                 h_flex()
                     .gap_2()
                     .child(Button::new(("filter-dialog-op", i)).small().w(px(160.)).label(format!("{current} ▾")).on_click(cx.listener(move |this, _, _, cx| this.with_condition(cx, |d| d.choosing = if d.choosing == Some(i) { None } else { Some(i) }))))
-                    .child(div().flex_1().child(Input::new(&d.values[i]).small())),
+                    .child(div().flex_1().child(crate::shell::chrome::clearable_text_field(&d.values[i]))),
             );
             if d.choosing == Some(i) {
                 let mut list = v_flex().border_1().border_color(theme.border).rounded_sm();
@@ -896,7 +897,7 @@ impl SlideEditor {
                 h_flex()
                     .gap_2()
                     .child(Button::new("filter-top-which").small().label(crate::shell::i18n::text(if d.top { "_xlsx.top" } else { "_xlsx.bottom" })).on_click(cx.listener(|this, _, _, cx| this.with_top(cx, |d| d.top = !d.top))))
-                    .child(div().w(px(70.)).child(Input::new(&d.count).small()))
+                    .child(div().w(px(70.)).child(crate::shell::chrome::clearable_text_field(&d.count)))
                     .child(Button::new("filter-top-unit").small().label(crate::shell::i18n::text(if d.percent { "_xlsx.percent" } else { "_xlsx.items" })).on_click(cx.listener(|this, _, _, cx| this.with_top(cx, |d| d.percent = !d.percent)))),
             )
             .when_some(d.error.clone(), |b, e| b.child(div().text_color(theme.danger).child(e)))

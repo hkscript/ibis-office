@@ -60,17 +60,84 @@ fn to_char(offsets: &[usize], utf16: usize) -> usize {
     offsets.iter().position(|&o| o >= utf16).unwrap_or(offsets.len().saturating_sub(1))
 }
 
+static CARET_BLINK_VISIBLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+static CARET_BLINK_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static CARET_BLINK_SHAPE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) fn caret_blink_visible() -> bool {
+    CARET_BLINK_VISIBLE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 impl SlideEditor {
-    pub(crate) fn text_editing(&self) -> Option<&TextEditing> {
-        self.pptx().and_then(|s| s.edit.as_ref())
+    pub(crate) fn restart_caret_blink(&self, cx: &mut Context<Self>) {
+        use std::sync::atomic::Ordering::Relaxed;
+        CARET_BLINK_VISIBLE.store(true, Relaxed);
+        let shape = self.text_editing().map_or(0, |e| e.shape.0);
+        CARET_BLINK_SHAPE.store(shape, Relaxed);
+        let generation = CARET_BLINK_GEN.fetch_add(1, Relaxed) + 1;
+        if shape == 0 {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(std::time::Duration::from_millis(530)).await;
+                if CARET_BLINK_GEN.load(Relaxed) != generation {
+                    break;
+                }
+                let ok = this
+                    .update(cx, |this, cx| {
+                        if this.text_editing().is_none() || CARET_BLINK_GEN.load(Relaxed) != generation {
+                            CARET_BLINK_VISIBLE.store(true, Relaxed);
+                            return false;
+                        }
+                        let v = !CARET_BLINK_VISIBLE.load(Relaxed);
+                        CARET_BLINK_VISIBLE.store(v, Relaxed);
+                        cx.notify();
+                        true
+                    })
+                    .unwrap_or(false);
+                if !ok {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
-    fn text_editing_mut(&mut self) -> Option<&mut TextEditing> {
-        self.pptx_mut().and_then(|s| s.edit.as_mut())
+    pub(crate) fn ensure_caret_blink(&self, cx: &mut Context<Self>) {
+        use std::sync::atomic::Ordering::Relaxed;
+        if let Some(edit) = self.text_editing() {
+            if CARET_BLINK_SHAPE.load(Relaxed) != edit.shape.0 {
+                self.restart_caret_blink(cx);
+            }
+        } else if CARET_BLINK_SHAPE.load(Relaxed) != 0 {
+            CARET_BLINK_SHAPE.store(0, Relaxed);
+            CARET_BLINK_VISIBLE.store(true, Relaxed);
+            CARET_BLINK_GEN.fetch_add(1, Relaxed);
+        }
+    }
+    pub(crate) fn text_editing(&self) -> Option<&TextEditing> {
+        self.pptx()
+            .and_then(|s| s.edit.as_ref())
+            .or_else(|| self.editing.as_ref().map(|e| &e.edit))
+            .or_else(|| self.doc_state().and_then(|s| s.box_edit.as_ref()).map(|b| &b.edit))
+    }
+
+    pub(crate) fn text_editing_mut(&mut self) -> Option<&mut TextEditing> {
+        if self.pptx().is_some() {
+            return self.pptx_mut().and_then(|s| s.edit.as_mut());
+        }
+        if self.editing.is_some() {
+            return self.editing.as_mut().map(|e| &mut e.edit);
+        }
+        self.doc_state_mut().and_then(|s| s.box_edit.as_mut()).map(|b| &mut b.edit)
     }
 
     /// The text body being edited: the shape's, or its table cell's.
     pub(crate) fn edited_body(&self) -> Option<&TextBody> {
+        if let Some(box_edit) = self.doc_state().and_then(|s| s.box_edit.as_ref()) {
+            return self.shape_text_body_at(box_edit.at);
+        }
         let edit = self.text_editing()?;
         let shape = self.slide().shape(edit.shape)?;
         match (edit.cell, &shape.kind) {
@@ -154,6 +221,7 @@ impl SlideEditor {
         }
         self.set_selection(vec![shape]);
         self.focus_handle.focus(window, cx);
+        self.restart_caret_blink(cx);
         cx.notify();
     }
 
@@ -189,14 +257,23 @@ impl SlideEditor {
         }
         self.set_selection(vec![shape]);
         self.focus_handle.focus(window, cx);
+        self.restart_caret_blink(cx);
         cx.notify();
     }
 
     /// Finish editing (a new text box left empty goes).
-    pub(crate) fn end_text_edit(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn end_text_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Composed text not committed yet is put in first.
         if self.text_editing().is_some_and(|e| e.marked.is_some()) {
             self.commit_marked(cx);
+        }
+        if self.doc_state().is_some_and(|s| s.box_edit.is_some()) {
+            self.commit_box_edit(window, cx);
+            return;
+        }
+        if self.editing.is_some() {
+            self.commit_edit(window, cx);
+            return;
         }
         let Some(edit) = self.pptx_mut().and_then(|s| {
             s.pending_click = None;
@@ -227,31 +304,72 @@ impl SlideEditor {
         }
         if let Some(e) = self.text_editing_mut() {
             e.typing = typing;
+            if !join {
+                e.is_new = false;
+            }
         }
+        if self.is_workbook() {
+            self.sync_workbook_peers(cx);
+        }
+        self.restart_caret_blink(cx);
         cx.notify();
         true
+    }
+
+    fn edit_text_splice(&mut self, start: usize, remove: usize, insert: &str, typing: bool, cx: &mut Context<Self>) -> bool {
+        if let Some((at, edit)) = self.doc_state().and_then(|s| s.box_edit.as_ref()).map(|b| (b.at, b.edit.clone())) {
+            let join = edit.is_new || (typing && edit.typing);
+            let cmd = ibis_doc_model::FlowCommand::SpliceShapeText { at, start, remove, insert: insert.to_string() };
+            let keep = self.text_selection();
+            let done = if join {
+                let res = self.document.amend_last(vec![Command::Flow(cmd)]);
+                if res.is_ok() {
+                    self.sync_document_peers(cx);
+                }
+                res.is_ok()
+            } else {
+                self.run_flow(vec![cmd], cx)
+            };
+            if done {
+                if let (Some((a, c)), Some(st)) = (keep, self.doc_state_mut()) {
+                    st.anchor = Some(a);
+                    st.caret = Some(c);
+                }
+                if let Some(b) = self.doc_state_mut().and_then(|s| s.box_edit.as_mut()) {
+                    b.edit.typing = typing;
+                    b.edit.is_new = false;
+                }
+                self.sync_docx_edited_box_resource();
+                cx.notify();
+            }
+            return done;
+        }
+        let Some(edit) = self.text_editing().cloned() else { return false };
+        let command = Command::EditText { slide: self.current_slide, shape: edit.shape, at: start, remove, insert: insert.to_string() };
+        self.edit_text(command, typing, cx)
     }
 
     /// Put `text` in place of the selection (or at the caret).
     pub(crate) fn shape_type_text(&mut self, text: &str, cx: &mut Context<Self>) {
         let Some(edit) = self.text_editing().cloned() else { return };
         let range = edit.range();
-        let command = Command::EditText { slide: self.current_slide, shape: edit.shape, at: range.start, remove: range.len(), insert: text.to_string() };
-        if self.edit_text(command, true, cx) {
+        if self.edit_text_splice(range.start, range.len(), text, true, cx) {
             let at = range.start + text.chars().count();
             if let Some(e) = self.text_editing_mut() {
                 e.anchor = at;
                 e.caret = at;
             }
-            // A web address or a mail address finished by a space or Enter becomes a link (as PowerPoint's autoformat).
-            if matches!(text, " " | "\n" | "\u{3000}") {
-                // 自動修正: a typo or a mark typed out (`teh`, `(c)`) is put right first (as PowerPoint's AutoCorrect).
-                let end = self.autocorrect_before(range.start, cx);
-                self.autolink_before(end, cx);
-            }
-            // "- " or "1. " at the start of a paragraph: a bulleted or numbered list (as PowerPoint's autoformat).
-            if text == " " {
-                self.autolist_after_space(range.start, cx);
+            if self.pages_are_slides() {
+                // A web address or a mail address finished by a space or Enter becomes a link (as PowerPoint's autoformat).
+                if matches!(text, " " | "\n" | "\u{3000}") {
+                    // 自動修正: a typo or a mark typed out (`teh`, `(c)`) is put right first (as PowerPoint's AutoCorrect).
+                    let end = self.autocorrect_before(range.start, cx);
+                    self.autolink_before(end, cx);
+                }
+                // "- " or "1. " at the start of a paragraph: a bulleted or numbered list (as PowerPoint's autoformat).
+                if text == " " {
+                    self.autolist_after_space(range.start, cx);
+                }
             }
         }
     }
@@ -344,8 +462,7 @@ impl SlideEditor {
         if range.is_empty() {
             return;
         }
-        let command = Command::EditText { slide: self.current_slide, shape: edit.shape, at: range.start, remove: range.len(), insert: String::new() };
-        if self.edit_text(command, false, cx) {
+        if self.edit_text_splice(range.start, range.len(), "", false, cx) {
             if let Some(e) = self.text_editing_mut() {
                 e.anchor = range.start;
                 e.caret = range.start;
@@ -570,8 +687,7 @@ impl SlideEditor {
             return self.delete_text(forward, cx);
         }
         let (start, end) = (caret.min(to), caret.max(to));
-        let command = Command::EditText { slide: self.current_slide, shape: edit.shape, at: start, remove: end - start, insert: String::new() };
-        if self.edit_text(command, false, cx) && let Some(e) = self.text_editing_mut() {
+        if self.edit_text_splice(start, end - start, "", false, cx) && let Some(e) = self.text_editing_mut() {
             e.anchor = start;
             e.caret = start;
         }
@@ -579,6 +695,10 @@ impl SlideEditor {
 
     /// Shift+Enter: a line break (a new line of the same paragraph).
     pub(crate) fn insert_line_break(&mut self, cx: &mut Context<Self>) {
+        if self.is_document() {
+            self.shape_type_text("\n", cx);
+            return;
+        }
         let Some(edit) = self.text_editing().cloned() else { return };
         let slide = self.current_slide;
         let Some(mut body) = self.edited_body().cloned() else { return };
@@ -614,6 +734,7 @@ impl SlideEditor {
             }
             e.typing = false;
         }
+        self.restart_caret_blink(cx);
         cx.notify();
     }
 
@@ -689,6 +810,9 @@ impl SlideEditor {
         if !marked.is_empty() {
             self.shape_type_text(&marked, cx);
         }
+        if self.is_document() {
+            self.sync_docx_edited_box_resource();
+        }
     }
 
     // ----- The input hooks (see `shell/input.rs`) ----------------------------
@@ -742,11 +866,17 @@ impl SlideEditor {
             }
         }
         self.shape_type_text(text, cx);
+        if self.is_document() {
+            self.sync_docx_edited_box_resource();
+        }
     }
 
     pub(crate) fn input_mark(&mut self, text: &str, cx: &mut Context<Self>) {
         if let Some(e) = self.text_editing_mut() {
             e.marked = (!text.is_empty()).then(|| text.to_string());
+        }
+        if self.is_document() {
+            self.sync_docx_edited_box_resource();
         }
         cx.notify();
     }
@@ -865,7 +995,11 @@ impl SlideEditor {
             None if range.is_empty() => (Some(edit.caret), 0..0),
             None => (None, range),
         };
-        let positions = self.pptx()?.positions.clone();
+        let positions = self
+            .pptx()
+            .map(|s| s.positions.clone())
+            .or_else(|| self.editing.as_ref().map(|e| e.positions.clone()))
+            .or_else(|| self.doc_state().and_then(|s| s.box_edit.as_ref()).map(|b| b.positions.clone()))?;
         Some(CaretMarks { positions, lengths, caret, selection })
     }
 
@@ -925,7 +1059,11 @@ impl SlideEditor {
     /// The x (the text's own coordinates) ↑↓ keep to from `caret`, when
     /// they were the keys that put it there.
     fn goal_x(&self, caret: usize) -> Option<f32> {
-        let (at, x) = self.pptx()?.goal_x?;
+        let (at, x) = self
+            .pptx()
+            .and_then(|s| s.goal_x)
+            .or_else(|| self.editing.as_ref().and_then(|e| e.goal_x))
+            .or_else(|| self.doc_state().and_then(|s| s.box_edit.as_ref()).and_then(|b| b.goal_x))?;
         (at == caret).then_some(x)
     }
 
@@ -936,8 +1074,14 @@ impl SlideEditor {
         let goal = self.goal_x(caret).or_else(|| self.caret_marks().and_then(|m| m.rects(true)).and_then(|(c, _)| c).map(|b| f32::from(b.origin.x)));
         let Some(to) = self.caret_target(key, false, extend) else { return };
         self.shape_move_caret(to, extend, cx);
-        if let (Some(state), Some(goal)) = (self.pptx_mut(), goal) {
-            state.goal_x = Some((to, goal));
+        if let Some(goal) = goal {
+            if let Some(state) = self.pptx_mut() {
+                state.goal_x = Some((to, goal));
+            } else if let Some(edit) = self.editing.as_mut() {
+                edit.goal_x = Some((to, goal));
+            } else if let Some(box_edit) = self.doc_state_mut().and_then(|s| s.box_edit.as_mut()) {
+                box_edit.goal_x = Some((to, goal));
+            }
         }
     }
 

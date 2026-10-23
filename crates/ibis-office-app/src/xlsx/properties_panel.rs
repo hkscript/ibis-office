@@ -242,7 +242,7 @@ impl SlideEditor {
                 .gap_1()
                 .py(px(3.))
                 .child(div().text_size(px(11.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(text(label)))
-                .child(mark(id, Input::new(entity).small().into_any_element()))
+                .child(mark(id, Input::new(entity).small().cleanable(true).into_any_element()))
         };
 
         let mut body = v_flex()
@@ -325,8 +325,8 @@ impl SlideEditor {
             .gap_1()
             .items_center()
             .pt(px(2.))
-            .child(div().flex_1().child(mark("new_custom_name", Input::new(&p.new_custom_name).small().into_any_element())))
-            .child(div().flex_1().child(mark("new_custom_val", Input::new(&p.new_custom_val).small().into_any_element())))
+            .child(div().flex_1().child(mark("new_custom_name", Input::new(&p.new_custom_name).small().cleanable(true).into_any_element())))
+            .child(div().flex_1().child(mark("new_custom_val", Input::new(&p.new_custom_val).small().cleanable(true).into_any_element())))
             .child(
                 mark(
                     "add_custom",

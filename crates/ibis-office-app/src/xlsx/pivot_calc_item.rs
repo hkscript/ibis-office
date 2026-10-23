@@ -281,13 +281,13 @@ impl SlideEditor {
                 v_flex()
                     .gap_1()
                     .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(text("_xlsx.name")))
-                    .child(Input::new(&p.name_input).small())
+                    .child(Input::new(&p.name_input).small().cleanable(true))
             )
             .child(
                 v_flex()
                     .gap_1()
                     .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(text("_xlsx.formula")))
-                    .child(Input::new(&p.formula_input).small())
+                    .child(Input::new(&p.formula_input).small().cleanable(true))
             );
 
         // Fields list (left) and Items list (right)
@@ -301,8 +301,8 @@ impl SlideEditor {
                     .py_1()
                     .rounded_sm()
                     .text_size(px(12.))
-                    .when(is_sel, |d| d.bg(gpui::rgb(0x3B82F6)).text_color(gpui::rgb(0xFFFFFF)))
-                    .when(!is_sel, |d| d.hover(|h| h.bg(gpui::rgb(0xE5E7EB))))
+                    .when(is_sel, |d| d.bg(crate::shell::palette::rgb(0x3B82F6)).text_color(crate::shell::palette::doc(0xffffff)))
+                    .when(!is_sel, |d| d.hover(|h| h.bg(crate::shell::palette::rgb(0xE5E7EB))))
                     .child(f_name.clone())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.select_calc_item_field(idx, cx);
@@ -320,8 +320,8 @@ impl SlideEditor {
                     .py_1()
                     .rounded_sm()
                     .text_size(px(12.))
-                    .when(is_sel, |d| d.bg(gpui::rgb(0x3B82F6)).text_color(gpui::rgb(0xFFFFFF)))
-                    .when(!is_sel, |d| d.hover(|h| h.bg(gpui::rgb(0xE5E7EB))))
+                    .when(is_sel, |d| d.bg(crate::shell::palette::rgb(0x3B82F6)).text_color(crate::shell::palette::doc(0xffffff)))
+                    .when(!is_sel, |d| d.hover(|h| h.bg(crate::shell::palette::rgb(0xE5E7EB))))
                     .child(it_name.clone())
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.select_calc_item_entry(idx, window, cx);
@@ -344,7 +344,7 @@ impl SlideEditor {
                                     div()
                                         .p_1()
                                         .border_1()
-                                        .border_color(gpui::rgb(0xD1D5DB))
+                                        .border_color(crate::shell::palette::rgb(0xD1D5DB))
                                         .rounded_md()
                                         .child(field_list)
                                 )
@@ -358,7 +358,7 @@ impl SlideEditor {
                                     div()
                                         .p_1()
                                         .border_1()
-                                        .border_color(gpui::rgb(0xD1D5DB))
+                                        .border_color(crate::shell::palette::rgb(0xD1D5DB))
                                         .rounded_md()
                                         .child(item_list)
                                 )
@@ -383,7 +383,7 @@ impl SlideEditor {
             body = body.child(
                 div()
                     .text_size(px(12.))
-                    .text_color(gpui::rgb(0x2563EB))
+                    .text_color(crate::shell::palette::rgb(0x2563EB))
                     .child(p.message.clone())
             );
         }

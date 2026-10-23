@@ -89,7 +89,7 @@ impl SlideEditor {
     pub(crate) fn table_size_panel(&mut self,cx:&mut Context<Self>)->Option<SidebarPanel> {
         let edit=self.doc_state()?.table_size.as_ref()?;
         let fields=edit.fields.clone();let rule=edit.rule;let error=edit.error.clone();
-        let row=|label:&'static str,f:&Entity<InputState>|h_flex().gap_2().child(div().w(px(80.)).text_sm().child(crate::shell::i18n::text(label))).child(Input::new(f).small());
+        let row=|label:&'static str,f:&Entity<InputState>|h_flex().gap_2().child(div().w(px(80.)).text_sm().child(crate::shell::i18n::text(label))).child(Input::new(f).small().cleanable(true));
         let choice=|id:&'static str,label:&'static str,r:HeightRule|Button::new(id).small().label(crate::shell::i18n::text(label)).selected(rule==r).on_click(cx.listener(move|this,_,window,cx|this.choose_table_height(r,window,cx)));
         let body=v_flex().gap_2().px(px(18.)).py(px(8.))
             .child(div().text_sm().child(crate::shell::i18n::text("docx.table-size-panel.changes-width-column-where")))

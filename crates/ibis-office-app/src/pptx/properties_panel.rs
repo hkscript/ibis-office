@@ -255,6 +255,166 @@ impl SlideEditor {
         cx.notify();
     }
 
+    pub(crate) fn clear_presentation_personal_properties(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(p) = self.pptx_mut().and_then(|s| s.properties_panel.as_mut()) {
+            p.creator.update(cx, |input, cx| input.set_value("", window, cx));
+            p.manager.update(cx, |input, cx| input.set_value("", window, cx));
+            p.company.update(cx, |input, cx| input.set_value("", window, cx));
+        }
+        self.apply_presentation_doc_properties(cx);
+    }
+
+    pub(crate) fn copy_presentation_custom_property(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(p) = self.pptx().and_then(|s| s.properties_panel.as_ref()) else { return };
+        let Some(prop) = p.custom_properties.get(index) else { return };
+        let val_str = match &prop.value {
+            ibis_doc_model::CustomPropertyValue::Text(s) => s.clone(),
+            ibis_doc_model::CustomPropertyValue::Number(s) => s.clone(),
+            ibis_doc_model::CustomPropertyValue::Bool(b) => (if *b { "true" } else { "false" }).to_string(),
+            ibis_doc_model::CustomPropertyValue::DateTime(s) => s.clone(),
+        };
+        let copied = format!("{}: {}", prop.name, val_str);
+        cx.write_to_clipboard(ClipboardItem::new_string(copied));
+    }
+
+    pub(crate) fn properties_panel_context_menu_entries(&self, custom_idx: Option<usize>) -> Vec<crate::shell::chrome::MenuEntry> {
+        use crate::shell::chrome::{MenuEntry, MenuItem, Submenu};
+        let Some(p) = self.pptx().and_then(|s| s.properties_panel.as_ref()) else {
+            return Vec::new();
+        };
+        let embed_fonts = p.embed_fonts;
+        let has_custom = custom_idx.is_some_and(|i| i < p.custom_properties.len());
+
+        let mut entries = vec![
+            MenuItem::tr("_shell.apply")
+                .icon("check")
+                .on(|this, _, cx| this.apply_presentation_doc_properties(cx))
+                .into(),
+        ];
+        if let Some(idx) = custom_idx.filter(|_| has_custom) {
+            entries.push(
+                MenuItem::tr("edit.copy")
+                    .icon("content_copy")
+                    .on(move |this, _, cx| this.copy_presentation_custom_property(idx, cx))
+                    .into(),
+            );
+            entries.push(
+                MenuItem::tr("edit.delete")
+                    .icon("delete")
+                    .on(move |this, _, cx| this.remove_presentation_custom_property(idx, cx))
+                    .into(),
+            );
+        }
+        entries.push(
+            MenuItem::tr("fix.common.add")
+                .icon("add")
+                .on(|this, w, cx| this.add_presentation_custom_property(w, cx))
+                .into(),
+        );
+        entries.push(MenuEntry::Separator);
+        entries.push(
+            MenuItem::tr("pptx.properties-panel.embed-fonts")
+                .checked(embed_fonts)
+                .on(move |this, _, cx| this.toggle_presentation_doc_properties_embed_fonts(!embed_fonts, cx))
+                .into(),
+        );
+        entries.push(
+            MenuItem::tr("pptx.inspect.remove-properties")
+                .icon("delete_sweep")
+                .on(|this, w, cx| this.clear_presentation_personal_properties(w, cx))
+                .into(),
+        );
+        entries.push(
+            Submenu::tr(
+                "pptx.media.compress",
+                "compress",
+                vec![
+                    MenuItem::tr("pptx.media.compress-1080p")
+                        .on(|this, _, cx| {
+                            this.compress_presentation_media(MediaQuality::FullHd, cx);
+                        })
+                        .into(),
+                    MenuItem::tr("pptx.media.compress-720p")
+                        .on(|this, _, cx| {
+                            this.compress_presentation_media(MediaQuality::Hd, cx);
+                        })
+                        .into(),
+                    MenuItem::tr("pptx.media.compress-480p")
+                        .on(|this, _, cx| {
+                            this.compress_presentation_media(MediaQuality::Standard, cx);
+                        })
+                        .into(),
+                    MenuEntry::Separator,
+                    MenuItem::tr("pptx.media.optimize-compatibility")
+                        .on(|this, _, cx| {
+                            this.optimize_media_compatibility(cx);
+                        })
+                        .into(),
+                ],
+            )
+            .into(),
+        );
+        entries.push(MenuEntry::Separator);
+        entries.push(
+            MenuItem::tr("pptx.inspect-document")
+                .on(|this, w, cx| this.open_presentation_inspect_panel(w, cx))
+                .into(),
+        );
+        entries.push(
+            MenuItem::tr("pptx.check-accessibility")
+                .on(|this, w, cx| this.open_pptx_accessibility_panel(w, cx))
+                .into(),
+        );
+        entries.push(
+            MenuItem::tr("pptx.compatibility-check")
+                .on(|this, w, cx| {
+                    this.close_presentation_properties_panel(cx);
+                    this.open_pptx_compatibility_panel(w, cx);
+                })
+                .into(),
+        );
+        entries.push(MenuEntry::Separator);
+        entries.push(
+            MenuItem::tr("_shell.close")
+                .icon("close")
+                .on(|this, _, cx| this.close_presentation_properties_panel(cx))
+                .into(),
+        );
+        entries
+    }
+
+    pub(crate) fn open_properties_panel_context_menu(
+        &mut self,
+        custom_idx: Option<usize>,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.end_text_edit(window, cx);
+        let items = self.properties_panel_context_menu_entries(custom_idx);
+        if items.is_empty() {
+            return;
+        }
+        self.focus_handle.focus(window, cx);
+        let entries = std::rc::Rc::new(items);
+        let editor = cx.entity().downgrade();
+        let menu = gpui_kit::component::menu::PopupMenu::build(window, cx, move |menu, window, cx| {
+            crate::shell::chrome::fill_menu(menu.min_w(px(220.)), &entries, &editor, window, cx)
+        });
+        let dismiss = cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, window, cx| {
+            if let Some(s) = this.pptx_mut() {
+                s.slide_popup = None;
+            }
+            cx.notify();
+            this.focus_handle.focus(window, cx);
+        });
+        menu.read(cx).focus_handle(cx).focus(window, cx);
+        if let Some(s) = self.pptx_mut() {
+            s.slide_popup = Some(super::SlidePopup { menu, position, _dismiss: dismiss });
+        }
+        cx.notify();
+    }
+
     /// Render the Document Properties sidebar panel.
     pub(crate) fn presentation_properties_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
         let p = self.pptx()?.properties_panel.as_ref()?;
@@ -297,13 +457,18 @@ impl SlideEditor {
                 .gap_1()
                 .py(px(3.))
                 .child(div().text_size(px(11.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(text(label)))
-                .child(mark(id, Input::new(entity).small().into_any_element()))
+                .child(mark(id, Input::new(entity).small().cleanable(true).into_any_element()))
         };
 
         let mut body = v_flex()
+            .id("pptx-properties-panel")
             .gap_2()
             .px(px(16.))
-            .py(px(8.));
+            .py(px(8.))
+            .on_mouse_down(MouseButton::Right, cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                cx.stop_propagation();
+                this.open_properties_panel_context_menu(None, event.position, window, cx);
+            }));
 
         // 統計・メタ情報セクション
         let stats_box = v_flex()
@@ -347,12 +512,17 @@ impl SlideEditor {
             };
             let prop_name = prop.name.clone();
             let row = h_flex()
+                .id(("pptx-custom-prop-row", ix))
                 .justify_between()
                 .items_center()
                 .py(px(2.))
                 .px(px(4.))
                 .rounded(px(3.))
                 .bg(theme.title_bar_border.opacity(0.1))
+                .on_mouse_down(MouseButton::Right, cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    this.open_properties_panel_context_menu(Some(ix), event.position, window, cx);
+                }))
                 .child(
                     h_flex()
                         .gap_1()
@@ -381,8 +551,8 @@ impl SlideEditor {
             .gap_1()
             .items_center()
             .pt(px(2.))
-            .child(div().flex_1().child(mark("new_custom_name", Input::new(&p.new_custom_name).small().into_any_element())))
-            .child(div().flex_1().child(mark("new_custom_val", Input::new(&p.new_custom_val).small().into_any_element())))
+            .child(div().flex_1().child(mark("new_custom_name", Input::new(&p.new_custom_name).small().cleanable(true).into_any_element())))
+            .child(div().flex_1().child(mark("new_custom_val", Input::new(&p.new_custom_val).small().cleanable(true).into_any_element())))
             .child(
                 mark(
                     "add_custom",

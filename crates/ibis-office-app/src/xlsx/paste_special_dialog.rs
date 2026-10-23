@@ -14,11 +14,12 @@ use std::rc::Rc;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 
 use super::clipboard::{PasteOp, PasteSpecialOptions, PasteType};
 use crate::shell::chrome::SidebarPanel;
 use crate::shell::editor::SlideEditor;
-use crate::xlsx::toggle::toggle_row;
+use crate::xlsx::toggle::{radio_row, toggle_row};
 
 pub(crate) struct PasteSpecialDialog {
     pub(crate) paste_type: PasteType,
@@ -50,12 +51,17 @@ const PASTE_OP_OPTIONS: &[(PasteOp, &str)] = &[
 ];
 
 impl SlideEditor {
-    /// Open the 形式を選択して貼り付け… dialog panel.
+    /// Open the 形式を選択して貼り付け… dialog panel (keyboard shortcut ⌘⌥V).
     pub(crate) fn open_paste_special_dialog(&mut self, cx: &mut Context<Self>) {
         if self.sheet_state().and_then(|s| s.clip.as_ref()).is_none() {
             self.status = Some(crate::shell::i18n::text("_xlsx.to-use-paste-special-copy-cells-first").into());
             return cx.notify();
         }
+        self.open_paste_special_dialog_panel(cx);
+    }
+
+    /// Always open the 形式を選択して貼り付け… dialog panel from the menu.
+    pub(crate) fn open_paste_special_dialog_panel(&mut self, cx: &mut Context<Self>) {
         self.commit_cell_edit(cx);
         let skip_blanks = self.sheet_state().is_some_and(|s| s.panels.skip_blanks);
         let state = self.wb_mut();
@@ -119,9 +125,10 @@ impl SlideEditor {
         for (i, &(pt, key)) in PASTE_TYPE_OPTIONS.iter().enumerate() {
             pt_group = pt_group.child(mark(
                 format!("paste-type-{i}"),
-                toggle_row(
+                radio_row(
                     SharedString::from(format!("pt-row-{i}")),
                     current_pt == pt,
+                    false,
                     crate::shell::i18n::text(key),
                     cx.listener(move |this, _, _, cx| {
                         if let Some(d) = this.sheet_state_mut().and_then(|s| s.panels.paste_special_dialog.as_mut()) {
@@ -148,9 +155,10 @@ impl SlideEditor {
         for (i, &(op, key)) in PASTE_OP_OPTIONS.iter().enumerate() {
             op_group = op_group.child(mark(
                 format!("paste-op-{i}"),
-                toggle_row(
+                radio_row(
                     SharedString::from(format!("op-row-{i}")),
                     current_op == op,
+                    false,
                     crate::shell::i18n::text(key),
                     cx.listener(move |this, _, _, cx| {
                         if let Some(d) = this.sheet_state_mut().and_then(|s| s.panels.paste_special_dialog.as_mut()) {
@@ -206,10 +214,10 @@ impl SlideEditor {
         ));
         body = body.child(opt_group);
 
-        // Group 4: Buttons (OK, Cancel, Paste Link)
+        // Group 4: Buttons (OK, Paste Link)
         body = body.child(
             h_flex()
-                .gap_1()
+                .gap_2()
                 .pt_2()
                 .child(mark(
                     "ok".into(),
@@ -218,19 +226,6 @@ impl SlideEditor {
                         .small()
                         .label(crate::shell::i18n::text("query.ok"))
                         .on_click(cx.listener(|this, _, _, cx| this.apply_paste_special_dialog(cx)))
-                        .into_any_element(),
-                ))
-                .child(mark(
-                    "cancel".into(),
-                    Button::new("paste-special-cancel")
-                        .small()
-                        .label(crate::shell::i18n::text("query.cancel"))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if let Some(state) = this.sheet_state_mut() {
-                                state.panels.paste_special_dialog = None;
-                            }
-                            cx.notify();
-                        }))
                         .into_any_element(),
                 ))
                 .child(mark(

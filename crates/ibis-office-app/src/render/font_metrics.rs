@@ -95,6 +95,7 @@ pub(crate) fn office_metrics(name: &str) -> Option<(f32, f32)> {
         _ if starts(&["Calibri", "Carlito", "Candara", "Corbel", "Constantia"]) => (0.9521, 0.2686),
         "Cambria" => (0.9502, 0.2222),
         "Arial" => (0.9053, 0.2119),
+        "Arial Unicode MS" => (1.0688, 0.2368),
         "Times New Roman" => (0.8911, 0.2163),
         "Century" | "Century Schoolbook" => (0.9858, 0.2158),
         "Century Gothic" => (0.9712, 0.2202),
@@ -140,6 +141,69 @@ pub(crate) fn powerpoint_baseline(height: f32, single: f32, ascent: f32, descent
 /// with ascent `ascent` and descent `descent`.
 pub(crate) fn natural_below(single: f32, ascent: f32, descent: f32) -> f32 {
     if ascent + descent > 0.0 { single * descent / (ascent + descent) } else { single * 0.2 }
+}
+
+/// The advance widths of U+3040..=U+30FF (Hiragana and Katakana) in `Meiryo UI`
+/// (`meiryo.ttc` font index 2, `unitsPerEm = 2048`, `hmtx` table), in units of
+/// `1/256 em` (`advanceWidth / 8`, exact in `meiryo.ttc`).
+///
+/// While `Meiryo` (`meiryo.ttc` index 0) and `Hiragino Sans` have full-width or
+/// near-full-width (`palt` ~0.91 em) kana, `Meiryo UI` has condensed proportional
+/// kana (`hmtx` averaging ~0.785 em) while keeping full-width (`1.0 em`) kanji.
+pub(crate) const MEIRYO_UI_KANA_WIDTHS: [u16; 192] = [
+    256, 163, 209, 169, 209, 121, 164, 161, 201, 169, 209, 209, 209, 193, 205, 129,
+    161, 209, 209, 177, 197, 177, 197, 185, 185, 217, 217, 217, 217, 191, 204, 201,
+    201, 195, 201, 161, 201, 209, 201, 209, 161, 161, 219, 201, 217, 227, 209, 219,
+    219, 219, 209, 213, 213, 209, 209, 209, 209, 209, 209, 219, 219, 219, 193, 227,
+    209, 209, 195, 177, 217, 169, 219, 153, 193, 177, 161, 195, 227, 195, 177, 217,
+    219, 219, 193, 209, 196, 172, 173, 256, 256, 256, 256, 128, 128, 188, 188, 256,
+    256, 150, 193, 145, 185, 150, 190, 153, 193, 169, 196, 183, 205, 209, 213, 177,
+    197, 201, 209, 177, 197, 209, 213, 209, 213, 196, 209, 209, 213, 193, 205, 177,
+    185, 201, 201, 148, 188, 205, 196, 209, 181, 181, 205, 191, 185, 209, 169, 207,
+    217, 217, 167, 181, 189, 173, 193, 193, 209, 209, 209, 209, 209, 209, 193, 153,
+    209, 177, 193, 169, 209, 169, 209, 129, 161, 177, 150, 209, 193, 185, 149, 193,
+    209, 209, 181, 191, 201, 148, 169, 193, 226, 247, 181, 128, 209, 191, 191, 256,
+];
+
+/// Fallback kana advance widths (U+3040..=U+30FF, in `1/256 em`) for an
+/// uninstalled typeface whose kana metrics differ from the substitute font's.
+pub(crate) fn fallback_kana_widths(name: &str) -> Option<&'static [u16; 192]> {
+    if name.trim().starts_with("Meiryo UI") {
+        Some(&MEIRYO_UI_KANA_WIDTHS)
+    } else {
+        None
+    }
+}
+
+/// Whether `name` is an uninstalled proportional Japanese typeface (`ＭＳ Ｐ`, `MS P`, `HGP`, `Meiryo UI`).
+pub(crate) fn is_proportional_japanese_typeface(name: &str) -> bool {
+    let n = name.trim();
+    n.starts_with("ＭＳ Ｐ") || n.starts_with("MS P") || n.starts_with("HGP") || n.starts_with("Meiryo UI") // i18n-ok（フォント名の判定）
+}
+
+/// Fallback advance width (in `1/256 em`, from `msgothic.ttc` `MS PGothic` / `meiryo.ttc` `Meiryo UI` `hmtx`)
+/// for a full-width alphanumeric or sign (`U+FF01..=U+FF5E`, `U+30FB`) in a proportional Japanese typeface
+/// when substituted by `Hiragino Sans` (`pwid` in `Hiragino Sans` narrows `U+FF10..=U+FF3A` to ~0.71–0.85 em
+/// instead of `MS PGothic` / `Meiryo UI`'s proportional widths, where full-width digits and Latin letters
+/// match their half-width counterparts).
+pub(crate) fn fallback_fullwidth_alnum_width(c: char) -> Option<u16> {
+    const DIGITS: [u16; 10] = [128, 128, 128, 128, 128, 128, 128, 128, 128, 128];
+    const UPPER: [u16; 26] = [
+        140, 141, 145, 145, 133, 124, 147, 145, 65, 120, 139, 124, 167,
+        145, 153, 138, 153, 142, 138, 135, 145, 140, 181, 138, 138, 133,
+    ];
+    const LOWER: [u16; 26] = [
+        128, 134, 126, 134, 130, 81, 126, 131, 60, 60, 124, 60, 194,
+        131, 134, 134, 134, 90, 120, 87, 131, 120, 170, 120, 120, 118,
+    ];
+    match c as u32 {
+        0x3000 | 0x25b6 | 0x25b7 | 0x25c0 | 0x25c1 => Some(256),
+        0xff08 | 0xff09 | 0xff1a | 0xff1b | 0x30fb => Some(76),
+        0xff10..=0xff19 => Some(DIGITS[(c as usize) - 0xff10]),
+        0xff21..=0xff3a => Some(UPPER[(c as usize) - 0xff21]),
+        0xff41..=0xff5a => Some(LOWER[(c as usize) - 0xff41]),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

@@ -385,10 +385,10 @@ impl SlideEditor {
         body = body
             .child(div().text_size(px(12.)).child(t("pptx.master-view.level")))
             .child(levels)
-            .child(Input::new(&style.size).small())
+            .child(Input::new(&style.size).small().cleanable(true))
             .child(Checkbox::new("pptx-master-style-bold").label(t("_shell.bold")).checked(bold).on_click(cx.listener(|e, on: &bool, _, cx| e.toggle_master_style_bold(*on, cx))))
-            .child(Input::new(&style.color).small())
-            .child(Input::new(&style.font).small())
+            .child(Input::new(&style.color).small().cleanable(true))
+            .child(Input::new(&style.font).small().cleanable(true))
             .child(Button::new("pptx-master-style-apply").primary().small().label(t("pptx.master-view.apply-style")).on_click(cx.listener(|e, _, w, cx| e.apply_master_style(w, cx))));
         body = body.child(Button::new("pptx-master-close").small().label(t("pptx.master-view.close-master-view")).on_click(cx.listener(|e, _, w, cx| e.close_master_view(w, cx))));
         Some(SidebarPanel { title: t("pptx.master-view.slide-master"), body: body.into_any_element() })

@@ -18,6 +18,7 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::query::{self, BookResolver, Parameter, QTable, Query, Source, Step};
 use ibis_doc_model::{CellValue, Command, SheetCommand, SlideId};
 
@@ -487,7 +488,7 @@ impl SlideEditor {
             .border_b_1()
             .border_color(theme.border)
             .child(div().font_weight(FontWeight::BOLD).child(text("query.editor-title")))
-            .child(div().w(px(220.)).child(mark("name".into(), Input::new(&ed.name).small().into_any_element())))
+            .child(div().w(px(220.)).child(mark("name".into(), Input::new(&ed.name).small().cleanable(true).into_any_element())))
             .child(div().flex_1())
             .child(mark("load".into(), Button::new("query-load").primary().small().label(text("query.close-and-load")).on_click(cx.listener(|this, _, window, cx| this.query_close_and_load(window, cx))).into_any_element()))
             .child(mark("cancel".into(), Button::new("query-cancel").small().label(text("query.cancel")).on_click(cx.listener(|this, _, _, cx| this.query_cancel(cx))).into_any_element()));
@@ -673,9 +674,9 @@ impl SlideEditor {
                 }
                 side = side
                     .child(div().text_size(px(12.)).child(text("query.field.parameter-name")))
-                    .child(mark("parameter-name".into(), Input::new(&ed.parameter_name).small().into_any_element()))
+                    .child(mark("parameter-name".into(), Input::new(&ed.parameter_name).small().cleanable(true).into_any_element()))
                     .child(div().text_size(px(12.)).child(text("query.field.parameter-value")))
-                    .child(mark("parameter-value".into(), Input::new(&ed.parameter_value).small().into_any_element()))
+                    .child(mark("parameter-value".into(), Input::new(&ed.parameter_value).small().cleanable(true).into_any_element()))
                     .child(mark(
                         "parameter-set".into(),
                         Button::new("query-parameter-set").small().label(text("query.set-parameter")).on_click(cx.listener(|this, _, _, cx| this.query_set_parameter(cx))).into_any_element(),
@@ -688,7 +689,7 @@ impl SlideEditor {
                     match f.kind {
                         Kind::Text => {
                             if let Some((_, state)) = form.inputs.iter().find(|(id, _)| *id == f.id) {
-                                side = side.child(mark(format!("field-{}", f.id), Input::new(state).small().into_any_element()));
+                                side = side.child(mark(format!("field-{}", f.id), Input::new(state).small().cleanable(true).into_any_element()));
                             }
                         }
                         Kind::Choice(options) => {

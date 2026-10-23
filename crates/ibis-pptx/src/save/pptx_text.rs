@@ -132,7 +132,11 @@ pub(crate) fn rewrite_text(doc: &mut XmlDocument, node: NodeId, source: &ShapeSo
                 doc.detach(end);
             }
             let br = doc.append_element(p, &format!("{}br", x.a));
-            if let Some(rpr) = template.runs.first().and_then(|(_, r)| doc.child(*r, "rPr")) {
+            if i > 0 && new.paragraphs[i - 1].runs.is_empty() {
+                let prev_end = look(&new.style, &new.paragraphs[i - 1].end_style);
+                let rpr = x.import(doc, &run_props(&x, &prev_end, ""))?;
+                doc.insert(br, 0, rpr);
+            } else if let Some(rpr) = template.runs.first().and_then(|(_, r)| doc.child(*r, "rPr")) {
                 let copy = doc.deep_clone(rpr);
                 doc.insert(br, 0, copy);
             }

@@ -201,18 +201,12 @@ pub fn init(cx: &mut App) {
     linux_desktop::install_prompts(cx);
     // The metafile pictures put their text by the metrics of the fonts.
     render::metafile_fonts::install(cx);
-    // Slides are white paper; the editor chrome follows it in light mode.
-    Theme::change(ThemeMode::Light, None, cx);
-    // Scrollbars stay hidden until the view scrolls or the pointer is over
-    // one (not the system's setting, which may show them always).
-    Theme::set_scrollbar_mode(ScrollbarMode::Hover, cx);
-    // The mock's app background behind the pages and the slide list.
-    {
-        let theme = Theme::global_mut(cx);
-        theme.muted = rgb(shell::chrome::APP_BG).into();
-        theme.sidebar = rgb(shell::chrome::APP_BG).into();
-        shell::chrome::apply_primary_button_colors(theme);
-    }
+    // The chrome follows the system's appearance (light or dark); what is in the document (the pages, the cells,
+    // the slides) stays as it is, white paper as in Office. Scrollbars stay hidden until the view scrolls or the
+    // pointer is over one (not the system's setting, which may show them always), unless the setting
+    // スクロール バーを常に表示 is on.
+    shell::palette::follow(cx.window_appearance(), None, cx);
+    shell::palette::apply_theme(None, cx);
 
     let context = Some(editor::CONTEXT);
     let secondary = |key: &str| format!("{}-{key}", secondary_modifier());
@@ -383,11 +377,59 @@ pub fn init(cx: &mut App) {
     // A document's text keys (the document担当's, in `docx/editing.rs`).
     cx.bind_keys(docx::key_bindings());
     cx.bind_keys(xlsx::key_bindings());
-    cx.on_action(|_: &Quit, cx| cx.quit());
+    cx.on_action(|_: &Quit, cx| quit_asking_to_save(cx));
     cx.on_action(|_: &OpenSettings, cx| crate::shell::settings_window::open(cx));
     cx.on_action(|_: &OpenAbout, cx| crate::shell::about_window::open(cx));
     cx.on_action(|_: &OpenStartWindow, cx| crate::open_editor(None, None, cx));
+    // File > New with no window open (a window handles it itself otherwise): the start window.
+    cx.on_action(|_: &NewDocument, cx| crate::open_editor(None, None, cx));
     set_app_menus(cx);
+}
+
+/// The last window has closed (⌘W / ファイル > 閉じる on the start window, or the red button): the app ends with it,
+/// on a Mac too. The scenarios record the request in `QUIT_REQUESTED` instead of ending.
+pub(crate) fn quit_if_last_window_closed(cx: &mut App) {
+    if !cx.windows().is_empty() {
+        return;
+    }
+    #[cfg(feature = "scenarios")]
+    QUIT_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(not(feature = "scenarios"))]
+    cx.quit();
+}
+
+#[cfg(feature = "scenarios")]
+pub(crate) static QUIT_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// ibisOffice > 終了 (⌘Q): the windows with edits not saved stay and ask whether to save them (each goes once
+/// answered); the others close. The app ends with its last window (`quit_if_last_window_closed`), or at once when
+/// nothing is left to ask (GitHub issue #27).
+pub(crate) fn quit_asking_to_save(cx: &mut App) {
+    // ⌘Q comes while the window with the keys is being updated, when its editor cannot be read (the window would be
+    // passed over and the app end without asking): ask once the event is done.
+    cx.defer(quit_asking_to_save_now);
+}
+
+fn quit_asking_to_save_now(cx: &mut App) {
+    let mut asking = false;
+    for handle in cx.windows() {
+        let Some(root) = handle.downcast::<Root>() else { continue };
+        let editor = root.update(cx, |root, _, _| root.view().clone().downcast::<SlideEditor>().ok()).ok().flatten();
+        let Some(editor) = editor else { continue };
+        // A window that may close goes now; one that may not has opened the question.
+        let close = editor.update(cx, |editor, cx| editor.window_should_close(cx));
+        if close {
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+        } else {
+            asking = true;
+        }
+    }
+    if !asking {
+        #[cfg(feature = "scenarios")]
+        QUIT_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
+        #[cfg(not(feature = "scenarios"))]
+        cx.quit();
+    }
 }
 
 /// The app's menu bar (macOS's), in the UI's language: set again when the
@@ -463,6 +505,7 @@ fn open_window_sized(width: f32, cx: &mut App, setup: impl FnOnce(&mut SlideEdit
     };
     linux_desktop::identify(&mut options);
     cx.open_window(options, |window, cx| {
+        shell::palette::watch(window, cx);
         let view = cx.new(|cx| {
             let mut editor = SlideEditor::new(ibis_doc_model::Presentation::new(), window, cx);
             setup(&mut editor, window, cx);
@@ -470,6 +513,9 @@ fn open_window_sized(width: f32, cx: &mut App, setup: impl FnOnce(&mut SlideEdit
         });
         let focus = view.read(cx).focus_handle.clone();
         focus.focus(window, cx);
+        // The window's close button asks whether to save edits not saved (GitHub issue #27).
+        let editor = view.downgrade();
+        window.on_window_should_close(cx, move |_, cx| editor.update(cx, |editor, cx| editor.window_should_close(cx)).unwrap_or(true));
         // Root hosts gpui-component's overlays (tooltips, popovers, dialogs).
         cx.new(|cx| Root::new(view, window, cx))
     })
@@ -913,12 +959,7 @@ pub fn run_native() {
             let pending: Vec<std::path::PathBuf> = std::mem::take(&mut opener.borrow_mut().1);
             init(cx);
             // macOS keeps an app running after its last window closes; quit instead.
-            cx.on_window_closed(|cx, _| {
-                if cx.windows().is_empty() {
-                    cx.quit();
-                }
-            })
-            .detach();
+            cx.on_window_closed(|cx, _| quit_if_last_window_closed(cx)).detach();
             timing::mark("app");
             // A file handed over at launch stands in for one named on the
             // command line. The window opens at once, with an empty

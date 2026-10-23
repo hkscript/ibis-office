@@ -10,6 +10,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::{
     AxisKind, Chart, ChartType, Color, Command, ErrorBarType, ErrorBarValueType, ErrorBars, Fill, Grouping, LabelPosition, Number,
     ShapeId, ShapeKind, SlideId, Stroke, TrendlineType, chart::{Marker, MarkerSymbol},
@@ -495,11 +496,11 @@ impl ChartPanel {
 /// データの編集's panel: the grid of the chart's data, its title and value axis.
 pub(crate) fn chart_panel_sidebar(p: &ChartPanel, actions: ChartPanelActions, cx: &mut Context<SlideEditor>) -> SidebarPanel {
     {
-        let cell = |e: &Entity<InputState>| div().w(px(84.)).flex_none().child(Input::new(e).small());
+        let cell = |e: &Entity<InputState>| div().w(px(84.)).flex_none().child(Input::new(e).small().cleanable(true));
         let label = |t: &str| div().w(px(84.)).flex_none().text_size(px(12.)).text_color(rgb(0x5f6368)).child(crate::shell::i18n::text(t));
         let mut body = v_flex().gap_2().px(px(18.)).py(px(8.));
         if let Some(title) = &p.title {
-            body = body.child(div().text_size(px(13.)).child(crate::shell::i18n::text("_shell.title"))).child(Input::new(title).small());
+            body = body.child(div().text_size(px(13.)).child(crate::shell::i18n::text("_shell.title"))).child(Input::new(title).small().cleanable(true));
         }
         // Names across the top, then a row per category.
         let mut grid = v_flex().gap_1();

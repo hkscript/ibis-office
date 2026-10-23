@@ -223,8 +223,8 @@ impl SlideEditor {
         };
         let caption = |id: &str| div().text_size(px(13.)).child(text(id));
         let mut body = v_flex().gap_2().px(px(16.)).py(px(8.));
-        body = body.child(caption("xlsx.slicer-settings.name")).child(mark("name", Input::new(&p.name).small().into_any_element()));
-        body = body.child(caption("xlsx.slicer-settings.caption")).child(mark("caption", Input::new(&p.caption).small().into_any_element()));
+        body = body.child(caption("xlsx.slicer-settings.name")).child(mark("name", Input::new(&p.name).small().cleanable(true).into_any_element()));
+        body = body.child(caption("xlsx.slicer-settings.caption")).child(mark("caption", Input::new(&p.caption).small().cleanable(true).into_any_element()));
         body = body.child(mark(
             "show-caption",
             super::toggle::toggle_row(
@@ -279,8 +279,8 @@ impl SlideEditor {
             styles_row = styles_row.child(mark(&format!("style-{style_id}"), btn.into_any_element()));
         }
         body = body.child(styles_row);
-        body = body.child(caption("xlsx.slicer-settings.columns")).child(mark("columns", Input::new(&p.columns).small().into_any_element()));
-        body = body.child(caption("xlsx.slicer-settings.height")).child(mark("height", Input::new(&p.height).small().into_any_element()));
+        body = body.child(caption("xlsx.slicer-settings.columns")).child(mark("columns", Input::new(&p.columns).small().cleanable(true).into_any_element()));
+        body = body.child(caption("xlsx.slicer-settings.height")).child(mark("height", Input::new(&p.height).small().cleanable(true).into_any_element()));
         if !p.pivots.is_empty() {
             body = body.child(caption("xlsx.slicer-settings.connections"));
             for (i, (name, on)) in p.pivots.iter().enumerate() {

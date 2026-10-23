@@ -203,7 +203,7 @@ impl SlideEditor {
             .py(px(8.))
             .child(div().text_sm().child(crate::shell::i18n::text("docx.table-formula-panel.insert-formula-into-table-cell")))
             .child(div().text_sm().child(crate::shell::i18n::text("docx.table-formula-panel.formula-2")))
-            .child(Input::new(&formula_input).small())
+            .child(Input::new(&formula_input).small().cleanable(true))
             .child(div().text_sm().child(crate::shell::i18n::text("_shell.format")))
             .child(format_buttons)
             .child(div().text_sm().child(crate::shell::i18n::text("docx.table-formula-panel.paste-function")))

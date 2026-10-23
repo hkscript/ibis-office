@@ -25,6 +25,8 @@ pub(crate) trait SheetSteps {
     fn selected(&mut self) -> String;
     /// The middle of a column's header (`"C"`) or a row's (`"5"`).
     fn header(&mut self, name: &str) -> (f32, f32);
+    /// The middle of the top-left Select All corner button above row 1 and left of column A.
+    fn header_corner(&mut self) -> (f32, f32);
     /// The line after a column's or row's header (where it is sized).
     fn header_line(&mut self, name: &str) -> (f32, f32);
     /// Right-click a header and choose item `id` of the menu that opens.
@@ -124,6 +126,14 @@ impl SheetSteps for Scenario {
         })
     }
 
+    fn header_corner(&mut self) -> (f32, f32) {
+        self.with(|e, _| {
+            let g = e.sheet_state().unwrap().header_geometry.borrow().clone();
+            let (ox, oy) = g.origin;
+            (ox + g.head_w() / 2.0, oy + 10.0)
+        })
+    }
+
     fn header_line(&mut self, name: &str) -> (f32, f32) {
         let (axis, index) = header_of(name);
         self.with(move |e, _| {
@@ -189,7 +199,7 @@ impl SheetSteps for Scenario {
 }
 
 pub(crate) fn all() -> Vec<(&'static str, fn())> {
-    vec![
+    let mut all: Vec<(&'static str, fn())> = vec![
         ("xlsx::xlsx_chart_quick_layout_and_picture_compress", xlsx_chart_quick_layout_and_picture_compress),
         ("xlsx::change_chart_type", change_chart_type),
         ("xlsx::theme_fonts_and_effects", theme_fonts_and_effects),
@@ -309,6 +319,14 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("xlsx::cell005_caret_format", cell005_caret_format),
         ("xlsx::cell018_date_time_keys", cell018_date_time_keys),
         ("xlsx::cell019_fill_down_right", cell019_fill_down_right),
+        ("xlsx::clip023_paste_options", clip023_paste_options),
+        ("xlsx::qa001_quick_analysis", qa001_quick_analysis),
+        ("xlsx::func001_function_arguments_panel", func001_function_arguments_panel),
+        ("xlsx::file008_macro_workbook_save", file008_macro_workbook_save),
+        ("xlsx::sec018_page_order", sec018_page_order),
+        ("xlsx::menu001_connected_items", menu001_connected_items),
+        ("xlsx::tools001_dictionary_and_word_count", tools001_dictionary_and_word_count),
+        ("xlsx::object017_smartart_color_styles", object017_smartart_color_styles),
         ("xlsx::cell020_format_and_filter_keys", cell020_format_and_filter_keys),
         ("xlsx::format021_cell_format_pane", format021_cell_format_pane),
         ("xlsx::clip022_system_clipboard", clip022_system_clipboard),
@@ -598,7 +616,13 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("xlsx::sheet026_one_million_rows_navigation_pagedown_and_cell_input", sheet026_one_million_rows_navigation_pagedown_and_cell_input),
         ("xlsx::sheet027_scroll_to_the_bottom_click_type_paste_and_wheel_on", sheet027_scroll_to_the_bottom_click_type_paste_and_wheel_on),
         ("xlsx::sheet028_scroll_bar_drag_never_shows_grey_and_clicks_select", sheet028_scroll_bar_drag_never_shows_grey_and_clicks_select),
-    ]
+        ("xlsx::sheet029_text_format_keeps_typed_date_as_text", sheet029_text_format_keeps_typed_date_as_text),
+        ("xlsx::sheet030_drag_border_moves_or_copies", sheet030_drag_border_moves_or_copies),
+        ("xlsx::sheet031_validation_list_from_another_sheet", sheet031_validation_list_from_another_sheet),
+        ("xlsx::sheet032_overwrite_question_and_text_paste", sheet032_overwrite_question_and_text_paste),
+    ];
+    all.extend(super::corpus_report::all());
+    all
 }
 
 /// Menu icons and the primary button (screenshots to look at).
@@ -989,6 +1013,19 @@ fn headers() {
     let pt = |v: i64| v as f32 / ibis_doc_model::EMU_PER_POINT as f32;
     assert!((pt(sheet.columns[2]) - after).abs() < 0.5, "{} vs {after}", pt(sheet.columns[2]));
     assert!((pt(sheet.columns[1]) - fitted).abs() < 0.5);
+    // Clicking the top-left Select All corner button selects the entire sheet (and commits an active edit).
+    let (cols, rows) = s.with(|e, _| {
+        let sheet = sheet_of_slide(e.slide()).unwrap();
+        (sheet.columns.len() as u32, sheet.rows.len() as u32)
+    });
+    let corner = s.header_corner();
+    s.click(corner);
+    assert_eq!(range(&mut s), Some((0, 0, cols - 1, rows - 1)), "Select All corner button selects all cells");
+    s.click_cell("G4");
+    s.type_text("42");
+    s.click(corner);
+    assert_eq!(s.value("G4"), CellValue::Number(42.0), "Select All corner button commits active cell edit");
+    assert_eq!(range(&mut s), Some((0, 0, cols - 1, rows - 1)), "Select All corner button selects all cells after edit");
 }
 
 /// XSC-01: a sales table made on a new sheet: headings, three months of
@@ -2100,6 +2137,83 @@ fn cell018_date_time_keys() {
     s.enter("=NOW()", "enter");
     let CellValue::Number(now) = s.value("D1") else { panic!("{:?}", s.value("D1")) };
     assert!(now.fract() > 0.0 && now > 46000.0, "NOW has the time: {now}");
+}
+
+/// クイック分析: the button is offered for a selected range of more than one cell with data (not for one cell, not for
+/// empty cells, not while typing in a cell); its menu opens.
+fn qa001_quick_analysis() {
+    let mut s = new_sheet();
+    let offered = |s: &mut Scenario| s.with(|e, _| e.quick_analysis_range()).map(|r| (r.first_row, r.last_row, r.first_column, r.last_column));
+    for (cell, value) in [("A1", "3"), ("B1", "5"), ("A2", "4"), ("B2", "6")] {
+        s.click_cell(cell);
+        s.enter(value, "enter");
+    }
+    s.click_cell("A1");
+    assert_eq!(offered(&mut s), None, "one cell");
+    s.key("shift-right");
+    s.key("shift-down");
+    assert_eq!(offered(&mut s), Some((0, 1, 0, 1)));
+    s.screenshot("quick-analysis");
+    s.update(|e, window, cx| e.open_quick_analysis(point(px(300.), px(300.)), window, cx));
+    assert!(s.with(|e, _| e.sheet_state().is_some_and(|st| st.list_popup.is_some())), "the menu is open");
+    s.screenshot("quick-analysis-menu");
+    s.key("escape");
+    // Cells without data: not offered.
+    s.click_cell("E5");
+    s.key("shift-right");
+    s.key("shift-down");
+    assert_eq!(offered(&mut s), None, "empty cells");
+    // While typing in a cell: not offered.
+    s.click_cell("A1");
+    s.key("shift-right");
+    s.key("f2");
+    assert_eq!(offered(&mut s), None, "typing in a cell");
+}
+
+/// 貼り付けのオプション: after pasting copied cells a button shows by the pasted range; its menu pastes them again
+/// as values, formulas, transposed … in place of the first paste (one undo step), and it goes when something else is done.
+fn clip023_paste_options() {
+    let mut s = new_sheet();
+    s.click_cell("A1");
+    s.enter("10", "enter");
+    s.click_cell("A2");
+    s.enter("=A1*2", "enter");
+    s.click_cell("A1");
+    s.key("shift-down");
+    s.key("cmd-c");
+    let shown = |s: &mut Scenario| s.with(|e, _| e.paste_options_range()).map(|r| (r.first_row, r.last_row, r.first_column, r.last_column));
+    assert_eq!(shown(&mut s), None, "nothing pasted yet");
+    s.click_cell("C1");
+    s.key("cmd-v");
+    assert_eq!(s.formula("C2").as_deref(), Some("C1*2"));
+    assert_eq!(shown(&mut s), Some((0, 1, 2, 2)), "the pasted range is selected, with the button");
+    // Values: the formula goes, the number stays; the same range.
+    s.update(|e, _, cx| e.repaste_as(super::clipboard::PasteSpecial::Values, cx));
+    assert_eq!(s.formula("C2"), None);
+    assert_eq!(s.value("C2"), CellValue::Number(20.0));
+    assert_eq!(shown(&mut s), Some((0, 1, 2, 2)));
+    // Transposed: two cells in a row.
+    s.update(|e, _, cx| e.repaste_as(super::clipboard::PasteSpecial::Transpose, cx));
+    assert_eq!(s.value("C1"), CellValue::Number(10.0));
+    assert!(s.value("D1") != CellValue::Empty, "the second cell went along the row");
+    assert_eq!(s.value("C2"), CellValue::Empty, "the first paste is gone");
+    assert_eq!(shown(&mut s), Some((0, 0, 2, 3)));
+    // One undo takes all of it away (the repastes were in place of the first paste).
+    s.key("cmd-z");
+    assert_eq!(s.value("C1"), CellValue::Empty);
+    assert_eq!(shown(&mut s), None, "not after an undo");
+    // The button goes when something else is done.
+    s.click_cell("C1");
+    s.key("cmd-v");
+    assert!(shown(&mut s).is_some());
+    s.click_cell("E5");
+    assert_eq!(shown(&mut s), None);
+    // The menu opens.
+    s.click_cell("C1");
+    s.key("cmd-v");
+    s.screenshot("paste-options");
+    s.update(|e, window, cx| e.open_paste_options(point(px(300.), px(300.)), window, cx));
+    assert!(s.with(|e, _| e.sheet_state().is_some_and(|st| st.list_popup.is_some())));
 }
 
 /// ⌘D and ⌘R (フィル > 下方向へコピー・右方向へコピー): the first row (column)
@@ -8520,8 +8634,7 @@ fn options001_dump_menu_ids() {
         out
     });
     assert!(ids.len() > 100, "the menus have items: {}", ids.len());
-    let path = crate::shell::scenario::repo_root().join("tasks/doc/xlsx-menu-ids.txt");
-    std::fs::write(path, ids.join("\n")).unwrap();
+    crate::shell::scenario::dump_menu_ids("xlsx-menu-ids.txt", &ids);
 }
 
 /// XLSX-NUMFMT-018: locale calendar names (Russian, Dutch, Polish, Swedish, Turkish, Arabic, Hindi) and currency formats.
@@ -10813,13 +10926,13 @@ fn xsc55_spill_partial_delete() {
 }
 
 fn xsc08_match_options() {
-    let mut s=new_sheet();let cases:Vec<_>=include_str!("../../../../test/editing/xlsx-match-options.tsv").lines().skip(1).map(|line|line.split_once('\t').unwrap()).collect();
+    let mut s=new_sheet();let cases:Vec<_>=include_str!("../../../../../test/editing/xlsx-match-options.tsv").lines().skip(1).map(|line|line.split_once('\t').unwrap()).collect();
     for (row,(formula,expected)) in cases.iter().enumerate(){let address=format!("A{}",row+1);let expected=expected.parse::<f64>().map(CellValue::Number).unwrap_or_else(|_|CellValue::Error(if *expected=="#N/A"{ibis_doc_model::CellError::NA}else{ibis_doc_model::CellError::Value}));s.click_cell(&address);s.enter(&format!("={formula}"),"enter");assert_eq!(s.value(&address),expected,"{formula}");s.key("cmd-z");assert_eq!(s.value(&address),CellValue::Empty);s.key("cmd-shift-z");assert_eq!(s.value(&address),expected);}
     s.save_as("xsc08-match-options.xlsx");let p=s.reopen();let sh=sheet_of_slide(&p.slides[1]).unwrap();for(row,(formula,expected))in cases.iter().enumerate(){let expected=expected.parse::<f64>().map(CellValue::Number).unwrap_or_else(|_|CellValue::Error(if *expected=="#N/A"{ibis_doc_model::CellError::NA}else{ibis_doc_model::CellError::Value}));let cell=sh.cell(row as u32,0).unwrap();assert_eq!(cell.value,expected);assert_eq!(cell.formula.as_deref(),Some(*formula));}
 }
 
 fn xsc55_unique_options() {
-    for(case,line)in include_str!("../../../../test/editing/xlsx-unique-options.tsv").lines().skip(1).enumerate(){let fields:Vec<_>=line.split('\t').collect();let mut s=new_sheet();for(row,values)in [[1,10,1],[2,20,2],[1,10,1]].into_iter().enumerate(){for(column,n)in values.into_iter().enumerate(){s.click_cell(&ibis_doc_model::cell_name(column as u32,row as u32));s.enter(&n.to_string(),"enter");}}s.click_cell("E1");s.enter(&format!("={}",fields[0]),"enter");
+    for(case,line)in include_str!("../../../../../test/editing/xlsx-unique-options.tsv").lines().skip(1).enumerate(){let fields:Vec<_>=line.split('\t').collect();let mut s=new_sheet();for(row,values)in [[1,10,1],[2,20,2],[1,10,1]].into_iter().enumerate(){for(column,n)in values.into_iter().enumerate(){s.click_cell(&ibis_doc_model::cell_name(column as u32,row as u32));s.enter(&n.to_string(),"enter");}}s.click_cell("E1");s.enter(&format!("={}",fields[0]),"enter");
         let check=|s:&mut Scenario,text:&str|{let rows:Vec<Vec<f64>>=text.split(';').map(|r|r.split(',').map(|v|v.parse().unwrap()).collect()).collect();for row in 0..3{for col in 0..3{assert_eq!(s.value(&ibis_doc_model::cell_name(col+4,row)),rows.get(row as usize).and_then(|x|x.get(col as usize)).map_or(CellValue::Empty,|n|CellValue::Number(*n)));}}};
         check(&mut s,fields[1]);s.save_as(&format!("xsc55-unique-{case}-before.xlsx"));let p=s.reopen();let sh=sheet_of_slide(&p.slides[1]).unwrap();let rows:Vec<_>=fields[1].split(';').collect();assert_eq!(sh.spills.get(&(0,4)),Some(&ibis_doc_model::CellRange {first_row:0,last_row:rows.len()as u32-1,first_column:4,last_column:4+rows[0].split(',').count()as u32-1}));for(row,values)in rows.iter().enumerate(){for(col,n)in values.split(',').enumerate(){assert_eq!(sh.cell(row as u32,col as u32+4).unwrap().value,CellValue::Number(n.parse().unwrap()));}}assert_eq!(sh.cell(0,4).unwrap().formula.as_deref(),Some(fields[0]));s.click_cell("C3");s.enter("3","enter");check(&mut s,fields[2]);s.key("cmd-z");check(&mut s,fields[1]);s.key("cmd-shift-z");check(&mut s,fields[2]);s.save_as(&format!("xsc55-unique-{case}-after.xlsx"));let p=s.reopen();let sh=sheet_of_slide(&p.slides[1]).unwrap();assert_eq!(sh.spills.get(&(0,4)),Some(&ibis_doc_model::CellRange {first_row:0,last_row:2,first_column:4,last_column:6}));for(row,values)in [[1.,10.,1.],[2.,20.,2.],[1.,10.,3.]].into_iter().enumerate(){for(col,n)in values.into_iter().enumerate(){assert_eq!(sh.cell(row as u32,col as u32+4).unwrap().value,CellValue::Number(n));}}
     }
@@ -10835,15 +10948,15 @@ fn xsc55_lambda_bindings() {
 }
 
 fn xsc55_map_shapes() {
-    let mut s=new_sheet();s.click_cell("J10");s.enter("5","enter");let cases:Vec<_>=include_str!("../../../../test/editing/xlsx-map-shapes.tsv").lines().skip(1).map(|line|line.split_once('\t').unwrap()).collect();for(i,(formula,expected))in cases.iter().enumerate(){let address=format!("A{}",i*3+1);let check=|s:&mut Scenario|{for(row,values)in expected.split(';').enumerate(){for(col,v)in values.split(',').enumerate(){let expected=v.parse::<f64>().map(CellValue::Number).unwrap_or_else(|_|CellValue::Error(*ibis_doc_model::CellError::ALL.iter().find(|e|e.as_str()==v).unwrap()));assert_eq!(s.value(&ibis_doc_model::cell_name(col as u32,i as u32*3+row as u32)),expected);}}};s.click_cell(&address);s.enter(&format!("={formula}"),"enter");check(&mut s);s.key("cmd-z");assert_eq!(s.value(&address),CellValue::Empty);s.key("cmd-shift-z");check(&mut s);}s.save_as("xsc55-map-shapes.xlsx");let p=s.reopen();let sh=sheet_of_slide(&p.slides[1]).unwrap();for(i,(formula,expected))in cases.iter().enumerate(){assert_eq!(sh.cell(i as u32*3,0).unwrap().formula.as_deref(),Some(*formula));for(row,values)in expected.split(';').enumerate(){for(col,v)in values.split(',').enumerate(){let expected=v.parse::<f64>().map(CellValue::Number).unwrap_or_else(|_|CellValue::Error(*ibis_doc_model::CellError::ALL.iter().find(|e|e.as_str()==v).unwrap()));assert_eq!(sh.cell(i as u32*3+row as u32,col as u32).unwrap().value,expected);}}}
+    let mut s=new_sheet();s.click_cell("J10");s.enter("5","enter");let cases:Vec<_>=include_str!("../../../../../test/editing/xlsx-map-shapes.tsv").lines().skip(1).map(|line|line.split_once('\t').unwrap()).collect();for(i,(formula,expected))in cases.iter().enumerate(){let address=format!("A{}",i*3+1);let check=|s:&mut Scenario|{for(row,values)in expected.split(';').enumerate(){for(col,v)in values.split(',').enumerate(){let expected=v.parse::<f64>().map(CellValue::Number).unwrap_or_else(|_|CellValue::Error(*ibis_doc_model::CellError::ALL.iter().find(|e|e.as_str()==v).unwrap()));assert_eq!(s.value(&ibis_doc_model::cell_name(col as u32,i as u32*3+row as u32)),expected);}}};s.click_cell(&address);s.enter(&format!("={formula}"),"enter");check(&mut s);s.key("cmd-z");assert_eq!(s.value(&address),CellValue::Empty);s.key("cmd-shift-z");check(&mut s);}s.save_as("xsc55-map-shapes.xlsx");let p=s.reopen();let sh=sheet_of_slide(&p.slides[1]).unwrap();for(i,(formula,expected))in cases.iter().enumerate(){assert_eq!(sh.cell(i as u32*3,0).unwrap().formula.as_deref(),Some(*formula));for(row,values)in expected.split(';').enumerate(){for(col,v)in values.split(',').enumerate(){let expected=v.parse::<f64>().map(CellValue::Number).unwrap_or_else(|_|CellValue::Error(*ibis_doc_model::CellError::ALL.iter().find(|e|e.as_str()==v).unwrap()));assert_eq!(sh.cell(i as u32*3+row as u32,col as u32).unwrap().value,expected);}}}
 }
 
 fn xsc55_lambda_arity() {
-    let mut s=new_sheet();let cases:Vec<_>=include_str!("../../../../test/editing/xlsx-lambda-arity.tsv").lines().skip(1).map(|line|line.split_once('\t').unwrap()).collect();for(row,(formula,v))in cases.iter().enumerate(){let expected=v.parse::<f64>().map(CellValue::Number).unwrap_or_else(|_|CellValue::Error(*ibis_doc_model::CellError::ALL.iter().find(|e|e.as_str()==*v).unwrap()));let address=format!("A{}",row+1);s.click_cell(&address);s.enter(&format!("={formula}"),"enter");assert_eq!(s.value(&address),expected,"{formula}");s.key("cmd-z");assert_eq!(s.value(&address),CellValue::Empty);s.key("cmd-shift-z");assert_eq!(s.value(&address),expected);}s.save_as("xsc55-lambda-arity.xlsx");let p=s.reopen();let sh=sheet_of_slide(&p.slides[1]).unwrap();for(row,(formula,v))in cases.iter().enumerate(){let expected=v.parse::<f64>().map(CellValue::Number).unwrap_or_else(|_|CellValue::Error(*ibis_doc_model::CellError::ALL.iter().find(|e|e.as_str()==*v).unwrap()));let cell=sh.cell(row as u32,0).unwrap();assert_eq!(cell.value,expected);assert_eq!(cell.formula.as_deref(),Some(*formula));}
+    let mut s=new_sheet();let cases:Vec<_>=include_str!("../../../../../test/editing/xlsx-lambda-arity.tsv").lines().skip(1).map(|line|line.split_once('\t').unwrap()).collect();for(row,(formula,v))in cases.iter().enumerate(){let expected=v.parse::<f64>().map(CellValue::Number).unwrap_or_else(|_|CellValue::Error(*ibis_doc_model::CellError::ALL.iter().find(|e|e.as_str()==*v).unwrap()));let address=format!("A{}",row+1);s.click_cell(&address);s.enter(&format!("={formula}"),"enter");assert_eq!(s.value(&address),expected,"{formula}");s.key("cmd-z");assert_eq!(s.value(&address),CellValue::Empty);s.key("cmd-shift-z");assert_eq!(s.value(&address),expected);}s.save_as("xsc55-lambda-arity.xlsx");let p=s.reopen();let sh=sheet_of_slide(&p.slides[1]).unwrap();for(row,(formula,v))in cases.iter().enumerate(){let expected=v.parse::<f64>().map(CellValue::Number).unwrap_or_else(|_|CellValue::Error(*ibis_doc_model::CellError::ALL.iter().find(|e|e.as_str()==*v).unwrap()));let cell=sh.cell(row as u32,0).unwrap();assert_eq!(cell.value,expected);assert_eq!(cell.formula.as_deref(),Some(*formula));}
 }
 
 fn xsc55_isomitted() {
-    let cases: Vec<_> = include_str!("../../../../test/editing/xlsx-isomitted.tsv")
+    let cases: Vec<_> = include_str!("../../../../../test/editing/xlsx-isomitted.tsv")
         .lines().skip(1).map(|line| line.split_once('\t').unwrap()).collect();
     for (group, cases) in cases.chunks(6).enumerate() {
         let mut s = new_sheet();
@@ -10888,7 +11001,7 @@ fn xsc01_scrollbar_edge_selection() {
     let mut s = new_sheet();
     s.click_cell("A2");
     s.enter("7", "enter");
-    for (i, line) in include_str!("../../../../test/editing/xlsx-isomitted.tsv").lines().skip(1).enumerate() {
+    for (i, line) in include_str!("../../../../../test/editing/xlsx-isomitted.tsv").lines().skip(1).enumerate() {
         let (formula, _) = line.split_once('\t').unwrap();
         let address = format!("D{}", i * 3 + 1);
         s.click_cell(&address);
@@ -10910,7 +11023,7 @@ fn xsc01_scrollbar_edge_selection() {
     s.save_as("xsc01-scrollbar-edge.xlsx");
     let p=s.reopen();
     let sh=sheet_of_slide(&p.slides[1]).unwrap();
-    for(i,line)in include_str!("../../../../test/editing/xlsx-isomitted.tsv").lines().skip(1).enumerate(){let(formula,_)=line.split_once('\t').unwrap();assert_eq!(sh.cell(i as u32*3,3).unwrap().formula.as_deref(),Some(formula));}
+    for(i,line)in include_str!("../../../../../test/editing/xlsx-isomitted.tsv").lines().skip(1).enumerate(){let(formula,_)=line.split_once('\t').unwrap();assert_eq!(sh.cell(i as u32*3,3).unwrap().formula.as_deref(),Some(formula));}
 }
 
 fn xsc55_spill_cross_sheet() {
@@ -10934,14 +11047,14 @@ fn xsc55_spill_cross_sheet() {
 }
 
 fn xsc55_dynamic_reference() {
-    let mut s=new_sheet();s.click_cell("A1");s.enter("3","enter");s.click_cell("B2");s.enter("=SEQUENCE(A1)","enter");let cases:Vec<_>=include_str!("../../../../test/editing/xlsx-dynamic-reference.tsv").lines().skip(1).map(|line|line.split('\t').collect::<Vec<_>>()).collect();
+    let mut s=new_sheet();s.click_cell("A1");s.enter("3","enter");s.click_cell("B2");s.enter("=SEQUENCE(A1)","enter");let cases:Vec<_>=include_str!("../../../../../test/editing/xlsx-dynamic-reference.tsv").lines().skip(1).map(|line|line.split('\t').collect::<Vec<_>>()).collect();
     let check=|s:&mut Scenario,col:usize|{for(i,f)in cases.iter().enumerate(){let expected:Vec<f64>=f[col].split(';').map(|v|v.parse().unwrap()).collect();for r in 0..3{assert_eq!(s.value(&ibis_doc_model::cell_name(3+i as u32*3,r+2)),expected.get(r as usize).map_or(CellValue::Empty,|n|CellValue::Number(*n)),"{} {r}",f[0]);}}};
     for(i,f)in cases.iter().enumerate(){let address=ibis_doc_model::cell_name(3+i as u32*3,2);s.click_cell(&address);assert_eq!(s.selected(),address);s.enter(&format!("={}",f[0]),"enter");}check(&mut s,1);s.save_as("xsc55-dynamic-reference-before.xlsx");s.click_cell("A1");s.enter("2","enter");check(&mut s,2);s.key("cmd-z");check(&mut s,1);s.key("cmd-shift-z");check(&mut s,2);s.save_as("xsc55-dynamic-reference-after.xlsx");let p=s.reopen();let sh=sheet_of_slide(&p.slides[1]).unwrap();for(i,f)in cases.iter().enumerate(){assert_eq!(sh.cell(2,3+i as u32*3).unwrap().formula.as_deref(),Some(f[0]));let expected:Vec<f64>=f[2].split(';').map(|v|v.parse().unwrap()).collect();for r in 0..3{assert_eq!(sh.cell(r+2,3+i as u32*3).map(|x|x.value.clone()).unwrap_or_default(),expected.get(r as usize).map_or(CellValue::Empty,|n|CellValue::Number(*n)));}}
 }
 
 
 fn xsc55_text_boundary() {
-    let mut s=new_sheet();let cases:Vec<_>=include_str!("../../../../test/editing/xlsx-text-boundary.tsv").lines().skip(1).map(|line|line.split_once('\t').unwrap()).collect();for(row,(formula,v))in cases.iter().enumerate(){let expected=v.parse::<f64>().map(CellValue::Number).unwrap_or_else(|_|CellValue::Error(*ibis_doc_model::CellError::ALL.iter().find(|e|e.as_str()==*v).unwrap()));let address=format!("A{}",row+1);s.click_cell(&address);s.enter(&format!("={formula}"),"enter");assert_eq!(s.value(&address),expected,"{formula}");s.key("cmd-z");assert_eq!(s.value(&address),CellValue::Empty);s.key("cmd-shift-z");assert_eq!(s.value(&address),expected);}s.save_as("xsc55-text-boundary.xlsx");let p=s.reopen();let sh=sheet_of_slide(&p.slides[1]).unwrap();for(row,(formula,v))in cases.iter().enumerate(){let expected=v.parse::<f64>().map(CellValue::Number).unwrap_or_else(|_|CellValue::Error(*ibis_doc_model::CellError::ALL.iter().find(|e|e.as_str()==*v).unwrap()));let cell=sh.cell(row as u32,0).unwrap();assert_eq!(cell.value,expected);assert_eq!(cell.formula.as_deref(),Some(*formula));}
+    let mut s=new_sheet();let cases:Vec<_>=include_str!("../../../../../test/editing/xlsx-text-boundary.tsv").lines().skip(1).map(|line|line.split_once('\t').unwrap()).collect();for(row,(formula,v))in cases.iter().enumerate(){let expected=v.parse::<f64>().map(CellValue::Number).unwrap_or_else(|_|CellValue::Error(*ibis_doc_model::CellError::ALL.iter().find(|e|e.as_str()==*v).unwrap()));let address=format!("A{}",row+1);s.click_cell(&address);s.enter(&format!("={formula}"),"enter");assert_eq!(s.value(&address),expected,"{formula}");s.key("cmd-z");assert_eq!(s.value(&address),CellValue::Empty);s.key("cmd-shift-z");assert_eq!(s.value(&address),expected);}s.save_as("xsc55-text-boundary.xlsx");let p=s.reopen();let sh=sheet_of_slide(&p.slides[1]).unwrap();for(row,(formula,v))in cases.iter().enumerate(){let expected=v.parse::<f64>().map(CellValue::Number).unwrap_or_else(|_|CellValue::Error(*ibis_doc_model::CellError::ALL.iter().find(|e|e.as_str()==*v).unwrap()));let cell=sh.cell(row as u32,0).unwrap();assert_eq!(cell.value,expected);assert_eq!(cell.formula.as_deref(),Some(*formula));}
 }
 
 fn xsc55_compatibility_len() {
@@ -10976,7 +11089,7 @@ fn xsc55_compatibility_len() {
 fn xsc55_compatibility_slice() {
     for(path,version)in[("test/editing/xlsx-compatibility-v1.xlsx",1),("test/editing/xlsx-sales.xlsx",2)] {
         let mut s=Scenario::open(path);s.menu("xlsx.insert-sheet");
-        let cases:Vec<_>=include_str!("../../../../test/editing/xlsx-compatibility-slice.tsv").lines().skip(1).map(|line|line.split('\t').collect::<Vec<_>>()).collect();
+        let cases:Vec<_>=include_str!("../../../../../test/editing/xlsx-compatibility-slice.tsv").lines().skip(1).map(|line|line.split('\t').collect::<Vec<_>>()).collect();
         for(row,f)in cases.iter().enumerate() {
             let text=f[version as usize];let expected=ibis_doc_model::CellError::ALL.iter().find(|e|e.as_str()==text).map_or_else(||CellValue::Text(text.into()),|e|CellValue::Error(*e));
             let address=format!("A{}",row+1);s.click_cell(&address);s.enter(&format!("={}",f[0]),"enter");
@@ -10996,7 +11109,7 @@ fn xsc55_compatibility_slice() {
 fn xsc55_compatibility_search() {
     for(path,version)in[("test/editing/xlsx-compatibility-v1.xlsx",1),("test/editing/xlsx-sales.xlsx",2)] {
         let mut s=Scenario::open(path);s.menu("xlsx.insert-sheet");
-        let cases:Vec<_>=include_str!("../../../../test/editing/xlsx-compatibility-search.tsv").lines().skip(1).map(|line|line.split('\t').collect::<Vec<_>>()).collect();
+        let cases:Vec<_>=include_str!("../../../../../test/editing/xlsx-compatibility-search.tsv").lines().skip(1).map(|line|line.split('\t').collect::<Vec<_>>()).collect();
         for(row,f)in cases.iter().enumerate() {
             let text=f[version as usize];let expected=text.parse::<f64>().map(CellValue::Number).unwrap_or_else(|_|CellValue::Error(*ibis_doc_model::CellError::ALL.iter().find(|e|e.as_str()==text).unwrap()));
             let address=format!("A{}",row+1);s.click_cell(&address);s.enter(&format!("={}",f[0]),"enter");
@@ -11014,7 +11127,7 @@ fn xsc55_compatibility_search() {
 }
 
 fn xsc55_compatibility_toggle() {
-    let mut s=new_sheet();let cases:Vec<_>=include_str!("../../../../test/editing/xlsx-compatibility-toggle.tsv").lines().skip(1).map(|line|line.split('\t').collect::<Vec<_>>()).collect();
+    let mut s=new_sheet();let cases:Vec<_>=include_str!("../../../../../test/editing/xlsx-compatibility-toggle.tsv").lines().skip(1).map(|line|line.split('\t').collect::<Vec<_>>()).collect();
     for(i,f)in cases.iter().enumerate(){s.click_cell(&format!("A{}",i*3+1));s.enter(&format!("={}",f[0]),"enter");}
     let check=|s:&mut Scenario,version:u32| {
         assert_eq!(s.menu_state("xlsx.compatibility-v1"),Some((version!=1,version==1)));
@@ -11033,7 +11146,7 @@ fn xsc55_compatibility_toggle() {
 
 
 fn xsc55_dynamic_reopen() {
-    let cases: Vec<_> = include_str!("../../../../test/editing/xlsx-dynamic-reopen.tsv").lines().skip(1).map(|line| line.split('\t').collect::<Vec<_>>()).collect();
+    let cases: Vec<_> = include_str!("../../../../../test/editing/xlsx-dynamic-reopen.tsv").lines().skip(1).map(|line| line.split('\t').collect::<Vec<_>>()).collect();
     let check = |s: &mut Scenario, col: usize| {
         for (i, f) in cases.iter().enumerate() {
             let expected: Vec<f64> = f[col].split(';').map(|v| v.parse().unwrap()).collect();
@@ -11067,7 +11180,7 @@ fn xsc55_dynamic_reopen() {
 
 
 fn xsc39_week_return_types() {
-    let mut s = new_sheet(); let cases: Vec<_> = include_str!("../../../../test/editing/xlsx-week-return-types.tsv").lines().skip(1).map(|line| line.split('\t').collect::<Vec<_>>()).collect();
+    let mut s = new_sheet(); let cases: Vec<_> = include_str!("../../../../../test/editing/xlsx-week-return-types.tsv").lines().skip(1).map(|line| line.split('\t').collect::<Vec<_>>()).collect();
     s.click_cell("B1"); s.enter("=DATE(2021,1,1)", "enter");
     for (r, f) in cases.iter().enumerate() { s.click_cell(&format!("A{}", r + 1)); s.enter(&format!("={}", f[0]), "enter"); }
     let check = |s: &mut Scenario, col: usize| { for (r, f) in cases.iter().enumerate() { let expected = f[col].parse::<f64>().map(CellValue::Number).unwrap_or(CellValue::Error(ibis_doc_model::CellError::Num)); assert_eq!(s.value(&format!("A{}", r + 1)), expected, "{}", f[0]); } };
@@ -11081,7 +11194,7 @@ fn xsc39_week_return_types() {
 
 
 fn xsc39_day_count_options() {
-    let mut s = new_sheet(); let cases: Vec<_> = include_str!("../../../../test/editing/xlsx-day-count-options.tsv").lines().skip(1).map(|line| line.split('\t').collect::<Vec<_>>()).collect();
+    let mut s = new_sheet(); let cases: Vec<_> = include_str!("../../../../../test/editing/xlsx-day-count-options.tsv").lines().skip(1).map(|line| line.split('\t').collect::<Vec<_>>()).collect();
     s.click_cell("B1"); s.enter("=DATE(2019,1,1)", "enter"); s.click_cell("C1"); s.enter("=DATE(2020,1,1)", "enter");
     for (r, f) in cases.iter().enumerate() { s.click_cell(&format!("A{}", r + 1)); s.enter(&format!("={}", f[0]), "enter"); }
     let check = |s: &mut Scenario, col: usize| { for (r, f) in cases.iter().enumerate() { let expected = f[col].parse::<f64>().map(CellValue::Number).unwrap_or(CellValue::Error(ibis_doc_model::CellError::Num)); assert_eq!(s.value(&format!("A{}", r + 1)), expected, "{}", f[0]); } };
@@ -18335,7 +18448,7 @@ fn file020_open_and_repair_damaged_workbook() {
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
 </Relationships>"#;
-    w.add("[Content_Types].xml", EntryMeta::new(), ct.as_bytes()).unwrap();
+    w.add("[[]Content_Types].xml", EntryMeta::new(), ct.as_bytes()).unwrap();
     w.add("_rels/.rels", EntryMeta::new(), rels.as_bytes()).unwrap();
     w.add("xl/workbook.xml", EntryMeta::new(), wb.as_bytes()).unwrap();
     w.add("xl/_rels/workbook.xml.rels", EntryMeta::new(), wb_rels.as_bytes()).unwrap();
@@ -20767,41 +20880,319 @@ fn xlsx_comments_page_setup_and_insert_function() {
     s.settle();
     assert_eq!(s.with(|e, _| e.print_title_rows()), None, "print titles cleared");
 
-    // 3. Insert function (XLSX-FORMULA-024)
+    // 3. Insert function (XLSX-FORMULA-024): the 関数の挿入 panel (function_dialog.rs).
+    let function_panel = |s: &mut Scenario| s.with(|e, _| e.wb().panels.function.is_some());
     // Menu action xlsx.insert-function
     s.click_cell("G2");
     s.menu("xlsx.insert-function");
     s.settle();
-    assert_eq!(
-        s.with(|e, _| e.cell_edit().map(|c| c.text.clone())),
-        Some("=".to_string()),
-        "insert-function menu enters edit mode with '='"
-    );
-    s.key("escape");
-    s.settle();
-    assert!(s.with(|e, _| e.cell_edit().is_none()), "escape cancels edit");
+    assert!(function_panel(&mut s), "the insert-function menu opens the panel");
+    s.update(|e, _, cx| {
+        e.wb_mut().panels.close();
+        cx.notify();
+    });
+    assert!(!function_panel(&mut s));
 
     // Keyboard shortcut Shift+F3
+    s.click_cell("G2");
     s.key("shift-f3");
     s.settle();
-    assert_eq!(
-        s.with(|e, _| e.cell_edit().map(|c| c.text.clone())),
-        Some("=".to_string()),
-        "shift-f3 enters edit mode with '='"
-    );
-    s.key("escape");
-    s.settle();
+    assert!(function_panel(&mut s), "shift-f3 opens the panel");
+    s.update(|e, _, cx| {
+        e.wb_mut().panels.close();
+        cx.notify();
+    });
 
     // Clicking fx button in formula bar
+    s.click_cell("G2");
     s.click((115.0, 123.0));
     s.settle();
-    assert_eq!(
-        s.with(|e, _| e.cell_edit().map(|c| c.text.clone())),
-        Some("=".to_string()),
-        "clicking fx button enters edit mode with '='"
-    );
-    s.key("escape");
-    s.settle();
+    assert!(function_panel(&mut s), "clicking the fx button opens the panel");
+    s.update(|e, _, cx| {
+        e.wb_mut().panels.close();
+        cx.notify();
+    });
+}
+
+/// XLSX-FILE-008・009 with the file of the repository that has a vbaProject.bin (not the synthetic one of the
+/// integration tests): opened, a cell changed, saved (⌘S): the macros part is there byte for byte, the main content type
+/// still macro enabled, and the cell kept; saved without macros: no vbaProject.bin, a plain workbook content type, the
+/// cell kept.
+fn file008_macro_workbook_save() {
+    let part = |zip: &std::path::Path, name: &str| std::process::Command::new("unzip").arg("-p").arg(zip).arg(name).output().map(|o| o.stdout).unwrap_or_default();
+    let original = crate::shell::scenario::repo_root().join("test/editing/xlsx-macro.xlsm");
+    let vba = part(&original, "xl/vbaProject.bin");
+    assert!(vba.len() > 1000, "the file has macros: {} bytes", vba.len());
+    let mut s = Scenario::open("test/editing/xlsx-macro.xlsm");
+    s.click_cell("H20");
+    s.enter("kept", "enter");
+    let saved = s.save_as("saved.xlsm");
+    assert_eq!(part(&saved, "xl/vbaProject.bin"), vba, "the macros part is saved as it was");
+    let types = String::from_utf8_lossy(&part(&saved, "[[]Content_Types].xml")).into_owned();
+    assert!(types.contains("application/vnd.ms-excel.sheet.macroEnabled.main+xml"), "the workbook is still macro enabled: {types}");
+    assert!(types.contains("vbaProject"), "the macros part has its content type");
+    let rels = String::from_utf8_lossy(&part(&saved, "xl/_rels/workbook.xml.rels")).into_owned();
+    assert!(rels.contains("vbaProject.bin"), "and its relationship");
+    let back = s.reopen();
+    let cell = |p: &ibis_doc_model::Presentation| {
+        p.slides.iter().filter_map(ibis_doc_model::sheet_calc::sheet_of_slide).find_map(|sh| sh.cell(19, 7).map(|c| c.value.clone()))
+    };
+    assert_eq!(cell(&back), Some(CellValue::Text("kept".into())), "the change is in the saved file");
+    // Without macros.
+    let bytes = s
+        .with(|e, _| e.source.clone().expect("a source").save_without_macros(e.presentation(), ibis_pptx::SaveOptions::default()))
+        .expect("saved without macros");
+    let plain = saved.with_file_name("plain.xlsx");
+    std::fs::write(&plain, &bytes).unwrap();
+    assert!(part(&plain, "xl/vbaProject.bin").is_empty(), "no macros part");
+    let types = String::from_utf8_lossy(&part(&plain, "[[]Content_Types].xml")).into_owned();
+    // (A Default for the .bin extension may stay: it names no part, and the package is as valid.)
+    assert!(!types.contains("macroEnabled") && !types.contains("PartName=\"/xl/vbaProject"), "a plain workbook: {types}");
+    let rels = String::from_utf8_lossy(&part(&plain, "xl/_rels/workbook.xml.rels")).into_owned();
+    assert!(!rels.contains("vbaProject"), "no relationship to the macros");
+    let reread = ibis_pptx::read(&bytes).expect("the workbook without macros opens");
+    assert_eq!(cell(&reread), Some(CellValue::Text("kept".into())), "the change is in it");
+}
+
+/// XLSX-SEC-018 page order: with manual breaks the sheet prints as four pages; "down, then over" (Excel's default) is
+/// top-left, bottom-left, top-right, bottom-right, "over, then down" top-left, top-right, bottom-left, bottom-right,
+/// read back from the PDF's pages, and the choice is kept in the saved file.
+fn sec018_page_order() {
+    let mut s = new_sheet();
+    for (cell, label) in [("A1", "TL"), ("E1", "TR"), ("A7", "BL"), ("E7", "BR")] {
+        s.click_cell(cell);
+        s.enter(label, "enter");
+    }
+    s.update(|e, _, cx| {
+        e.set_print(
+            |p| {
+                p.row_breaks = vec![5];
+                p.column_breaks = vec![3];
+                p.over_then_down = false;
+            },
+            None,
+            cx,
+        )
+    });
+    let dir = crate::shell::scenario::repo_root().join("target/scenario/xlsx::sec018_page_order");
+    std::fs::create_dir_all(&dir).unwrap();
+    let pages = |s: &mut Scenario, name: &str| -> Vec<String> {
+        let path = dir.join(name);
+        let job = s.with(|e, _| e.write_pdf(path.clone())).expect("a PDF job");
+        job().expect("the PDF is written");
+        let text = |page: usize| {
+            let out = std::process::Command::new("pdftotext").args(["-f", &page.to_string(), "-l", &page.to_string()]).arg(&path).arg("-").output().expect("pdftotext");
+            String::from_utf8_lossy(&out.stdout).replace(char::is_whitespace, "")
+        };
+        (1..=4).map(text).collect()
+    };
+    let down = pages(&mut s, "down.pdf");
+    assert_eq!(down, ["TL", "BL", "TR", "BR"], "down, then over");
+    s.update(|e, _, cx| e.set_print(|p| p.over_then_down = true, None, cx));
+    let over = pages(&mut s, "over.pdf");
+    assert_eq!(over, ["TL", "TR", "BL", "BR"], "over, then down");
+    let name = s.with(|e, _| e.slide().name.clone());
+    s.save_as("order.xlsx");
+    let saved = s.reopen();
+    let print = saved.slides.iter().find(|x| x.name == name).and_then(ibis_doc_model::sheet_calc::sheet_of_slide).unwrap().print.clone();
+    assert!(print.over_then_down, "kept in the file");
+    assert_eq!((print.row_breaks, print.column_breaks), (vec![5], vec![3]));
+}
+
+/// XLSX-OBJECT-017: a SmartArt diagram put on a worksheet takes the colour styles of the 色の変更 menu (the same ones a
+/// slide's has): the fills change with the style, undo and redo go back and forth, saved and opened again.
+fn object017_smartart_color_styles() {
+    let mut s = new_sheet();
+    s.menu("pptx.insert.smartart.process");
+    let fills = |s: &mut Scenario| -> Vec<ibis_doc_model::Fill> {
+        s.with(|e, _| {
+            let slide = e.slide();
+            let group = slide.groups.last().expect("the diagram is a group");
+            group
+                .children
+                .iter()
+                .filter_map(|m| match m {
+                    ibis_doc_model::GroupMember::Shape(id) => slide.shape(*id),
+                    _ => None,
+                })
+                .filter_map(|sh| match &sh.kind {
+                    ibis_doc_model::ShapeKind::Auto(a) => Some(a.fill.clone()),
+                    _ => None,
+                })
+                .collect()
+        })
+    };
+    let colorful = fills(&mut s);
+    assert!(!colorful.is_empty(), "the diagram has shapes");
+    // The diagram's right-click menu (the shape menu), as the app builds it for the selection.
+    let call = |s: &mut Scenario, id: &str| {
+        let handler = s.with(|e, _| {
+            let entries = e.shape_menu();
+            crate::shell::scenario::find_item(&entries, id).and_then(|i| i.handler.clone()).unwrap_or_else(|| panic!("no shape_menu item {id}"))
+        });
+        s.update(|e, window, cx| handler(e, window, cx));
+    };
+    call(&mut s, "pptx.smartart.color.accent1");
+    let accent = fills(&mut s);
+    assert_ne!(accent, colorful, "the style changed the fills");
+    call(&mut s, "pptx.smartart.color.outline");
+    let outline = fills(&mut s);
+    assert_ne!(outline, accent);
+    // A change is two steps (the shapes made again, then grouped as the diagram): two to undo, two to do again.
+    s.key("cmd-z");
+    s.key("cmd-z");
+    assert_eq!(fills(&mut s), accent, "undone");
+    s.key("cmd-shift-z");
+    s.key("cmd-shift-z");
+    assert_eq!(fills(&mut s), outline, "done again");
+    s.save_as("smartart-colors.xlsx");
+    let back = s.reopen();
+    let name = s.with(|e, _| e.slide().name.clone());
+    let slide = back.slides.iter().find(|x| x.name == name).expect("the sheet");
+    // The diagram's shapes come back with the style's fills (the file keeps them as drawn shapes).
+    let saved: Vec<ibis_doc_model::Fill> = slide
+        .shapes
+        .iter()
+        .filter_map(|sh| match &sh.kind {
+            ibis_doc_model::ShapeKind::Auto(a) => Some(a.fill.clone()),
+            _ => None,
+        })
+        .collect();
+    for fill in &outline {
+        assert!(saved.contains(fill), "the style's fill {fill:?} is in the saved file");
+    }
+}
+
+/// ツール > 辞書 (the cell's word looked up; a synonym chosen takes the cell's place, one undo) and 文字カウント (the selected
+/// range's cells, words and characters, the whole sheet's for one cell).
+fn tools001_dictionary_and_word_count() {
+    let mut s = new_sheet();
+    for (cell, value) in [("A1", "作成"), ("A2", "hello world"), ("B2", "ab c"), ("C3", "7")] {
+        s.click_cell(cell);
+        s.enter(value, "enter");
+    }
+    // The dictionary.
+    s.click_cell("A1");
+    s.menu("tools.dictionary");
+    let found = s.with(|e, _| e.wb().panels.thesaurus.as_ref().and_then(|p| p.result.clone())).expect("the word is in the dictionary");
+    assert_eq!(found.query, "作成");
+    s.screenshot("dictionary");
+    let synonym = found.groups[0].synonyms[0].clone();
+    s.update(|e, _, cx| e.sheet_thesaurus_replace(&synonym, cx));
+    assert_eq!(s.value("A1"), CellValue::Text(synonym.clone()), "the synonym is in the cell");
+    s.update(|e, window, cx| {
+        e.wb_mut().panels.close();
+        e.focus_handle.focus(window, cx);
+    });
+    s.key("cmd-z");
+    assert_eq!(s.value("A1"), CellValue::Text("作成".into()), "one undo");
+    // 文字カウント: one cell selected, the whole sheet.
+    s.click_cell("A1");
+    s.menu("tools.word-count");
+    s.screenshot("word-count");
+    let whole = s.with(|e, _| e.wb().panels.word_count.as_ref().map(|p| p.stats.clone())).unwrap();
+    assert!(!whole.is_selection);
+    assert_eq!(whole.cells, 4);
+    assert_eq!(whole.words, 2 + 2 + 2 + 1, "words of all the cells (a Japanese word counts by its characters, as in Word)");
+    assert_eq!(whole.characters_no_spaces, 2 + 10 + 3 + 1);
+    assert_eq!(whole.characters_with_spaces, 2 + 11 + 4 + 1);
+    // A range selected: its cells only.
+    s.update(|e, _, cx| {
+        e.wb_mut().panels.close();
+        cx.notify();
+    });
+    s.click_cell("A2");
+    s.key("shift-right");
+    s.menu("tools.word-count");
+    let part = s.with(|e, _| e.wb().panels.word_count.as_ref().map(|p| p.stats.clone())).unwrap();
+    assert!(part.is_selection);
+    assert_eq!((part.cells, part.words, part.characters_no_spaces), (2, 4, 13));
+}
+
+/// The menu bar's items that did nothing: 書式のコピー・書式の貼り付け (⌥⌘C・⌥⌘V: the next cells take the formats), 書式に合わせて貼り付け
+/// (the values only, in the cells' own formats), 保護, 区切り位置, ユーザー補助.
+fn menu001_connected_items() {
+    let mut s = new_sheet();
+    s.click_cell("A1");
+    s.enter("12345", "enter");
+    s.click_cell("A1");
+    s.update(|e, _, cx| e.format_cells(ibis_doc_model::StyleChange::Bold(true), cx));
+    let bold = |s: &mut Scenario, cell: &str| {
+        let (c, r) = parse(cell);
+        s.with(move |e, _| {
+            let sh = sheet_of_slide(e.slide()).unwrap();
+            sh.cell(r, c).is_some_and(|x| sh.styles[x.style as usize].bold)
+        })
+    };
+    assert!(bold(&mut s, "A1"));
+    // Copy the format, then paste it on C3.
+    s.menu("edit.copy-format");
+    s.click_cell("C3");
+    s.menu("edit.paste-format");
+    assert!(bold(&mut s, "C3"), "the format came across");
+    // 書式に合わせて貼り付け: B1 is plain; the pasted cell keeps its own format and takes the value.
+    s.click_cell("B1");
+    s.enter("=A1*2", "enter");
+    s.click_cell("B1");
+    s.key("cmd-c");
+    s.click_cell("C3");
+    s.menu("edit.paste-match");
+    assert_eq!(s.value("C3"), CellValue::Number(24690.0));
+    assert_eq!(s.formula("C3"), None, "values only");
+    assert!(bold(&mut s, "C3"), "the destination's own format stays");
+    // 保護・区切り位置・ユーザー補助 open their panels.
+    s.menu("xlsx.protect");
+    assert!(s.with(|e, _| e.wb().panels.protect.is_some()), "the protect panel");
+    s.update(|e, _, cx| {
+        e.wb_mut().panels.close();
+        cx.notify();
+    });
+    s.click_cell("A1");
+    s.menu("xlsx.split-text");
+    assert!(s.with(|e, _| e.wb().panels.text_columns.is_some()), "the text-to-columns panel");
+    s.update(|e, _, cx| {
+        e.wb_mut().panels.close();
+        cx.notify();
+    });
+    s.menu("tools.accessibility");
+    assert!(s.with(|e, _| e.wb().panels.accessibility.is_some()), "the accessibility panel");
+}
+
+/// 関数の挿入・関数の引数: the panel finds a function, takes its arguments, shows the result as they stand, and OK
+/// puts the formula in the cell (one undo).
+fn func001_function_arguments_panel() {
+    let mut s = new_sheet();
+    // The formula leaves out the arguments after the last one filled in; the search finds by name, the common ones first.
+    assert_eq!(super::function_dialog::formula_of("SUM", &["A1:A3".into(), "".into()]), "=SUM(A1:A3)");
+    assert_eq!(super::function_dialog::formula_of("IF", &["A1>1".into(), "".into(), " 2 ".into()]), "=IF(A1>1,,2)");
+    assert_eq!(super::function_dialog::formula_of("NOW", &["".into()]), "=NOW()");
+    assert_eq!(super::function_dialog::matching("")[0].name, "SUM");
+    assert!(super::function_dialog::matching("vlook").iter().any(|f| f.name == "VLOOKUP"));
+    assert_eq!(super::function_dialog::matching("sumif")[0].name, "SUMIF");
+    for (cell, value) in [("A1", "3"), ("A2", "4"), ("A3", "5")] {
+        s.click_cell(cell);
+        s.enter(value, "enter");
+    }
+    s.click_cell("C1");
+    s.menu("xlsx.insert-function");
+    assert!(s.with(|e, _| e.wb().panels.function.is_some()));
+    // Choosing SUMIF: three arguments at most, two at least.
+    s.update(|e, window, cx| e.function_choose("SUM", window, cx));
+    assert_eq!(s.with(|e, _| e.wb().panels.function.as_ref().map(|p| p.args.len())), Some(1));
+    s.update(|e, window, cx| {
+        let arg = e.wb().panels.function.as_ref().unwrap().args[0].clone();
+        arg.update(cx, |i, cx| i.set_value("A1:A3", window, cx));
+    });
+    assert_eq!(s.with(|e, cx| e.function_preview(cx)).as_deref(), Some("12"), "the result as the argument stands");
+    s.update(|e, window, cx| e.function_add_argument(window, cx));
+    assert_eq!(s.with(|e, _| e.wb().panels.function.as_ref().map(|p| p.args.len())), Some(2));
+    s.screenshot("function-arguments");
+    s.update(|e, window, cx| e.function_ok(window, cx));
+    assert!(s.with(|e, _| e.wb().panels.function.is_none()), "OK closes the panel");
+    assert_eq!(s.formula("C1").as_deref(), Some("SUM(A1:A3)"));
+    assert_eq!(s.value("C1"), CellValue::Number(12.0));
+    s.key("cmd-z");
+    assert_eq!(s.value("C1"), CellValue::Empty);
 }
 
 /// XLSX-FUNCAT-001〜011, XLSX-FORMULA-007, XLSX-FORMULA-008, XLSX-FORMULA-024:
@@ -21049,8 +21440,13 @@ fn xlsx_pivot_source_drill_theme_and_charts() {
     s.click_cell("M1"); // "商品"
     s.menu("xlsx.thesaurus");
     s.settle();
-    let status = s.with(|e, _| e.status.clone()).unwrap_or_default();
-    assert!(status.contains("商品"), "thesaurus looked up active cell text: {status}");
+    let searched = s.with(|e, _| e.wb().panels.thesaurus.as_ref().map(|p| p.searched.clone()));
+    assert_eq!(searched.as_deref(), Some("商品"), "the thesaurus panel looked up the active cell's text");
+    // Closed, the keyboard is the sheet's again (⌘Z below is not the search box's).
+    s.update(|e, window, cx| {
+        e.wb_mut().panels.close();
+        e.focus_handle.focus(window, cx);
+    });
 
     // 4. おすすめグラフ (xlsx.recommended-charts)
     s.update(|e, _, _cx| {
@@ -21060,6 +21456,9 @@ fn xlsx_pivot_source_drill_theme_and_charts() {
     });
     let shape_count_before = s.with(|e, _| e.slide().shapes.len());
     s.menu("xlsx.recommended-charts");
+    s.settle();
+    assert!(s.with(|e, _| e.sidebar_open && e.sheet_state().is_some_and(|st| st.panels.recommended_charts.is_some())), "recommended charts panel opened in right sidebar");
+    s.update(|e, w, cx| e.insert_recommended_chart(w, cx));
     s.settle();
     let shape_count_after = s.with(|e, _| e.slide().shapes.len());
     assert!(shape_count_after > shape_count_before, "recommended chart shape inserted");
@@ -22398,15 +22797,17 @@ fn ink_box(path: &std::path::Path, (x0, y0, x1, y1): (f32, f32, f32, f32), skip:
     out
 }
 
-fn default_xlsx_path() -> String {
+fn default_xlsx_path() -> Option<String> {
     // The file is not committed (test/github-issue/ is ignored): this checkout's, else the main checkout's next to a worktree.
     let main_checkout = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../ibisOffice/test/github-issue/default.xlsx");
     for p in ["test/github-issue/default.xlsx", main_checkout] {
         if std::path::Path::new(p).exists() {
-            return p.to_string();
+            return Some(p.to_string());
         }
     }
-    panic!("test/github-issue/default.xlsx");
+    // Not in this checkout (nor the main one): the scenario leaves out what needs it, saying so.
+    eprintln!("scenario skipped: test/github-issue/default.xlsx is not here");
+    None
 }
 
 /// F2 on a cell keeps its text where it was drawn: left, top and bottom of the ink within a pixel
@@ -22426,7 +22827,8 @@ fn fix73_edit_text_stays_put() {
     ];
     let mut report = Vec::new();
     for (label, align, vertical, merge) in cases {
-        let mut s = Scenario::open(&default_xlsx_path());
+        let Some(path) = default_xlsx_path() else { return };
+        let mut s = Scenario::open(&path);
         s.settle();
         // The A4 of the file (a wrapped, merged cell with parts in other colours and sizes), or a cell of ordinary text.
         let short = label.starts_with("short");
@@ -22487,7 +22889,8 @@ fn fix73_edit_text_stays_put() {
 
 /// A click in the box of a cell being typed in puts the caret where it landed, after F2 and after a double-click.
 fn fix73_edit_click_places_caret() {
-    let mut s = Scenario::open(&default_xlsx_path());
+    let Some(path) = default_xlsx_path() else { return };
+    let mut s = Scenario::open(&path);
     s.settle();
     s.click_cell("A1");
     s.enter("abcdefghij", "enter");
@@ -22521,7 +22924,8 @@ fn fix73_edit_click_places_caret() {
     let at = caret(&mut s);
     assert_eq!(at.map(|c| c.0), Some(0), "double-click at the left edge: {at:?}");
     s.key("escape");
-    s.double_click((rect.2 - 2.0, y));
+    // (Not on the selection's border, 2 px from the cell's edge: a press there grabs the range to move it, #11.)
+    s.double_click((rect.2 - 8.0, y));
     s.settle();
     let at = caret(&mut s).map(|c| c.0).unwrap();
     assert!(at >= 8, "double-click at the right: {at}");
@@ -22556,10 +22960,57 @@ fn fix73_edit_click_places_caret() {
     assert!(s.with(|e, _| e.cell_edit().is_some()), "still editing after a click in the widened box");
     let at = caret(&mut s).map(|c| c.0).unwrap();
     assert!(at > 20, "caret near the end of the widened box: {at}");
+    s.key("escape");
+
+    // Floating text box: insert enters edit mode immediately, 5+ lines keeps user-specified rectangle size, double-click places caret at click.
+    s.menu("insert.text-box");
+    s.settle();
+    assert!(s.with(|e, _| e.editing.is_some()), "insert.text-box immediately enters edit mode");
+    let h0 = s.with(|e, _| e.slide().shapes.last().unwrap().frame.height);
+    s.type_text("abcdefghij");
+    s.key("enter");
+    s.type_text("line2");
+    s.key("enter");
+    s.type_text("line3");
+    s.key("enter");
+    s.type_text("line4");
+    s.key("enter");
+    s.type_text("line5");
+    s.key("enter");
+    s.type_text("line6");
+    s.settle();
+    let h1 = s.with(|e, _| e.slide().shapes.last().unwrap().frame.height);
+    assert_eq!(h1, h0, "text box rectangle height stays at user-specified size when typing 5+ lines");
+    s.key("escape");
+    s.settle();
+    assert!(s.with(|e, _| e.editing.is_none()));
+    let (tb_x, tb_y, tb_w, _tb_h) = s.with(|e, _| {
+        let shape = e.slide().shapes.last().unwrap();
+        let layout = e.slide_layout().unwrap();
+        let f = shape.frame;
+        (
+            f32::from(layout.origin.x + layout.to_px(f.x)),
+            f32::from(layout.origin.y + layout.to_px(f.y)),
+            f32::from(layout.to_px(f.width)),
+            f32::from(layout.to_px(f.height)),
+        )
+    });
+    s.double_click((tb_x + 8.0, tb_y + 12.0));
+    s.settle();
+    let sel_left = s.with(|e, _| e.editing.as_ref().unwrap().edit.range());
+    assert_eq!(sel_left, 0..0, "double-click near left edge places caret at 0");
+    s.key("escape");
+    s.settle();
+    s.double_click((tb_x + tb_w - 8.0, tb_y + 12.0));
+    s.settle();
+    let sel_right = s.with(|e, _| e.editing.as_ref().unwrap().edit.range());
+    assert!(sel_right.start >= 8, "double-click near right edge places caret near end of line 1: {sel_right:?}");
+    s.key("escape");
 }
 
 fn default_xlsx_a4_cell_edit_screenshots() {
-    let mut s = Scenario::open(&default_xlsx_path());
+    let Some(path) = default_xlsx_path() else { return };
+    let mut s = Scenario::open(&path);
     s.settle();
     s.click_cell("A4");
     s.settle();
@@ -27703,7 +28154,7 @@ fn sparkline010_subtotal017_sort013_data005_named_refs_and_quick_actions() {
                 *asc = true;
             }
         }
-        e.apply_sort_panel(cx);
+        e.apply_sort_button(window, cx);
     });
     assert_eq!(s.value("A2"), CellValue::Text("East".into()));
     assert_eq!(s.value("A3"), CellValue::Text("East".into()));
@@ -27925,4 +28376,130 @@ fn sheet028_scroll_bar_drag_never_shows_grey_and_clicks_select() {
     let name = ibis_doc_model::cell_name(column, row);
     s.enter("grey", "enter");
     assert_eq!(s.value(&name), CellValue::Text("grey".into()));
+}
+
+/// XLSX-SHEET-029 (GitHub issue #13): a cell formatted as Text keeps a date
+/// (or a formula) typed into it as the text typed, as Excel does.
+fn sheet029_text_format_keeps_typed_date_as_text() {
+    let mut s = new_sheet();
+    s.click_cell("A1");
+    s.update(|e, _, cx| e.format_cells(ibis_doc_model::StyleChange::NumberFormat("@".into()), cx));
+    for (text, shown) in [("2026-10-18", "2026-10-18"), ("2026/10/18", "2026/10/18"), ("=1+1", "=1+1"), ("12", "12")] {
+        s.click_cell("A1");
+        s.enter(text, "enter");
+        assert_eq!(s.value("A1"), CellValue::Text(text.into()), "{text}");
+        assert_eq!(s.shown("A1"), shown);
+    }
+    // General cells are unchanged.
+    s.click_cell("B1");
+    s.enter("2026/10/18", "enter");
+    assert!(matches!(s.value("B1"), CellValue::Number(_)));
+}
+
+/// XLSX-SHEET-030 (GitHub issue #11): dragging the selection's border moves
+/// its cells (one Undo step), and with Option copies them, without touching
+/// the clipboard.
+fn sheet030_drag_border_moves_or_copies() {
+    let mut s = new_sheet();
+    s.click_cell("B2");
+    s.enter("hello", "enter");
+    s.click_cell("C2");
+    s.enter("=B2&\"!\"", "enter");
+    s.update(|_, _, cx| cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("keep".to_string())));
+    let border_bottom = |s: &mut Scenario, cell: &str| {
+        let (c, r) = parse(cell);
+        let a = s.with(move |e, _| e.cell_center(c, r)).expect("on screen");
+        let k = s.with(move |e, _| e.cell_corner(c, r)).expect("on screen");
+        (f32::from(a.x), f32::from(k.y) - 1.0)
+    };
+    // Move B2 down to B5.
+    s.click_cell("B2");
+    let from = border_bottom(&mut s, "B2");
+    let to = s.with(|e, _| e.cell_center(1, 4)).expect("on screen");
+    s.drag(from, (f32::from(to.x), f32::from(to.y)));
+    assert!(s.value("B2").is_empty());
+    assert_eq!(s.value("B5"), CellValue::Text("hello".into()));
+    // The formula that referred to it follows.
+    assert_eq!(s.formula("C2"), Some("B5&\"!\"".into()));
+    assert_eq!(s.selected(), "B5");
+    s.key("cmd-z");
+    assert_eq!(s.value("B2"), CellValue::Text("hello".into()));
+    assert!(s.value("B5").is_empty());
+    // Option: a copy to B5, B2 stays, the clipboard is as it was.
+    s.click_cell("B2");
+    let from = border_bottom(&mut s, "B2");
+    s.drag_with(from, (f32::from(to.x), f32::from(to.y)), gpui_kit::Modifiers { alt: true, ..Default::default() });
+    assert_eq!(s.value("B2"), CellValue::Text("hello".into()));
+    assert_eq!(s.value("B5"), CellValue::Text("hello".into()));
+    let clip = s.with(|_, cx| cx.read_from_clipboard().and_then(|c| c.text()));
+    assert_eq!(clip.as_deref(), Some("keep"));
+}
+
+/// XLSX-SHEET-031 (GitHub issue #12): a validation list whose source is a
+/// range on another sheet (and a name) offers that sheet's cells, and
+/// accepts only them.
+fn sheet031_validation_list_from_another_sheet() {
+    let mut s = new_sheet();
+    let other = s.with(|e, _| e.slide().name.clone()).unwrap();
+    for (cell, text) in [("A1", "red"), ("A2", "green"), ("A3", "blue")] {
+        s.click_cell(cell);
+        s.enter(text, "enter");
+    }
+    s.menu("xlsx.insert-sheet");
+    s.click_cell("C1");
+    s.update(move |e, window, cx| {
+        e.open_validation_panel(window, cx);
+        if let Some(p) = e.wb_mut().validation.as_mut() {
+            p.kind = "list";
+            p.items.update(cx, |i, cx| i.set_value(format!("='{other}'!$A$1:$A$3"), window, cx));
+        }
+        e.apply_validation_panel(cx);
+    });
+    let items = s.with(|e, _| e.validation_list_items_in_book(&e.current_rule().unwrap()));
+    assert_eq!(items, vec!["red".to_string(), "green".to_string(), "blue".to_string()]);
+    assert!(s.with(|e, _| e.check_entry(0, 2, &CellValue::Text("green".into())).is_ok()));
+    assert!(s.with(|e, _| e.check_entry(0, 2, &CellValue::Text("pink".into())).is_err()));
+}
+
+/// XLSX-SHEET-032 (GitHub issues #11 and #13, the rest): a range let go by
+/// its border over cells with data asks first (OK replaces, キャンセル
+/// leaves everything); text pasted into a Text (@) cell stays text.
+fn sheet032_overwrite_question_and_text_paste() {
+    let mut s = new_sheet();
+    s.click_cell("B2");
+    s.enter("src", "enter");
+    s.click_cell("B5");
+    s.enter("old", "enter");
+    let drag = |s: &mut Scenario| {
+        s.click_cell("B2");
+        let (c, r) = parse("B2");
+        let a = s.with(move |e, _| e.cell_center(c, r)).expect("on screen");
+        let k = s.with(move |e, _| e.cell_corner(c, r)).expect("on screen");
+        let to = s.with(|e, _| e.cell_center(1, 4)).expect("on screen");
+        s.drag((f32::from(a.x), f32::from(k.y) - 1.0), (f32::from(to.x), f32::from(to.y)));
+    };
+    let answer = |s: &mut Scenario, ok: bool| {
+        assert!(s.with(|e, _| e.sheet_state().is_some_and(|st| st.move_overwrite.is_some())), "the question is open");
+        s.update(move |e, _, cx| e.answer_move_overwrite(ok, cx));
+    };
+    // Cancel: nothing changes.
+    drag(&mut s);
+    assert_eq!(s.value("B2"), CellValue::Text("src".into()));
+    assert_eq!(s.value("B5"), CellValue::Text("old".into()));
+    answer(&mut s, false);
+    assert_eq!(s.value("B2"), CellValue::Text("src".into()));
+    assert_eq!(s.value("B5"), CellValue::Text("old".into()));
+    // OK: replaced.
+    drag(&mut s);
+    answer(&mut s, true);
+    assert!(s.value("B2").is_empty());
+    assert_eq!(s.value("B5"), CellValue::Text("src".into()));
+    // Paste of text into a Text cell.
+    s.click_cell("D1");
+    s.update(|e, _, cx| e.format_cells(ibis_doc_model::StyleChange::NumberFormat("@".into()), cx));
+    s.update(|_, _, cx| cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("2026-10-18\t2026-10-18".to_string())));
+    s.click_cell("D1");
+    s.key("cmd-v");
+    assert_eq!(s.value("D1"), CellValue::Text("2026-10-18".into()));
+    assert!(matches!(s.value("E1"), CellValue::Number(_)));
 }

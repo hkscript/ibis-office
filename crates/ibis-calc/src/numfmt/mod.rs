@@ -911,8 +911,10 @@ fn fraction_section(value: f64, section: &Section, l: &Layout, out: &mut Formatt
         whole += 1.0;
         num = 0;
     }
-    // Excel shows ### for a numerator it cannot hold.
-    if num > i32::MAX as u64 || (!has_whole && x >= 2_147_483_648.0) {
+    // Excel shows ### for a numerator it cannot hold: over 32767 with no whole part and one numerator place beside a fixed
+    // denominator (TEXT(45000.75,"?/4") is #VALUE!, where "?/?" goes on to 1999999/2 for 999999.5).
+    let fixed_den = matches!(f.denominator, Denominator::Fixed(_));
+    if num > i32::MAX as u64 || (!has_whole && x >= 2_147_483_648.0) || (!has_whole && fixed_den && num > 32767 && f.numerator.len() == 1) {
         out.overflow = true;
         return String::new();
     }
@@ -1434,6 +1436,9 @@ mod tests {
         assert_eq!(format(&CellValue::Number(0.5), "* # ?/?", false).text, " 1/2");
         assert_eq!(f(999999.5, "?/?"), "1999999/2");
         assert_eq!(f(12345678.0, "?/?"), "12345678/1");
+        // A fixed denominator with one numerator place and no whole part holds no more than 32767 (### in a cell, #VALUE! in TEXT).
+        assert!(format(&CellValue::Number(45000.75), "?/4", false).overflow);
+        assert_eq!(f(8191.75, "?/4"), "32767/4");
     }
 
     #[test]

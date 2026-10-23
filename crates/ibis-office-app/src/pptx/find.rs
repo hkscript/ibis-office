@@ -3,10 +3,11 @@
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 //! Pptx text search and replacement, including table cells and run boundaries.
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::{Command, Presentation, ShapeId, ShapeKind, SlideId, TextBody};
 use crate::pptx::SlidePopup;
 use crate::shell::chrome::{MenuEntry, MenuItem, SidebarPanel};
@@ -319,7 +320,7 @@ impl SlideEditor {
                     e.open_find_panel_context_menu(None, event.position, w, cx);
                 }),
             )
-            .child(Input::new(&query).small())
+            .child(crate::shell::chrome::clearable_text_field(&query))
             .child(Button::new("pptx-find-case").small().ghost().label(if match_case { crate::shell::i18n::text("pptx.find.match-case") } else { crate::shell::i18n::text("_shell.match-case") }).on_click(cx.listener(|e, _, _, cx| e.toggle_pptx_find_option(true, cx))))
             .child(Button::new("pptx-find-word").small().ghost().label(if whole_word { crate::shell::i18n::text("pptx.find.whole-words") } else { crate::shell::i18n::text("pptx.chrome.find-whole-words-only") }).on_click(cx.listener(|e, _, _, cx| e.toggle_pptx_find_option(false, cx))))
             .child(h_flex().gap_1()
@@ -327,7 +328,7 @@ impl SlideEditor {
                 .child(Button::new("pptx-find-next").small().ghost().label(crate::shell::i18n::text("_shell.next")).on_click(cx.listener(|e, _, w, cx| e.pptx_find_next(true, w, cx))))
                 .child(div().text_size(px(12.)).child(status)))
             .children((!hits.is_empty()).then_some(match_list))
-            .child(Input::new(&text).small())
+            .child(crate::shell::chrome::clearable_text_field(&text))
             .child(h_flex().gap_1()
                 .child(Button::new("pptx-replace-one").small().label(crate::shell::i18n::text("_shell.replace")).on_click(cx.listener(|e, _, w, cx| e.pptx_replace(false, w, cx))))
                 .child(Button::new("pptx-replace-all").small().label(crate::shell::i18n::text("_shell.replace-all")).on_click(cx.listener(|e, _, w, cx| e.pptx_replace(true, w, cx)))))

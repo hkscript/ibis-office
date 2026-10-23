@@ -1314,7 +1314,7 @@ impl SlideEditor {
                                     .into_any_element(),
                             )),
                     )
-                    .child(mark("xlsx.sparkline.data-range", Input::new(&p.data_range_input).small().into_any_element()))
+                    .child(mark("xlsx.sparkline.data-range", Input::new(&p.data_range_input).small().cleanable(true).into_any_element()))
             )
             .child(
                 v_flex()
@@ -1334,7 +1334,7 @@ impl SlideEditor {
                                     .into_any_element(),
                             )),
                     )
-                    .child(mark("xlsx.sparkline.location-range", Input::new(&p.location_range_input).small().into_any_element()))
+                    .child(mark("xlsx.sparkline.location-range", Input::new(&p.location_range_input).small().cleanable(true).into_any_element()))
             )
             .child(
                 v_flex()
@@ -1400,7 +1400,7 @@ impl SlideEditor {
                                         .into_any_element(),
                                 )),
                         )
-                        .child(mark("xlsx.sparkline.date-range", Input::new(&p.date_range_input).small().into_any_element()))
+                        .child(mark("xlsx.sparkline.date-range", Input::new(&p.date_range_input).small().cleanable(true).into_any_element()))
                 )
             })
             .child(
@@ -1449,7 +1449,7 @@ impl SlideEditor {
                             )),
                     )
                     .when(min_axis_kind == 2, |b| {
-                        b.child(mark("xlsx.sparkline.min-value", Input::new(&min_custom_input).small().into_any_element()))
+                        b.child(mark("xlsx.sparkline.min-value", Input::new(&min_custom_input).small().cleanable(true).into_any_element()))
                     }),
             )
             .child(
@@ -1498,7 +1498,7 @@ impl SlideEditor {
                             )),
                     )
                     .when(max_axis_kind == 2, |b| {
-                        b.child(mark("xlsx.sparkline.max-value", Input::new(&max_custom_input).small().into_any_element()))
+                        b.child(mark("xlsx.sparkline.max-value", Input::new(&max_custom_input).small().cleanable(true).into_any_element()))
                     }),
             )
             .child(

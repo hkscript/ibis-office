@@ -10,6 +10,7 @@
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::{Command, EmuRect, Presentation, Shape, ShapeId, ShapeKind, Slide, SlideId};
 
 use crate::shell::chrome::SidebarPanel;

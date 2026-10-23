@@ -13,6 +13,7 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::{CharacterFormat, Command, EmuPoint, ShapeId, ShapeKind, SlideId, SlideLink};
 
 use crate::pptx::interaction;
@@ -310,6 +311,188 @@ impl SlideEditor {
         Some((shape, link))
     }
 
+    pub(crate) fn link_panel_set_mode(&mut self, web: bool, cx: &mut Context<Self>) {
+        if let Some(p) = self.pptx_mut().and_then(|s| s.link_panel.as_mut()) {
+            p.web = web;
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn link_panel_select_place(&mut self, place: SlideLink, cx: &mut Context<Self>) {
+        if let Some(p) = self.pptx_mut().and_then(|s| s.link_panel.as_mut()) {
+            p.web = false;
+            p.place = Some(place);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn link_panel_copy_address(&mut self, cx: &mut Context<Self>) {
+        let Some(link) = self.slide_chosen_link(cx) else { return };
+        let text_to_copy = match link {
+            SlideLink::Url(u) => u,
+            SlideLink::Slide(id) => {
+                let idx = self.presentation().slides.iter().position(|s| s.id == id).unwrap_or(0);
+                format!("{} {}", crate::shell::i18n::text("_shell.slide"), idx + 1)
+            }
+            SlideLink::FirstSlide => crate::shell::i18n::text("pptx.links.first-slide").to_string(),
+            SlideLink::LastSlide => crate::shell::i18n::text("pptx.links.last-slide").to_string(),
+            SlideLink::NextSlide => crate::shell::i18n::text("pptx.links.next-slide").to_string(),
+            SlideLink::PreviousSlide => crate::shell::i18n::text("pptx.links.previous-slide").to_string(),
+            SlideLink::LastSlideViewed => crate::shell::i18n::text("pptx.links.last-slide-viewed").to_string(),
+            SlideLink::EndShow => crate::shell::i18n::text("pptx.links.end-show").to_string(),
+        };
+        if !text_to_copy.is_empty() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text_to_copy));
+        }
+    }
+
+    pub(crate) fn link_panel_follow(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(link) = self.slide_chosen_link(cx) {
+            self.slide_follow_link(&link, window, cx);
+        }
+    }
+
+    pub(crate) fn link_panel_context_menu_entries(&self, cx: &App) -> Vec<crate::shell::chrome::MenuEntry> {
+        use crate::shell::chrome::{MenuEntry, MenuItem, Submenu};
+        let Some(p) = self.pptx().and_then(|s| s.link_panel.as_ref()) else {
+            return Vec::new();
+        };
+        let t = crate::shell::i18n::text;
+        let web = p.web;
+        let place = p.place.clone();
+        let has_chosen = self.slide_chosen_link(cx).is_some();
+
+        let mut place_items: Vec<MenuEntry> = vec![
+            MenuItem::tr("pptx.links.first-slide")
+                .checked(place == Some(SlideLink::FirstSlide))
+                .on(|this, _, cx| this.link_panel_select_place(SlideLink::FirstSlide, cx))
+                .into(),
+            MenuItem::tr("pptx.links.last-slide")
+                .checked(place == Some(SlideLink::LastSlide))
+                .on(|this, _, cx| this.link_panel_select_place(SlideLink::LastSlide, cx))
+                .into(),
+            MenuItem::tr("pptx.links.next-slide")
+                .checked(place == Some(SlideLink::NextSlide))
+                .on(|this, _, cx| this.link_panel_select_place(SlideLink::NextSlide, cx))
+                .into(),
+            MenuItem::tr("pptx.links.previous-slide")
+                .checked(place == Some(SlideLink::PreviousSlide))
+                .on(|this, _, cx| this.link_panel_select_place(SlideLink::PreviousSlide, cx))
+                .into(),
+            MenuItem::tr("pptx.links.last-slide-viewed")
+                .checked(place == Some(SlideLink::LastSlideViewed))
+                .on(|this, _, cx| this.link_panel_select_place(SlideLink::LastSlideViewed, cx))
+                .into(),
+            MenuItem::tr("pptx.links.end-show")
+                .checked(place == Some(SlideLink::EndShow))
+                .on(|this, _, cx| this.link_panel_select_place(SlideLink::EndShow, cx))
+                .into(),
+            MenuEntry::Separator,
+        ];
+
+        for (i, s) in self.presentation().slides.iter().enumerate() {
+            let sid = s.id;
+            let title = s
+                .shapes
+                .iter()
+                .find(|sh| s.placeholders.get(&sh.id).is_some_and(|ph| matches!(ph.placeholder.normalized(), "title" | "ctrTitle")))
+                .and_then(|sh| sh.text_body())
+                .map(|b| b.text().replace('\n', " "))
+                .unwrap_or_default();
+            let label = format!("{} {}. {title}", t("_shell.slide"), i + 1);
+            let item_id = match i {
+                0 => "pptx.links.slide.1",
+                1 => "pptx.links.slide.2",
+                2 => "pptx.links.slide.3",
+                3 => "pptx.links.slide.4",
+                4 => "pptx.links.slide.5",
+                5 => "pptx.links.slide.6",
+                6 => "pptx.links.slide.7",
+                7 => "pptx.links.slide.8",
+                8 => "pptx.links.slide.9",
+                9 => "pptx.links.slide.10",
+                _ => "pptx.links.slide",
+            };
+            place_items.push(
+                MenuItem::new(item_id, label)
+                    .checked(place == Some(SlideLink::Slide(sid)))
+                    .on(move |this, _, cx| this.link_panel_select_place(SlideLink::Slide(sid), cx))
+                    .into(),
+            );
+        }
+
+        vec![
+            MenuItem::tr("_shell.apply")
+                .icon("check")
+                .on(|this, w, cx| {
+                    if let Some(link) = this.slide_chosen_link(cx) {
+                        this.slide_apply_link(Some(link), w, cx);
+                    }
+                })
+                .into(),
+            MenuItem::tr("_shell.view")
+                .icon("open_in_new")
+                .disabled(!has_chosen)
+                .on(|this, w, cx| this.link_panel_follow(w, cx))
+                .into(),
+            MenuItem::tr("edit.copy")
+                .icon("content_copy")
+                .disabled(!has_chosen)
+                .on(|this, _, cx| this.link_panel_copy_address(cx))
+                .into(),
+            MenuItem::tr("pptx.links.remove-link")
+                .icon("link_off")
+                .on(|this, w, cx| this.slide_apply_link(None, w, cx))
+                .into(),
+            MenuEntry::Separator,
+            MenuItem::tr("pptx.links.web-page-file")
+                .checked(web)
+                .on(|this, _, cx| this.link_panel_set_mode(true, cx))
+                .into(),
+            MenuItem::tr("pptx.links.place-document")
+                .checked(!web)
+                .on(|this, _, cx| this.link_panel_set_mode(false, cx))
+                .into(),
+            Submenu::new("pptx.links.place-submenu", "slideshow", t("pptx.links.place-document"), place_items).into(),
+            MenuEntry::Separator,
+            MenuItem::tr("_shell.close")
+                .icon("close")
+                .on(|this, w, cx| this.slide_close_link_panel(w, cx))
+                .into(),
+        ]
+    }
+
+    pub(crate) fn open_link_panel_context_menu(
+        &mut self,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.end_text_edit(window, cx);
+        let items = self.link_panel_context_menu_entries(cx);
+        if items.is_empty() {
+            return;
+        }
+        self.focus_handle.focus(window, cx);
+        let entries = std::rc::Rc::new(items);
+        let editor = cx.entity().downgrade();
+        let menu = gpui_kit::component::menu::PopupMenu::build(window, cx, move |menu, window, cx| {
+            crate::shell::chrome::fill_menu(menu.min_w(px(220.)), &entries, &editor, window, cx)
+        });
+        let dismiss = cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, window, cx| {
+            if let Some(s) = this.pptx_mut() {
+                s.slide_popup = None;
+            }
+            cx.notify();
+            this.focus_handle.focus(window, cx);
+        });
+        menu.read(cx).focus_handle(cx).focus(window, cx);
+        if let Some(s) = self.pptx_mut() {
+            s.slide_popup = Some(super::SlidePopup { menu, position, _dismiss: dismiss });
+        }
+        cx.notify();
+    }
+
     pub(crate) fn slide_link_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
         let p = self.pptx()?.link_panel.as_ref()?;
         let t = crate::shell::i18n::text;
@@ -317,15 +500,21 @@ impl SlideEditor {
         let place = p.place.clone();
         let tab = |id: &'static str, label: &'static str, on: bool, web: bool| {
             Button::new(id).small().label(t(label)).when(!on, |b| b.ghost()).on_click(cx.listener(move |e, _, _, cx| {
-                if let Some(p) = e.pptx_mut().and_then(|s| s.link_panel.as_mut()) {
-                    p.web = web;
-                }
-                cx.notify();
+                e.link_panel_set_mode(web, cx);
             }))
         };
-        let mut body = v_flex().gap_2().px(px(18.)).py(px(8.)).child(h_flex().gap_1().child(tab("link-web", "pptx.links.web-page-file", web, true)).child(tab("link-place", "pptx.links.place-document", !web, false)));
+        let mut body = v_flex()
+            .id("pptx-link-panel")
+            .gap_2()
+            .px(px(18.))
+            .py(px(8.))
+            .on_mouse_down(MouseButton::Right, cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                cx.stop_propagation();
+                this.open_link_panel_context_menu(event.position, window, cx);
+            }))
+            .child(h_flex().gap_1().child(tab("link-web", "pptx.links.web-page-file", web, true)).child(tab("link-place", "pptx.links.place-document", !web, false)));
         if web {
-            body = body.child(div().text_sm().child(t("pptx.links.address"))).child(Input::new(&p.url).small());
+            body = body.child(div().text_sm().child(t("pptx.links.address"))).child(Input::new(&p.url).small().cleanable(true));
         } else {
             let mut places: Vec<(SlideLink, String)> = vec![
                 (SlideLink::FirstSlide, t("pptx.links.first-slide").to_string()),
@@ -341,6 +530,8 @@ impl SlideEditor {
             }
             let list = v_flex().gap_0p5().children(places.into_iter().enumerate().map(|(i, (link, label))| {
                 let on = place.as_ref() == Some(&link);
+                let link_click = link.clone();
+                let link_right = link.clone();
                 div()
                     .id(("link-place-item", i))
                     .px_1()
@@ -351,16 +542,18 @@ impl SlideEditor {
                     .cursor_pointer()
                     .when(on, |d| d.bg(rgb(0xd3e3fd)))
                     .on_click(cx.listener(move |e, _, _, cx| {
-                        if let Some(p) = e.pptx_mut().and_then(|s| s.link_panel.as_mut()) {
-                            p.place = Some(link.clone());
-                        }
-                        cx.notify();
+                        e.link_panel_select_place(link_click.clone(), cx);
+                    }))
+                    .on_mouse_down(MouseButton::Right, cx.listener(move |e, event: &MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        e.link_panel_select_place(link_right.clone(), cx);
+                        e.open_link_panel_context_menu(event.position, window, cx);
                     }))
                     .child(label)
             }));
             body = body.child(list);
         }
-        body = body.child(div().text_sm().child(t("pptx.links.screentip"))).child(Input::new(&p.tooltip).small());
+        body = body.child(div().text_sm().child(t("pptx.links.screentip"))).child(Input::new(&p.tooltip).small().cleanable(true));
         body = body.child(
             h_flex()
                 .gap_1()

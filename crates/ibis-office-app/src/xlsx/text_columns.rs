@@ -401,7 +401,7 @@ impl SlideEditor {
                     .child(toggle("text-columns-fixed", check(p.fixed, "fix.text-columns.fixed-width"), |p| p.fixed = true)),
             );
         if p.fixed {
-            body = body.child(crate::shell::i18n::text("fix.text-columns.break-positions-characters-start")).child(mark("breaks", Input::new(&p.breaks).small().into_any_element()));
+            body = body.child(crate::shell::i18n::text("fix.text-columns.break-positions-characters-start")).child(mark("breaks", Input::new(&p.breaks).small().cleanable(true).into_any_element()));
         } else {
             body = body
                 .child(crate::shell::i18n::text("fix.text-columns.delimiters"))
@@ -414,7 +414,7 @@ impl SlideEditor {
                         .child(toggle("text-columns-comma", check(p.comma, "fix.text-columns.comma"), |p| p.comma = !p.comma))
                         .child(toggle("text-columns-space", check(p.space, "fix.text-columns.space"), |p| p.space = !p.space)),
                 )
-                .child(mark("other", Input::new(&p.other).small().into_any_element()))
+                .child(mark("other", Input::new(&p.other).small().cleanable(true).into_any_element()))
                 .child(
                     h_flex()
                         .gap_1()
@@ -477,7 +477,7 @@ impl SlideEditor {
                     .gap_2()
                     .items_center()
                     .child(crate::shell::i18n::text("fix.text-columns.destination"))
-                    .child(div().flex_1().child(mark("destination", Input::new(&p.destination).small().into_any_element()))),
+                    .child(div().flex_1().child(mark("destination", Input::new(&p.destination).small().cleanable(true).into_any_element()))),
             )
             .child(crate::shell::i18n::text("fix.text-columns.preview"));
         for record in &preview_rows {

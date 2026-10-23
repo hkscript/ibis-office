@@ -48,13 +48,7 @@ pub(crate) struct ChartTemplatePanel {
 
 /// Returns the default directory where user chart templates are stored.
 pub(crate) fn default_chart_templates_dir() -> PathBuf {
-    let env = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
-    #[cfg(target_os = "macos")]
-    let base = env("HOME").map(|home| home.join("Library/Application Support"));
-    #[cfg(target_os = "windows")]
-    let base = env("APPDATA");
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let base = env("XDG_DATA_HOME").or_else(|| env("HOME").map(|home| home.join(".local/share")));
+    let base = crate::shell::app_data::base();
     base.unwrap_or_else(|| PathBuf::from(".")).join("ibisOffice").join("ChartTemplates")
 }
 
@@ -354,7 +348,7 @@ impl SlideEditor {
 
         match mode {
             ChartTemplateMode::Save => {
-                let name_input = Input::new(&p.template_name).small();
+                let name_input = Input::new(&p.template_name).small().cleanable(true);
                 content = content
                     .child(div().font_weight(FontWeight::SEMIBOLD).child(text("fix.chart-template.template-name")))
                     .child(mark("chart-template-name-input", name_input.into_any_element()));

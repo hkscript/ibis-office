@@ -45,6 +45,8 @@ impl Area {
 enum Mark {
     Fill(Vec<(f32, f32)>, Background),
     Stroke(Vec<(f32, f32)>, f32, Hsla),
+    /// The dashes of a dashed line, each a short line, drawn as one stroked path (one object in a PDF).
+    Dashes(Vec<Vec<(f32, f32)>>, f32, Hsla),
     /// The marks after this are cut to this rectangle (x, y, w, h), or not
     /// cut (`None`): the series are drawn inside the plot area, as Office
     /// cuts a line past the axis's maximum.
@@ -66,6 +68,207 @@ struct Label {
     text: String,
     style: ChartText,
     anchor: Anchor,
+    fill: Fill,
+    border: Option<Stroke>,
+}
+
+impl Label {
+    fn plain(x: f32, y: f32, text: String, style: ChartText, anchor: Anchor) -> Self {
+        Self { x, y, text, style, anchor, fill: Fill::None, border: None }
+    }
+}
+
+/// The soft shadow of chart style 10: the second effect style of Office's default theme (theme1.xml effectStyleLst, as in the file of GitHub #22: outerShdw blurRad 40000, dist 23000, dir 5400000, black at alpha 35000; the blur radius is taken as 2 sigma)
+/// under a rectangle, as layers of one translucent fill each, the widest first (`scale`: pixels per EMU).
+fn soft_shadow(marks: &mut Vec<Mark>, corners: &[(f32, f32)], scale: f32) {
+    const LAYERS: usize = 6;
+    let (alpha, sigma) = (0.35f32, 20_000.0 * scale);
+    let (dx, dy) = (0.0, 22_860.0 * scale);
+    let (x0, x1) = corners.iter().fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.0), b.max(p.0)));
+    let (y0, y1) = corners.iter().fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.1), b.max(p.1)));
+    // The shadow's opacity at a distance `d` outside the edge: a Gaussian edge's tail.
+    let tail = |d: f32| alpha * 0.5 * (1.0 - erf_approx(d / (sigma * std::f32::consts::SQRT_2)));
+    let step = 2.0 * sigma / LAYERS as f32;
+    let mut covered = 0.0f32;
+    for k in (0..LAYERS).rev() {
+        // Layer k reaches (k + 1) steps out and lies over the wider ones.
+        let want = tail((k as f32 + 0.5) * step);
+        let a = ((want - covered) / (1.0 - covered)).clamp(0.0, 1.0);
+        covered = want.max(covered);
+        let e = (k + 1) as f32 * step;
+        let rect = vec![(x0 - e + dx, y0 - e + dy), (x1 + e + dx, y0 - e + dy), (x1 + e + dx, y1 + e + dy), (x0 - e + dx, y1 + e + dy)];
+        marks.push(Mark::Fill(rect, Hsla { h: 0.0, s: 0.0, l: 0.0, a }.into()));
+    }
+}
+
+/// The error function (Abramowitz and Stegun 7.1.26).
+fn erf_approx(x: f32) -> f32 {
+    let t = 1.0 / (1.0 + 0.327_591_1 * x.abs());
+    let y = 1.0 - (((((1.061_405_4 * t - 1.453_152_1) * t) + 1.421_413_7) * t - 0.284_496_72) * t + 0.254_829_6) * t * (-x * x).exp();
+    if x >= 0.0 { y } else { -y }
+}
+
+/// The key of a line series in a legend: its line across `key_w`, whole or, of a dashed series (`a:prstDash`), in dashes.
+fn key_line(stroke: Option<&ibis_doc_model::Stroke>, key_w: f32, size: f32, thickness: f32, color: Option<Hsla>) -> Vec<Div> {
+    let pattern = stroke.map_or(&[][..], |s| s.dash.pattern());
+    let top = size * 0.5 - thickness / 2.0;
+    let bar = |left: f32, width: f32| div().absolute().left(px(left)).w(px(width)).top(px(top)).h(px(thickness)).when_some(color, |d, c| d.bg(c));
+    if pattern.is_empty() {
+        return vec![div().absolute().left_0().w_full().top(px(top)).h(px(thickness)).when_some(color, |d, c| d.bg(c))];
+    }
+    let mut out = Vec::new();
+    let (mut at, mut i) = (0.0f32, 0usize);
+    while at < key_w && out.len() < 64 {
+        let length = (pattern[i % pattern.len()] * thickness).max(0.5);
+        if i % 2 == 0 {
+            out.push(bar(at, length.min(key_w - at)));
+        }
+        at += length;
+        i += 1;
+    }
+    out
+}
+
+/// A line as marks: one mark, or, of a dashed stroke (`a:prstDash`), all its dashes as one (their lengths in line
+/// widths, as ECMA-376 §20.1.10.48; a line thinner than a pixel dashes as one of a pixel).
+fn push_stroke(marks: &mut Vec<Mark>, points: Vec<(f32, f32)>, width: f32, stroke: &ibis_doc_model::Stroke) {
+    if stroke.dash == ibis_doc_model::LineDash::Solid || points.len() < 2 {
+        marks.push(Mark::Stroke(points, width, hsla(stroke.color)));
+        return;
+    }
+    let along: Vec<Point<Pixels>> = points.iter().map(|(x, y)| point(px(*x), px(*y))).collect();
+    let pieces: Vec<Vec<(f32, f32)>> = crate::render::shape_view::dash_pieces(&along, false, stroke, width.max(1.0))
+        .into_iter()
+        .map(|piece| piece.iter().map(|p| (f32::from(p.x), f32::from(p.y))).collect())
+        .collect();
+    marks.push(Mark::Dashes(pieces, width, hsla(stroke.color)));
+}
+
+/// The height of a row of the outer levels of a category axis of several levels: the labels' line, with the room
+/// the lines that part the categories need above and below it.
+fn level_row_height(axis: &Axis, px_per_point: f32) -> f32 {
+    text_height(&axis.text, px_per_point) + 8.0 * px_per_point
+}
+
+/// Wraps a horizontal category label to `max_width`, breaking after hyphens or spaces first.
+fn wrap_category_label(text: &str, max_width: f32, style: &ChartText, px_per_point: f32) -> String {
+    if max_width <= 0.0 || text_width(text, style, px_per_point) <= max_width {
+        return text.to_string();
+    }
+    let mut tokens: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for ch in text.chars() {
+        cur.push(ch);
+        if ch == '-' || ch == ' ' {
+            tokens.push(std::mem::take(&mut cur));
+        }
+    }
+    if !cur.is_empty() {
+        tokens.push(cur);
+    }
+    if tokens.len() <= 1 {
+        return text.to_string();
+    }
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for tok in tokens {
+        let candidate = format!("{line}{tok}");
+        if !line.is_empty() && text_width(&candidate, style, px_per_point) > max_width {
+            lines.push(std::mem::take(&mut line));
+            line = tok;
+        } else {
+            line = candidate;
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines.join("\n")
+}
+
+/// Shortens a horizontal-bar category label with `"…"` when it is wider than `max_width`.
+fn ellipsize_category_label(text: &str, max_width: f32, style: &ChartText, px_per_point: f32, res: &Resources) -> String {
+    let size = style.size as f32 / 100.0 * px_per_point;
+    let font = chart_font(style, text, res);
+    if max_width <= 0.0 || res.text_width(text, &font, size) <= max_width {
+        return text.to_string();
+    }
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.len() > 1 {
+        for count in (1..words.len()).rev() {
+            let candidate = format!("{}…", words[..count].join(" "));
+            if res.text_width(&candidate, &font, size) <= max_width {
+                return candidate;
+            }
+        }
+    }
+    let chars: Vec<char> = text.chars().collect();
+    for count in (1..chars.len()).rev() {
+        let prefix: String = chars[..count].iter().collect();
+        let candidate = format!("{}…", prefix.trim_end());
+        if res.text_width(&candidate, &font, size) <= max_width {
+            return candidate;
+        }
+    }
+    "…".to_string()
+}
+
+/// Wraps `text` onto lines of at most `max_width` using measured glyph widths.
+fn wrap_text_to_width(text: &str, max_width: f32, style: &ChartText, px_per_point: f32, res: &Resources) -> String {
+    let size = style.size as f32 / 100.0 * px_per_point;
+    let font = chart_font(style, text, res);
+    if max_width <= 0.0 {
+        return text.to_string();
+    }
+    let mut out_lines: Vec<String> = Vec::new();
+    for raw_line in text.lines() {
+        if res.text_width(raw_line, &font, size) <= max_width {
+            out_lines.push(raw_line.to_string());
+            continue;
+        }
+        let mut tokens: Vec<String> = Vec::new();
+        let mut cur = String::new();
+        for ch in raw_line.chars() {
+            cur.push(ch);
+            if ch == ' ' || ch == '-' {
+                tokens.push(std::mem::take(&mut cur));
+            }
+        }
+        if !cur.is_empty() {
+            tokens.push(cur);
+        }
+        let mut line = String::new();
+        for tok in tokens {
+            let candidate = format!("{line}{tok}");
+            if !line.is_empty() && res.text_width(candidate.trim_end(), &font, size) > max_width {
+                out_lines.push(line.trim_end().to_string());
+                line = tok.trim_start().to_string();
+            } else {
+                line = candidate;
+            }
+        }
+        if !line.trim_end().is_empty() {
+            out_lines.push(line.trim_end().to_string());
+        }
+    }
+    if out_lines.is_empty() { text.to_string() } else { out_lines.join("\n") }
+}
+
+fn wrapped_title_text(title: &ibis_doc_model::ChartTitle, w: f32, px_per_point: f32, res: &Resources) -> String {
+    let max_w = match title.at {
+        Some((fx, _)) => w - fx as f32 / 100_000.0 * w - 6.0 * px_per_point,
+        None => w - 2.0 * CHART_PADDING_PT * px_per_point,
+    };
+    wrap_text_to_width(&title.text, max_w.max(w * 0.2), &title.style, px_per_point, res)
+}
+
+fn data_table_row_height(chart: &Chart, px_per_point: f32) -> f32 {
+    let cat_size = chart
+        .axes
+        .iter()
+        .find(|a| a.kind == AxisKind::Category)
+        .map_or(9.0 * px_per_point, |a| a.text.size as f32 / 100.0 * px_per_point);
+    (cat_size * 1.35).max(13.0 * px_per_point)
 }
 
 /// `color` made darker (a 3-D chart's sides) by `factor` of its lightness.
@@ -137,14 +340,32 @@ impl Scale {
             let max = fixed_max.filter(|m| *m > min).unwrap_or_else(|| b.powf(high.max(min * b).log(b).ceil()));
             return Self { min, max, step: b, reversed: axis.is_some_and(|a| a.reversed), log_base: Some(b) };
         }
-        let low = fixed_min.unwrap_or(low.min(0.0));
+        let raw_low = low;
+        // Microsoft KB214075: when all values are positive and the span is less
+        // than 1/6 of the maximum (`low > high * 5 / 6`), the automatic axis
+        // minimum does not drop to zero.
+        let narrow_positive = fixed_min.is_none() && raw_low > 0.0 && high > raw_low && (high - raw_low) < high / 6.0;
+        let low = fixed_min.unwrap_or_else(|| if narrow_positive { raw_low } else { raw_low.min(0.0) });
         // Like Excel, leave 5% of the range free above the highest value.
         let high = fixed_max.unwrap_or(high + (high - low).abs() * 0.05).max(low);
+        // Values all zero (an empty template), with nothing fixed: Excel's axis goes 0 to 1 in 5 steps (0.2).
+        let all_zero = fixed_max.is_none() && high == 0.0 && low == 0.0;
+        let high = if all_zero { 1.0 } else { high };
         let range = if high > low { high - low } else { 1.0 };
+        let intervals = if all_zero { intervals.min(5.0) } else { intervals };
         let step = axis.and_then(|a| a.major_unit).map(|n| n.0).filter(|s| *s > 0.0).unwrap_or_else(|| nice_step(range / intervals));
         // Below zero, PowerPoint leaves a whole step under the lowest value
         // (measured against its PDF output: -35 and -50 both go to -100).
-        let min = fixed_min.unwrap_or_else(|| if low < 0.0 { ((low / step).floor() - 1.0) * step } else { (low / step).floor() * step });
+        let min = fixed_min.unwrap_or_else(|| {
+            if low < 0.0 {
+                ((low / step).floor() - 1.0) * step
+            } else if narrow_positive {
+                let floored = (low / step).floor() * step;
+                if low - floored < step * 0.5 { (floored - step).max(0.0) } else { floored }
+            } else {
+                (low / step).floor() * step
+            }
+        });
         let mut max = fixed_max.unwrap_or_else(|| (high / step).ceil() * step);
         if max <= min {
             max = min + step;
@@ -351,6 +572,9 @@ fn base_value_of(chart: &Chart, group: &ChartGroup, s: &Scale) -> f64 {
 }
 
 pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Resources) -> Div {
+    if frame.width <= 0 || frame.height <= 0 {
+        return div();
+    }
     let supported = chart.axes.iter().any(|a| a.kind == AxisKind::Series).then(|| {
         let mut copy = chart.clone();
         copy.axes.retain(|a| a.kind != AxisKind::Series);
@@ -380,10 +604,13 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
     let plot = side_axes_layout(chart, plot, w, px_per_point);
     let plot = slanted_labels_layout(chart, plot, h, px_per_point);
     let mut plot = plot;
-    if let Some(_) = &chart.data_table {
+    if chart.data_table.is_some() {
         let count = chart.groups.iter().flat_map(|g| &g.series).count().max(1);
-        let table_h = (count as f32 * 13.0 + 8.0) * px_per_point;
-        plot.h = (plot.h - table_h).max(20.0 * px_per_point);
+        let row_h = data_table_row_height(chart, px_per_point);
+        let max_bottom = h - CHART_PADDING_PT * px_per_point - (1 + count) as f32 * row_h;
+        if plot.bottom() > max_bottom {
+            plot.h = (max_bottom - plot.y).max(20.0 * px_per_point);
+        }
     }
 
     // A 3-D chart (right-angle axes, as Excel's defaults): the box's front plane is the plot area
@@ -409,7 +636,10 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
         let (l, r, t, b) = (plot.x, plot.right(), plot.y, plot.bottom());
         let floor = vec![(l, b), (r, b), (r + dx, b - dy), (l + dx, b - dy)];
         marks.push(Mark::Fill(floor.clone(), hsla(ibis_doc_model::Color::opaque(ibis_doc_model::Rgb(0xF2F2F2))).into()));
-        if let Some(bg) = background(&chart.plot_background) {
+        // (Walls with no fill of their own are Excel's grey.)
+        if let Some(bg) = background(&chart.plot_background).or_else(|| Some(hsla(ibis_doc_model::Color::opaque(ibis_doc_model::Rgb(0xC0C0C0))).into())) {
+            // The left wall in the same ground as the back wall.
+            marks.push(Mark::Fill(vec![(l, t), (l + dx, t - dy), (l + dx, b - dy), (l, b)], bg.clone()));
             marks.push(Mark::Fill(vec![(l + dx, t - dy), (r + dx, t - dy), (r + dx, b - dy), (l + dx, b - dy)], bg));
         }
         let mut floor_outline = floor;
@@ -422,16 +652,7 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
     }
 
     let horizontal = chart.groups.iter().any(|g| matches!(g.kind, ChartType::Bar { horizontal: true, .. }));
-    let categories = chart
-        .groups
-        .iter()
-        .flat_map(|g| &g.series)
-        // PowerPoint gives every cell of the value range a category, even
-        // when fewer category names are cached.
-        .map(|s| s.values.len().max(s.categories.len()))
-        .max()
-        .unwrap_or(0)
-        .max(1);
+    let categories = category_count(chart).max(1);
     let category_names: Vec<String> =
         chart.groups.iter().flat_map(|g| &g.series).map(|s| s.categories.clone()).find(|c| !c.is_empty()).unwrap_or_default();
     let category_axis = chart.axes.iter().find(|a| a.kind == AxisKind::Category && !a.deleted);
@@ -510,7 +731,7 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                 }
                 let p = value_px(s, v);
                 let line = if horizontal { vec![(p, plot.y), (p, plot.bottom())] } else { vec![(plot.x, p), (plot.right(), p)] };
-                marks.push(Mark::Stroke(line, width, hsla(grid.color)));
+                push_stroke(&mut marks, line, width, grid);
             }
         }
     }
@@ -527,11 +748,11 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                     } else {
                         (vec![(plot.x + dx, p - dy), (plot.right() + dx, p - dy)], vec![(plot.x, p), (plot.x + dx, p - dy)])
                     };
-                    marks.push(Mark::Stroke(back, width, hsla(grid.color)));
-                    marks.push(Mark::Stroke(side, width, hsla(grid.color)));
+                    push_stroke(&mut marks, back, width, grid);
+                    push_stroke(&mut marks, side, width, grid);
                 } else {
                     let line = if horizontal { vec![(p, plot.y), (p, plot.bottom())] } else { vec![(plot.x, p), (plot.right(), p)] };
-                    marks.push(Mark::Stroke(line, width, hsla(grid.color)));
+                    push_stroke(&mut marks, line, width, grid);
                 }
             }
             if !axis.deleted && axis.show_labels {
@@ -544,7 +765,8 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                 let gap = (4.0 + if axis.ticks_outside { 3.75 } else { 0.0 }) * px_per_point;
                 // PowerPoint leaves out tick labels that do not fit in the frame.
                 let width = number_width(&text) * axis.text.size as f32 / 100.0 * px_per_point;
-                let fits = match (horizontal, axis.side) {
+                let side = axis_label_side(axis, horizontal);
+                let fits = match (horizontal, side) {
                     (true, _) => true,
                     (false, Side::Right) => plot.right() + gap + width <= w,
                     (false, _) => plot.x - gap - width >= 0.0,
@@ -552,11 +774,11 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                 if !fits {
                     continue;
                 }
-                labels.push(match (horizontal, axis.side) {
-                    (true, Side::Top) => Label { x: p, y: plot.y - gap - text_height(&axis.text, px_per_point) / 2.0, text, style: axis.text.clone(), anchor: Anchor::Center },
-                    (true, _) => Label { x: p, y: plot.bottom() + gap + text_height(&axis.text, px_per_point) / 2.0, text, style: axis.text.clone(), anchor: Anchor::Center },
-                    (false, Side::Right) => Label { x: plot.right() + gap, y: p, text, style: axis.text.clone(), anchor: Anchor::Start },
-                    (false, _) => Label { x: plot.x - gap, y: p, text, style: axis.text.clone(), anchor: Anchor::End },
+                labels.push(match (horizontal, side) {
+                    (true, Side::Top) => Label::plain(p, plot.y - gap - text_height(&axis.text, px_per_point) / 2.0, text, axis.text.clone(), Anchor::Center),
+                    (true, _) => Label::plain(p, plot.bottom() + gap + text_height(&axis.text, px_per_point) / 2.0, text, axis.text.clone(), Anchor::Center),
+                    (false, Side::Right) => Label::plain(plot.right() + gap, p, text, axis.text.clone(), Anchor::Start),
+                    (false, _) => Label::plain(plot.x - gap, p, text, axis.text.clone(), Anchor::End),
                 });
             }
         }
@@ -570,7 +792,7 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                 let (b_start, _) = band(i);
                 let p = b_start;
                 let line = if horizontal { vec![(plot.x, p), (plot.right(), p)] } else { vec![(p, plot.y), (p, plot.bottom())] };
-                marks.push(Mark::Stroke(line, width, hsla(grid.color)));
+                push_stroke(&mut marks, line, width, grid);
             }
         }
     }
@@ -596,14 +818,14 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
         for tick in s.ticks() {
             let p = plot.x + s.at(tick) * plot.w;
             if let Some(grid) = &axis.gridlines {
-                marks.push(Mark::Stroke(vec![(p, plot.y), (p, plot.bottom())], grid.width as f32 * scale, hsla(grid.color)));
+                push_stroke(&mut marks, vec![(p, plot.y), (p, plot.bottom())], grid.width as f32 * scale, grid);
             }
             if !axis.deleted && axis.show_labels {
                 let unit = axis.display_unit.map(|u| u.0).unwrap_or(1.0);
                 let text = format_number(tick / unit, &axis.format);
                 let gap = (4.0 + if axis.ticks_outside { 3.75 } else { 0.0 }) * px_per_point;
                 let y = if axis.side == Side::Top { plot.y - gap - text_height(&axis.text, px_per_point) / 2.0 } else { plot.bottom() + gap + text_height(&axis.text, px_per_point) / 2.0 };
-                labels.push(Label { x: p, y, text, style: axis.text.clone(), anchor: Anchor::Center });
+                labels.push(Label::plain(p, y, text, axis.text.clone(), Anchor::Center));
             }
         }
     }
@@ -641,6 +863,7 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                 }
 
                 // Concentric web / polygon gridlines for ticks.
+                let val_axis = value_axis(chart, group);
                 for tick in s.ticks() {
                     let r = val_to_r(tick);
                     if r > 1.0 {
@@ -655,15 +878,12 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                         }
                         marks.push(Mark::Stroke(ring, 1.0 * scale, hsla(ibis_doc_model::Color::opaque(ibis_doc_model::Rgb(0xD9D9D9)))));
 
-                        let val_axis_fmt = value_axis(chart, group).map(|a| a.format.as_str()).unwrap_or("General");
-                        let text = format_number(tick, val_axis_fmt);
-                        labels.push(Label {
-                            x: cx + 3.0 * px_per_point,
-                            y: cy - r,
-                            text,
-                            style: ChartText { size: 800, ..Default::default() },
-                            anchor: Anchor::Start,
-                        });
+                        if val_axis.is_none_or(|a| !a.deleted && a.show_labels) {
+                            let val_axis_fmt = val_axis.map(|a| a.format.as_str()).unwrap_or("General");
+                            let val_axis_text = val_axis.map(|a| a.text.clone()).unwrap_or(ChartText { size: 800, ..Default::default() });
+                            let text = format_number(tick, val_axis_fmt);
+                            labels.push(Label::plain(cx + 3.0 * px_per_point, cy - r, text, val_axis_text, Anchor::Start));
+                        }
                     }
                 }
 
@@ -681,13 +901,7 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                         Anchor::End
                     };
                     let cat_text = category_axis.map(|ax| ax.text.clone()).unwrap_or_default();
-                    labels.push(Label {
-                        x: lx,
-                        y: ly,
-                        text: name.clone(),
-                        style: cat_text,
-                        anchor,
-                    });
+                    labels.push(Label::plain(lx, ly, name.clone(), cat_text, anchor));
                 }
 
                 // Series polygons, fills, strokes, and markers.
@@ -729,7 +943,11 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                     if let Some(first) = points.first() {
                         outline.push(*first);
                     }
-                    marks.push(Mark::Stroke(outline, stroke_w, stroke_c));
+                    if let Some(stroke) = &series.stroke {
+                        push_stroke(&mut marks, outline, stroke_w, stroke);
+                    } else {
+                        marks.push(Mark::Stroke(outline, stroke_w, stroke_c));
+                    }
 
                     let has_markers = style == Some(ibis_doc_model::RadarStyle::Marker)
                         || series.marker.as_ref().is_some_and(|m| m.symbol != MarkerSymbol::None);
@@ -752,13 +970,13 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                         for (ci, &(px, py)) in points.iter().enumerate() {
                             if let Some(val) = series.values.get(ci).and_then(|v| *v).map(|n| n.0) {
                                 let text = format_number(val, "General");
-                                labels.push(Label {
-                                    x: px,
-                                    y: py - 6.0 * px_per_point,
+                                labels.push(Label::plain(
+                                    px,
+                                    py - 6.0 * px_per_point,
                                     text,
-                                    style: ChartText { size: 800, ..Default::default() },
-                                    anchor: Anchor::Center,
-                                });
+                                    ChartText { size: 800, ..Default::default() },
+                                    Anchor::Center,
+                                ));
                             }
                         }
                     }
@@ -776,6 +994,7 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                 let totals = category_totals(group, categories);
                 let mut stack_pos = vec![0f64; categories];
                 let mut stack_neg = vec![0f64; categories];
+                let mut bar_edges: Vec<Vec<Option<(f32, f32, f32)>>> = vec![vec![None; categories]; group.series.len()];
                 let series_order: Vec<usize> = if is_3d_series_depth {
                     (0..group.series.len()).rev().collect()
                 } else {
@@ -790,14 +1009,14 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                             None => None,
                         };
                         let Some(value) = effective_value else { continue };
-                        let value = if group.grouping == Grouping::PercentStacked && totals[ci] != 0.0 { value / totals[ci] } else { value };
+                        let plotted = if group.grouping == Grouping::PercentStacked && totals[ci] != 0.0 { value / totals[ci] } else { value };
                         let (start, end) = if stacked {
-                            let stack = if value >= 0.0 { &mut stack_pos[ci] } else { &mut stack_neg[ci] };
+                            let stack = if plotted >= 0.0 { &mut stack_pos[ci] } else { &mut stack_neg[ci] };
                             let start = *stack;
-                            *stack += value;
+                            *stack += plotted;
                             (start, *stack)
                         } else {
-                            (base_value, value)
+                            (base_value, plotted)
                         };
                         let (band_start, _) = band(ci);
                         // Horizontal bars put the first series at the bottom of
@@ -807,6 +1026,9 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                         let a = band_start + bar * gap / 2.0 + lane * bar;
                         let b = a + bar;
                         let (v0, v1) = (value_px(&s, start), value_px(&s, end));
+                        if ci < categories {
+                            bar_edges[si][ci] = Some((a, b, v1));
+                        }
                         let corners = if horizontal {
                             vec![(v0, a), (v1, a), (v1, b), (v0, b)]
                         } else {
@@ -835,13 +1057,22 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                                 side_faces(&mut marks, &corners, (ext_dx, ext_dy), color);
                             }
                         }
+                        // Chart style 10 draws the bars with a soft shadow and a thin white outline (measured on Excel's PDF of GitHub #22; the other styles are not checked).
+                        let styled = depth.is_none() && chart.style == Some(10);
+                        if styled && background(point_fill(series, ci)).is_some() {
+                            soft_shadow(&mut marks, &corners, scale);
+                        }
                         if let Some(bg) = background(point_fill(series, ci)) {
                             marks.push(Mark::Fill(corners.clone(), bg));
                         }
                         if let Some(stroke) = point_stroke(series, ci) {
                             let mut outline = corners.clone();
                             outline.push(corners[0]);
-                            marks.push(Mark::Stroke(outline, stroke.width as f32 * scale, hsla(stroke.color)));
+                            push_stroke(&mut marks, outline, stroke.width as f32 * scale, stroke);
+                        } else if styled && series.stroke.is_none() && background(point_fill(series, ci)).is_some() {
+                            let mut outline = corners.clone();
+                            outline.push(corners[0]);
+                            marks.push(Mark::Stroke(outline, 9_525.0 * scale, hsla(ibis_doc_model::Color::opaque(ibis_doc_model::Rgb(0xffffff)))));
                         }
                         let default = if stacked { LabelPosition::Center } else { LabelPosition::OutsideEnd };
                         let (mid, end_px, start_px) = ((a + b) / 2.0, v1, v0);
@@ -866,19 +1097,17 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                             };
                             (x + shift_dx, y - shift_dy, Anchor::Center)
                         };
-                        // A bar's label moves by fractions of the plot area's size,
-                        // along the bar's direction (a negative bar's label moves
-                        // the other way); other labels by fractions of the
-                        // chart's. (Measured against PowerPoint's PDF output.)
                         let flip = if grows { 1.0 } else { -1.0 };
-                        let moves = if horizontal { (plot.w * flip, plot.h) } else { (plot.w, plot.h * flip) };
+                        let moves = if horizontal { (w * flip, h) } else { (w, h * flip) };
                         push_label(&mut labels, series, ci, value, totals[ci], default, (moves.0, moves.1, plot), px_per_point, res, place);
                     }
                     if let Some(tl) = &series.trendline {
                         let raw_points: Vec<(f64, f64, f32, f32)> = series.values.iter().enumerate().filter_map(|(ci, v)| {
                             let val = v.as_ref()?.0;
-                            let (a, b) = band(ci);
-                            let mid = (a + b) / 2.0;
+                            let (band_start, _) = band(ci);
+                            let order = if horizontal != reversed_categories { group.series.len() - 1 - si } else { si };
+                            let lane = if stacked || is_3d_series_depth { 0.0 } else { order as f32 * (1.0 - overlap) };
+                            let mid = band_start + bar * gap / 2.0 + lane * bar + bar / 2.0;
                             let v_px = value_px(&s, val);
                             let (x_val, y_val) = ((ci + 1) as f64, val);
                             let (sx, sy) = if horizontal { (v_px, mid) } else { (mid, v_px) };
@@ -887,15 +1116,39 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                         draw_trendline(&mut marks, &mut labels, tl, series, &raw_points, plot, scale);
                     }
                     if let Some(eb) = &series.error_bars {
-                        let pts: Vec<(f64, f32, f32)> = series.values.iter().enumerate().filter_map(|(ci, v)| {
+                        let pts: Vec<(usize, f64, f32, f32)> = series.values.iter().enumerate().filter_map(|(ci, v)| {
                             let val = v.as_ref()?.0;
-                            let (a, b) = band(ci);
-                            let mid = (a + b) / 2.0;
+                            let (band_start, _) = band(ci);
+                            let order = if horizontal != reversed_categories { group.series.len() - 1 - si } else { si };
+                            let lane = if stacked || is_3d_series_depth { 0.0 } else { order as f32 * (1.0 - overlap) };
+                            let mid = band_start + bar * gap / 2.0 + lane * bar + bar / 2.0;
                             let v_px = value_px(&s, val);
                             let (sx, sy) = if horizontal { (v_px, mid) } else { (mid, v_px) };
-                            Some((val, sx, sy))
+                            Some((ci, val, sx, sy))
                         }).collect();
                         draw_error_bars(&mut marks, eb, series, &pts, plot, scale, &s, horizontal);
+                    }
+                }
+                if stacked
+                    && depth.is_none()
+                    && let Some(connector) = group.of_pie.as_ref().and_then(|op| op.connector.as_ref())
+                {
+                    let ser_stroke = connector
+                        .clone()
+                        .unwrap_or_else(|| ibis_doc_model::Stroke::solid(ibis_doc_model::Color::opaque(ibis_doc_model::Rgb(0x595959)), 9_525));
+                    let stroke_w = ser_stroke.width as f32 * scale;
+                    for si in 0..group.series.len() {
+                        for ci in 0..categories.saturating_sub(1) {
+                            if let (Some((a0, b0, v0_end)), Some((a1, b1, v1_end))) = (bar_edges[si][ci], bar_edges[si][ci + 1]) {
+                                let (p0, p1) = if b0 <= a1 { (b0, a1) } else { (a0, b1) };
+                                let seg = if horizontal {
+                                    vec![(v0_end, p0), (v1_end, p1)]
+                                } else {
+                                    vec![(p0, v0_end), (p1, v1_end)]
+                                };
+                                push_stroke(&mut marks, seg, stroke_w, &ser_stroke);
+                            }
+                        }
                     }
                 }
             }
@@ -1012,7 +1265,7 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                                 if let Some((dx, dy)) = depth {
                                     ribbon_faces(&mut marks, &[(pair[0].1, pair[0].2), (pair[1].1, pair[1].2)], (dx * ext_f, dy * ext_f), hsla(stroke.color));
                                 }
-                                marks.push(Mark::Stroke(vec![(pair[0].1, pair[0].2), (pair[1].1, pair[1].2)], stroke.width as f32 * scale, hsla(stroke.color)));
+                                push_stroke(&mut marks, vec![(pair[0].1, pair[0].2), (pair[1].1, pair[1].2)], stroke.width as f32 * scale, stroke);
                             }
                         }
                     } else if let Some(stroke) = &series.stroke {
@@ -1024,7 +1277,7 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                             if let Some(ext) = ribbon_ext {
                                 ribbon_faces(&mut marks, &line, ext, stroke_c);
                             }
-                            marks.push(Mark::Stroke(line, stroke_w, stroke_c));
+                            push_stroke(&mut marks, line, stroke_w, stroke);
                         } else {
                             let mut segment: Vec<(f32, f32)> = Vec::new();
                             let mut last_ci: Option<usize> = None;
@@ -1035,7 +1288,7 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                                             if let Some(ext) = ribbon_ext {
                                                 ribbon_faces(&mut marks, &segment, ext, stroke_c);
                                             }
-                                            marks.push(Mark::Stroke(segment.clone(), stroke_w, stroke_c));
+                                            push_stroke(&mut marks, segment.clone(), stroke_w, stroke);
                                         }
                                         segment.clear();
                                     }
@@ -1047,7 +1300,7 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                                 if let Some(ext) = ribbon_ext {
                                     ribbon_faces(&mut marks, &segment, ext, stroke_c);
                                 }
-                                marks.push(Mark::Stroke(segment, stroke_w, stroke_c));
+                                push_stroke(&mut marks, segment, stroke_w, stroke);
                             }
                         }
                     }
@@ -1079,8 +1332,8 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                         draw_trendline(&mut marks, &mut labels, tl, series, &raw_points, plot, scale);
                     }
                     if let Some(eb) = &series.error_bars {
-                        let pts: Vec<(f64, f32, f32)> = points.iter().map(|&(_ci, x, y, val)| {
-                            (val, x, y)
+                        let pts: Vec<(usize, f64, f32, f32)> = points.iter().map(|&(ci, x, y, val)| {
+                            (ci, val, x, y)
                         }).collect();
                         draw_error_bars(&mut marks, eb, series, &pts, plot, scale, &s, false);
                     }
@@ -1096,18 +1349,18 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                                 None if chart.disp_blanks_as == Some(DispBlanksAs::Zero) => Some(0.0),
                                 None => None,
                             }?;
-                            Some((i, plot.x + sx.at(x_value(series, i)) * plot.w, value_px(&sy, v), v))
+                            // (A scatter's y is always up the plot, also beside horizontal bars.)
+                            Some((i, plot.x + sx.at(x_value(series, i)) * plot.w, plot.bottom() - sy.at(v).clamp(-0.5, 1.5) * plot.h, v))
                         })
                         .collect();
                     if let Some(stroke) = &series.stroke
                         && points.len() > 1
                     {
                         let stroke_w = stroke.width as f32 * scale;
-                        let stroke_c = hsla(stroke.color);
                         if chart.disp_blanks_as == Some(DispBlanksAs::Span) {
                             let line: Vec<(f32, f32)> = points.iter().map(|p| (p.1, p.2)).collect();
                             let line = if smooth { smooth_curve(&line) } else { line };
-                            marks.push(Mark::Stroke(line, stroke_w, stroke_c));
+                            push_stroke(&mut marks, line, stroke_w, stroke);
                         } else {
                             let mut segment: Vec<(f32, f32)> = Vec::new();
                             let mut last_i: Option<usize> = None;
@@ -1116,7 +1369,7 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                                     if i != last + 1 {
                                         if segment.len() >= 2 {
                                             let line = if smooth { smooth_curve(&segment) } else { segment.clone() };
-                                            marks.push(Mark::Stroke(line, stroke_w, stroke_c));
+                                            push_stroke(&mut marks, line, stroke_w, stroke);
                                         }
                                         segment.clear();
                                     }
@@ -1126,7 +1379,7 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                             }
                             if segment.len() >= 2 {
                                 let line = if smooth { smooth_curve(&segment) } else { segment };
-                                marks.push(Mark::Stroke(line, stroke_w, stroke_c));
+                                push_stroke(&mut marks, line, stroke_w, stroke);
                             }
                         }
                     }
@@ -1159,9 +1412,9 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                     }
                     if let Some(eb) = &series.error_bars {
                         let is_x = eb.direction == ibis_doc_model::ErrorBarDirection::X;
-                        let pts: Vec<(f64, f32, f32)> = points.iter().map(|&(i, x, y, val)| {
+                        let pts: Vec<(usize, f64, f32, f32)> = points.iter().map(|&(i, x, y, val)| {
                             let data_v = if is_x { x_value(series, i) } else { val };
-                            (data_v, x, y)
+                            (i, data_v, x, y)
                         }).collect();
                         let s_used = if is_x { &sx } else { &sy };
                         draw_error_bars(&mut marks, eb, series, &pts, plot, scale, s_used, is_x);
@@ -1209,7 +1462,7 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                         if let Some(stroke) = point_stroke(series, i) {
                             let mut outline = circle.clone();
                             outline.push(circle[0]);
-                            marks.push(Mark::Stroke(outline, stroke.width as f32 * scale, hsla(stroke.color)));
+                            push_stroke(&mut marks, outline, stroke.width as f32 * scale, stroke);
                         }
                         let place = move |_: LabelPosition, _: f32, _: f32| -> (f32, f32, Anchor) { (x, y, Anchor::Center) };
                         push_label(&mut labels, series, i, v.0, v.0, LabelPosition::Center, (w, h, plot), px_per_point, res, place);
@@ -1219,6 +1472,19 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
             ChartType::Pie { first_angle } | ChartType::Doughnut { first_angle, .. } => {
                 let ring_count = if matches!(group.kind, ChartType::Doughnut { .. }) { group.series.len() } else { 1 };
                 for (ring, series) in group.series.iter().take(ring_count).enumerate() {
+                    // A pie's label parts stand on lines of their own when the file names no separator.
+                    let broken;
+                    let series = if series.labels.as_ref().is_some_and(|l| l.separator.is_none()) {
+                        let mut copy = series.clone();
+                        if let Some(l) = copy.labels.as_mut() {
+                            l.separator = Some("
+".to_string());
+                        }
+                        broken = copy;
+                        &broken
+                    } else {
+                        series
+                    };
                     let hole = match group.kind {
                         ChartType::Doughnut { hole, .. } => hole as f32 / 100.0,
                         _ => 0.0,
@@ -1263,12 +1529,24 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                     if total <= 0.0 {
                         continue;
                     }
+                    // Slices pulled out (`explosion`, a percentage of the radius) shrink the pie so that the
+                    // farthest one still ends at the plot's edge (PowerPoint: a 25% explosion draws the pie
+                    // at 1/1.25 of its size).
+                    let explosion_of = |ci: usize| series.point_explosions.iter().find(|(i, _)| *i == ci).map_or(series.explosion, |(_, e)| *e) as f32 / 100.0;
+                    let most = if matches!(group.kind, ChartType::Pie { .. }) && tilt.is_none() {
+                        (0..series.values.len()).map(explosion_of).fold(0.0, f32::max)
+                    } else { 0.0 };
+                    let radius = radius / (1.0 + most);
+                    let label_radius = label_radius / (1.0 + most);
                     let mut angle = first_angle as f32;
                     for (ci, value) in series.values.iter().enumerate() {
                         let Some(value) = value.map(|n| n.0).filter(|v| *v > 0.0) else { continue };
                         let sweep = (value / total) as f32 * 360.0;
                         let (a0, a1) = ((angle - 90.0).to_radians(), (angle + sweep - 90.0).to_radians());
                         let steps = ((sweep / 3.0).ceil() as usize).max(2);
+                        // This slice's own centre, moved out along its middle direction.
+                        let pull = if most > 0.0 { explosion_of(ci) * radius } else { 0.0 };
+                        let (cx, cy) = (cx + pull * ((a0 + a1) / 2.0).cos(), cy + pull * ((a0 + a1) / 2.0).sin());
                         let arc = |r: f32| (0..=steps).map(move |i| {
                             let t = a0 + (a1 - a0) * i as f32 / steps as f32;
                             (cx + r * t.cos(), cy + r * yk * t.sin())
@@ -1299,15 +1577,29 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                         if let Some(stroke) = point_stroke(series, ci) {
                             let mut closed = outline.clone();
                             closed.push(outline[0]);
-                            marks.push(Mark::Stroke(closed, stroke.width as f32 * scale, hsla(stroke.color)));
+                            push_stroke(&mut marks, closed, stroke.width as f32 * scale, stroke);
                         }
                         let mid = (a0 + a1) / 2.0;
-                        let place = move |pos: LabelPosition, _: f32, _: f32| -> (f32, f32, Anchor) {
+                        let tilted = tilt.is_some();
+                        let place = move |pos: LabelPosition, text_h: f32, text_w: f32| -> (f32, f32, Anchor) {
                             let r = match pos {
                                 LabelPosition::OutsideEnd => label_radius * 1.15,
                                 LabelPosition::InsideEnd => radius * 0.8,
                                 LabelPosition::Center if inner == 0.0 => radius * 0.5,
                                 _ if inner > 0.0 => (radius + inner) / 2.0,
+                                // Best fit: inside while the label fits across the slice there, else outside
+                                // the pie, close to its edge (PowerPoint puts a small slice's label out).
+                                // Office does not publish how it places a best-fit label: the inner radius (0.65 of the
+                                // pie's) and the 4 pt gap are our choices, compared by eye with one PowerPoint PDF only.
+                                LabelPosition::BestFit if !tilted => {
+                                    let inside = label_radius * 0.65;
+                                    let across = mid.sin().abs() * text_w + mid.cos().abs() * text_h;
+                                    if inside * (a1 - a0).abs() >= across {
+                                        inside
+                                    } else {
+                                        label_radius + 4.0 * px_per_point + mid.cos().abs() * text_w / 2.0 + mid.sin().abs() * text_h / 2.0
+                                    }
+                                }
                                 _ => label_radius * 0.65,
                             };
                             (cx + r * mid.cos(), cy + r * yk * mid.sin(), Anchor::Center)
@@ -1457,13 +1749,13 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                     let lx = cx1 + (r1 * 0.65);
                     let ly = cy;
                     let other_text = crate::shell::i18n::text("_shell.more").to_string();
-                    labels.push(Label {
-                        x: lx,
-                        y: ly,
-                        text: format!("{other_text} ({:.1}%)", secondary_total / total * 100.0),
-                        style: ChartText { size: 900, ..ChartText::default() },
-                        anchor: Anchor::Center,
-                    });
+                    labels.push(Label::plain(
+                        lx,
+                        ly,
+                        format!("{other_text} ({:.1}%)", secondary_total / total * 100.0),
+                        ChartText { size: 900, ..ChartText::default() },
+                        Anchor::Center,
+                    ));
                 }
 
                 // 2. Draw remaining primary slices
@@ -1486,7 +1778,7 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                     if let Some(stroke) = point_stroke(series, ci) {
                         let mut closed = outline.clone();
                         closed.push(outline[0]);
-                        marks.push(Mark::Stroke(closed, stroke.width as f32 * scale, hsla(stroke.color)));
+                        push_stroke(&mut marks, closed, stroke.width as f32 * scale, stroke);
                     } else {
                         let mut closed = outline.clone();
                         closed.push(outline[0]);
@@ -1519,7 +1811,7 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                         if let Some(stroke) = point_stroke(series, ci) {
                             let mut closed = rect_pts.clone();
                             closed.push(rect_pts[0]);
-                            marks.push(Mark::Stroke(closed, stroke.width as f32 * scale, hsla(stroke.color)));
+                            push_stroke(&mut marks, closed, stroke.width as f32 * scale, stroke);
                         } else {
                             let mut closed = rect_pts.clone();
                             closed.push(rect_pts[0]);
@@ -1551,7 +1843,7 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                         if let Some(stroke) = point_stroke(series, ci) {
                             let mut closed = outline.clone();
                             closed.push(outline[0]);
-                            marks.push(Mark::Stroke(closed, stroke.width as f32 * scale, hsla(stroke.color)));
+                            push_stroke(&mut marks, closed, stroke.width as f32 * scale, stroke);
                         } else {
                             let mut closed = outline.clone();
                             closed.push(outline[0]);
@@ -1933,7 +2225,7 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                     })
                     .unwrap_or(if horizontal { plot.x } else { plot.bottom() });
                 let points = if horizontal { vec![(base, plot.y), (base, plot.bottom())] } else { vec![(plot.x, base), (plot.right(), base)] };
-                marks.push(Mark::Stroke(points, line.width as f32 * scale, hsla(line.color)));
+                push_stroke(&mut marks, points, line.width as f32 * scale, line);
             }
             if axis.show_labels {
                 let gap = 4.0 * px_per_point;
@@ -1962,8 +2254,8 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                             _ => crowded_rotation(&axis.text, spacing, px_per_point),
                         }
                     }
-                    // Staggered labels (every other one lower) do not turn.
-                    0 if axis.stagger_labels => 0,
+                    // Staggered labels (every other one lower) and labels with explicit rot="0" or multi-level categories do not turn.
+                    0 if axis.stagger_labels || axis.fixed_label_rotation || !axis.category_levels.is_empty() => 0,
                     0 if !horizontal && widest > band_len * fixed_skip && axis.date => -5_400_000,
                     0 if !horizontal && widest > band_len * fixed_skip => crowded_rotation(&axis.text, band_len * fixed_skip, px_per_point),
                     r => r,
@@ -1971,7 +2263,7 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                 // Every label (a horizontal axis, or an automatic skip on one)
                 // at least: `step_by` takes no 0.
                 let skip = match axis.label_skip {
-                    0 if axis.stagger_labels => 1,
+                    0 if axis.stagger_labels || axis.fixed_label_rotation || !axis.category_levels.is_empty() => 1,
                     0 if rotation != 0 => (text_height(&axis.text, px_per_point) / band_len).ceil().max(1.0) as usize,
                     0 if !horizontal => (widest / band_len).ceil().max(1.0) as usize,
                     n => n as usize,
@@ -2067,17 +2359,55 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                         continue;
                     }
                     let label = if horizontal {
-                        Label { x: plot.x - gap, y: start + len / 2.0, text: name.clone(), style: axis.text.clone(), anchor: Anchor::End }
+                        let room = (plot.x - gap - CHART_PADDING_PT * px_per_point).max(0.0);
+                        let text = ellipsize_category_label(name, room, &axis.text, px_per_point, res);
+                        Label::plain(plot.x - gap, start + len / 2.0, text, axis.text.clone(), Anchor::End)
                     } else {
-                        let lines = name.lines().count().max(1) as f32;
+                        let text = if (axis.fixed_label_rotation || !axis.category_levels.is_empty()) && !axis.stagger_labels {
+                            wrap_category_label(name, len * skip as f32, &axis.text, px_per_point)
+                        } else {
+                            name.clone()
+                        };
+                        let lines = text.lines().count().max(1) as f32;
                         let half = lines * text_height(&axis.text, px_per_point) / 2.0;
                         // Labels that would leave the frame move up into it, over
                         // the plot area if need be (as PowerPoint draws them).
                         let lower = if axis.stagger_labels && widest > band_len * 1.08 && ci % 2 == 1 { text_height(&axis.text, px_per_point) * 1.2 } else { 0.0 };
-                        let y = if axis.side == Side::Top { (plot.y - gap - half - lower).max(half) } else { (plot.bottom() + gap + half + lower).min(h - half) };
-                        Label { x: start + len / 2.0, y, text: name.clone(), style: axis.text.clone(), anchor: Anchor::Center }
+                        let y = if axis.side == Side::Top {
+                            (plot.y - gap - half - lower).max(half)
+                        } else if chart.data_table.is_some() {
+                            plot.bottom() + data_table_row_height(chart, px_per_point) / 2.0
+                        } else {
+                            (plot.bottom() + gap + half + lower).min(h - half)
+                        };
+                        Label::plain(start + len / 2.0, y, text, axis.text.clone(), Anchor::Center)
                     };
                     labels.push(label);
+                }
+                // The outer levels of categories of several levels (a year over its months): a row of labels for each,
+                // under the labels, with the lines that part the categories running down through the rows.
+                if !axis.category_levels.is_empty() && !horizontal && rotation == 0 && time_labels.is_none() && axis.side != Side::Top && categories > 0 {
+                    let row = level_row_height(axis, px_per_point);
+                    let inner_lines = names.iter().map(|(_, n)| wrap_category_label(n, band_len * skip as f32, &axis.text, px_per_point).lines().count().max(1)).max().unwrap_or(1) as f32;
+                    let inner_row = (inner_lines - 1.0) * text_height(&axis.text, px_per_point) + row;
+                    let (line_w, line_c) = axis.line.as_ref().map_or((0.75 * px_per_point, ibis_doc_model::Color::opaque(ibis_doc_model::Rgb(0x000000))), |l| (l.width as f32 * scale, l.color));
+                    let edge = |i: usize| if i >= categories { let (a, l) = band(categories - 1); a + l } else { band(i).0 };
+                    for i in 0..=categories {
+                        marks.push(Mark::Stroke(vec![(edge(i), plot.bottom()), (edge(i), plot.bottom() + inner_row)], line_w, hsla(line_c)));
+                    }
+                    let mut top = plot.bottom() + inner_row;
+                    for level in &axis.category_levels {
+                        let bottom = top + row;
+                        for (start, len, name) in level {
+                            let (x0, x1) = (edge(*start), edge(start + len));
+                            marks.push(Mark::Stroke(vec![(x0, plot.bottom()), (x0, bottom)], line_w, hsla(line_c)));
+                            if start + len >= categories {
+                                marks.push(Mark::Stroke(vec![(x1, plot.bottom()), (x1, bottom)], line_w, hsla(line_c)));
+                            }
+                            labels.push(Label::plain((x0 + x1) / 2.0, (top + row / 2.0).min(h - text_height(&axis.text, px_per_point) / 2.0), name.clone(), axis.text.clone(), Anchor::Center));
+                        }
+                        top = bottom;
+                    }
                 }
             }
         }
@@ -2091,14 +2421,26 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
                 (false, Side::Bottom) => vec![(plot.x, plot.bottom()), (plot.right(), plot.bottom())],
                 (false, _) => vec![(plot.x, plot.y), (plot.x, plot.bottom())],
             };
-            marks.push(Mark::Stroke(points, line.width as f32 * scale, hsla(line.color)));
+            push_stroke(&mut marks, points, line.width as f32 * scale, line);
         }
+    }
+
+    // The plot area's outline (`c:plotArea/c:spPr/a:ln`), over the marks and axes.
+    if let Some(border) = chart.plot_border.as_ref().filter(|_| depth.is_none() && !chart.groups.iter().any(|g| is_round(g) || is_radar(g))) {
+        let outline = vec![(plot.x, plot.y), (plot.right(), plot.y), (plot.right(), plot.bottom()), (plot.x, plot.bottom()), (plot.x, plot.y)];
+        push_stroke(&mut marks, outline, border.width as f32 * scale, border);
     }
 
     if let Some(table) = &chart.data_table {
         draw_data_table(chart, table, plot, horizontal, px_per_point, &mut marks, &mut labels);
     }
 
+    #[cfg(all(target_os = "macos", feature = "scenarios"))]
+    LAID_OUT.with(|l| {
+        if let Some(list) = l.borrow_mut().as_mut() {
+            list.push(laid_out(chart, (w, h), plot, &marks, &labels, &rotated, px_per_point, res));
+        }
+    });
     let canvas_marks = std::rc::Rc::new(marks);
     let container = div()
         .absolute()
@@ -2155,7 +2497,7 @@ pub(crate) fn chart_element(chart: &Chart, frame: EmuRect, scale: f32, res: &Res
         );
     let rotated_titles = axis_title_rotated(chart, plot, px_per_point, res);
     let container = container
-        .children(labels.into_iter().chain(title_label(chart, w, h, px_per_point, res)).chain(axis_title_labels(chart, plot, px_per_point, res)).filter_map(|l| label_element(l, px_per_point, res)))
+        .children(labels.into_iter().chain(title_label(chart, w, h, px_per_point, res)).chain(axis_title_labels(chart, plot, w, h, px_per_point, res)).filter_map(|l| label_element(l, px_per_point, res)))
         .when(!rotated.is_empty() || !rotated_titles.is_empty(), |d| {
             let mut all_rotated = rotated;
             all_rotated.extend(rotated_titles);
@@ -2197,6 +2539,47 @@ fn marks_canvas(marks: Vec<Mark>) -> Div {
     )
 }
 
+/// What `chart_element` laid out, in pixels of the frame: for the
+/// scenarios, which set `LAID_OUT` to `Some` to collect it.
+#[cfg(all(target_os = "macos", feature = "scenarios"))]
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LaidOut {
+    pub(crate) size: (f32, f32),
+    /// Left, top, width, height.
+    pub(crate) plot: (f32, f32, f32, f32),
+    /// Each text, where it is placed, and its turn (clockwise, degrees).
+    pub(crate) texts: Vec<(String, (f32, f32), f32)>,
+    /// Each filled area's bounds (left, top, right, bottom) and fill.
+    pub(crate) fills: Vec<((f32, f32, f32, f32), Background)>,
+}
+
+#[cfg(all(target_os = "macos", feature = "scenarios"))]
+thread_local! {
+    pub(crate) static LAID_OUT: std::cell::RefCell<Option<Vec<LaidOut>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(all(target_os = "macos", feature = "scenarios"))]
+#[allow(clippy::too_many_arguments)]
+fn laid_out(chart: &Chart, size: (f32, f32), plot: Area, marks: &[Mark], labels: &[Label], rotated: &[crate::render::rotated_text::RotatedLine], px_per_point: f32, res: &Resources) -> LaidOut {
+    let fills = marks
+        .iter()
+        .filter_map(|m| match m {
+            Mark::Fill(points, bg) if !points.is_empty() => {
+                let (x0, x1) = points.iter().fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.0), b.max(p.0)));
+                let (y0, y1) = points.iter().fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.1), b.max(p.1)));
+                Some(((x0, y0, x1, y1), *bg))
+            }
+            _ => None,
+        })
+        .collect();
+    let title = title_label(chart, size.0, size.1, px_per_point, res);
+    let upright = labels.iter().chain(title.as_ref()).map(|l| (l.text.clone(), (l.x, l.y), 0.0));
+    let titles = axis_title_labels(chart, plot, size.0, size.1, px_per_point, res).into_iter().map(|l| (l.text, (l.x, l.y), 0.0));
+    let turned_titles = axis_title_rotated(chart, plot, px_per_point, res);
+    let turned = rotated.iter().chain(&turned_titles).map(|r| (r.text.clone(), r.at, r.degrees));
+    LaidOut { size, plot: (plot.x, plot.y, plot.w, plot.h), texts: upright.chain(titles).chain(turned).collect(), fills }
+}
+
 /// A mark made ready to paint: its path relative to the chart, or a change
 /// of the clip.
 enum Painted {
@@ -2210,16 +2593,20 @@ thread_local! {
     pub(crate) static VECTOR_EXPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Painted marks of the charts drawn lately, by a hash of their marks and
     /// the screen's density: GPUI draws the whole window on every scroll.
-    static PAINTED: std::cell::RefCell<Vec<(u64, std::rc::Rc<Vec<Painted>>)>> = const { std::cell::RefCell::new(Vec::new()) };
+    static PAINTED: std::cell::RefCell<Vec<(u64, usize, std::rc::Rc<Vec<Painted>>)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// How many charts' painted marks to keep (a sheet full of charts).
 const CACHED_CHARTS: usize = 64;
 
+/// How many points of marks to keep painted in all (a path costs about 400 bytes a point: a chart of a million points kept
+/// for each of the 64 would be 25 GB). The charts drawn last are kept, the one just made at least.
+const CACHED_POINTS: usize = 400_000;
+
 /// `marks` as paths relative to the chart, from the cache when drawn before.
 fn cached_paths(marks: &[Mark], scale_factor: f32) -> std::rc::Rc<Vec<Painted>> {
     let key = marks_hash(marks, scale_factor);
-    if let Some(found) = PAINTED.with(|c| c.borrow().iter().find(|(k, _)| *k == key).map(|(_, p)| p.clone())) {
+    if let Some(found) = PAINTED.with(|c| c.borrow().iter().find(|(k, _, _)| *k == key).map(|(_, _, p)| p.clone())) {
         return found;
     }
     let to_px = |pts: &[(f32, f32)]| pts.iter().map(|(x, y)| point(px(*x), px(*y))).collect::<Vec<_>>();
@@ -2233,16 +2620,21 @@ fn cached_paths(marks: &[Mark], scale_factor: f32) -> std::rc::Rc<Vec<Painted>> 
             // At least a pixel of the screen (a thin line is a pixel wide, as
             // PowerPoint draws it).
             Mark::Stroke(pts, width, color) => polygon(&to_px(pts), Some(px(width.max(1.0 / scale_factor))), false).map(|p| Painted::Path(p, (*color).into())),
+            Mark::Dashes(pieces, width, color) => {
+                let pieces: Vec<Vec<Point<Pixels>>> = pieces.iter().map(|p| to_px(p)).collect();
+                crate::render::shape_view::dashes_path(&pieces, px(width.max(1.0 / scale_factor))).map(|p| Painted::Path(p, (*color).into()))
+            }
             Mark::Clip(r) => Some(Painted::Clip(*r)),
         })
         .collect();
     let painted = std::rc::Rc::new(painted);
+    let weight: usize = marks.iter().map(|m| match m { Mark::Fill(p, _) | Mark::Stroke(p, _, _) => p.len(), Mark::Dashes(pieces, _, _) => pieces.iter().map(|p| p.len()).sum(), Mark::Clip(_) => 1 }).sum();
     PAINTED.with(|c| {
         let mut c = c.borrow_mut();
-        if c.len() >= CACHED_CHARTS {
+        while !c.is_empty() && (c.len() >= CACHED_CHARTS || c.iter().map(|(_, w, _)| *w).sum::<usize>() + weight > CACHED_POINTS) {
             c.remove(0);
         }
-        c.push((key, painted.clone()));
+        c.push((key, weight, painted.clone()));
     });
     painted
 }
@@ -2332,6 +2724,15 @@ fn marks_hash(marks: &[Mark], scale_factor: f32) -> u64 {
             Mark::Stroke(pts, width, color) => {
                 add(1);
                 points(pts, &mut add);
+                add(width.to_bits());
+                [color.h, color.s, color.l, color.a].iter().for_each(|v| add(v.to_bits()));
+            }
+            Mark::Dashes(pieces, width, color) => {
+                add(3);
+                add(pieces.len() as u32);
+                for piece in pieces {
+                    points(piece, &mut add);
+                }
                 add(width.to_bits());
                 [color.h, color.s, color.l, color.a].iter().for_each(|v| add(v.to_bits()));
             }
@@ -2579,7 +2980,24 @@ fn automatic_plot(chart: &Chart, w: f32, h: f32, px_per_point: f32, res: &Resour
     let round = chart.groups.iter().any(is_round);
     let radar = chart.groups.iter().any(is_radar);
     let horizontal_bars = chart.groups.iter().any(|g| matches!(g.kind, ChartType::Bar { horizontal: true, .. }));
-    if (round || radar) && chart.legend.is_none() && !labelled {
+    let has_title = chart.title.as_ref().is_some_and(|t| !chart.title_overlay && t.at.is_none_or(|(_, fy)| fy < 25_000));
+    let title_band = |pad: f32| {
+        chart.title.as_ref().filter(|t| !chart.title_overlay && t.at.is_none_or(|(_, fy)| fy < 25_000)).map_or(0.0, |t| {
+            let lines = wrapped_title_text(t, w, px_per_point, res).lines().count().max(1) as f32;
+            let text_h = lines * t.style.size as f32 / 100.0 * px_per_point * 1.2;
+            match t.at {
+                Some((_, fy)) => fy as f32 / 100_000.0 * h + text_h,
+                None => text_h + pad * 0.5,
+            }
+        })
+    };
+    let pie_outside_labels = chart.groups.iter().filter(|g| matches!(g.kind, ChartType::Pie { .. })).flat_map(|g| &g.series).any(|s| {
+        s.labels.as_ref().is_some_and(|l| {
+            (l.show_value || l.show_category || l.show_series_name || l.show_percent)
+                && matches!(l.position, None | Some(LabelPosition::OutsideEnd | LabelPosition::BestFit))
+        })
+    });
+    if (round || radar) && chart.legend.is_none() && !labelled && !has_title && !pie_outside_labels {
         // A pie or radar alone is inset like a plot with nothing around it.
         let inset = 11.5 * px_per_point;
         return Area { x: inset, y: inset, w: (w - 2.0 * inset).max(1.0), h: (h - 2.0 * inset).max(1.0) };
@@ -2593,13 +3011,25 @@ fn automatic_plot(chart: &Chart, w: f32, h: f32, px_per_point: f32, res: &Resour
             // labels (measured on PCHT: the legend's middle 13 pt and the
             // plot's bottom 43 pt above the frame's bottom, at 8 pt).
             let size = l.text.size as f32 / 100.0 * px_per_point;
-            let band = size * 1.5 * legend_rows(chart, l, w, px_per_point, res) as f32 + size * 1.0;
+            let band = size * 1.5 * legend_lines(chart, l, w, px_per_point, res) + size * 1.0;
             Some(if l.side == Side::Top { (band, 0.0) } else { (0.0, band) })
         }
         Some(l) if l.layout.is_none() => Some((0.0, 0.0)),
         // A side legend moved by hand: the plot is laid out as with one at
         // the side, kept off the legend's own place (legend_right below).
         Some(l) if l.overlay != Some(true) && matches!(l.side, Side::Left | Side::Right) => Some((0.0, 0.0)),
+        // A legend above or below moved by hand, not over the plot: the plot is laid out as with none
+        // (it keeps off the legend's own place only by the chart's padding), so the axis labels' room
+        // is still looked at.
+        Some(l) if l.overlay != Some(true) && matches!(l.side, Side::Top | Side::Bottom) => {
+            // ... but not under the legend's own place: the plot ends before it (a gap of the padding).
+            let gap = CHART_PADDING_PT * px_per_point;
+            Some(match l.layout {
+                Some(r) if l.side == Side::Top => (((r.y + r.height) as f32 / 100_000.0 * h + gap).clamp(0.0, h * 0.5), 0.0),
+                Some(r) => (0.0, ((1.0 - r.y as f32 / 100_000.0) * h + gap).clamp(0.0, h * 0.5)),
+                None => (0.0, 0.0),
+            })
+        }
         Some(_) => None,
     };
     // A legend at a side takes its width and a gap from that side.
@@ -2700,9 +3130,7 @@ fn automatic_plot(chart: &Chart, w: f32, h: f32, px_per_point: f32, res: &Resour
         let right_pad = pad + if (is_column_bar || is_scatter_or_bubble || is_line_or_area) && right == 0.0 && legend_right == 0.0 { 4.0 * px_per_point } else { 0.0 };
         let plot_w = (w - x - right_pad - right - legend_right - right_axis_title_pad).max(w * 0.2);
         // A title at the top pushes the plot down by its lines.
-        let title = chart.title.as_ref().filter(|t| t.at.is_none() && !chart.title_overlay).map_or(0.0, |t| {
-            t.text.lines().count().max(1) as f32 * t.style.size as f32 / 100.0 * px_per_point * 1.2 + pad * 0.5
-        });
+        let title = title_band(pad);
         let top_factor = if is_column_bar { 0.85 } else { 0.35 };
         let mut top = pad + value_size * top_factor + legend_top + title;
         // The category labels of an axis at the top take their room there.
@@ -2711,18 +3139,26 @@ fn automatic_plot(chart: &Chart, w: f32, h: f32, px_per_point: f32, res: &Resour
             Some(axis) => {
                 let size = axis.text.size as f32 / 100.0 * px_per_point;
                 let names: Vec<String> = chart.groups.iter().flat_map(|g| &g.series).map(|s| s.categories.clone()).find(|c| !c.is_empty()).unwrap_or_default();
-                let count = chart.groups.iter().flat_map(|g| &g.series).map(|s| s.values.len().max(s.categories.len())).max().unwrap_or(1).max(1);
+                let count = category_count(chart).max(1);
                 let widest = match &axis.time {
                     Some(t) => time_scale_label_widest(t, axis, px_per_point),
                     None => names.iter().map(|n| text_width(n, &axis.text, px_per_point)).fold(0.0, f32::max),
                 };
-                let upright = axis.label_rotation.abs() >= 2_700_000 || (axis.label_rotation == 0 && !axis.stagger_labels && widest > plot_w / count as f32);
+                let upright = axis.label_rotation.abs() >= 2_700_000
+                    || (axis.label_rotation == 0 && !axis.stagger_labels && !axis.fixed_label_rotation && axis.category_levels.is_empty() && widest > plot_w / count as f32);
                 // A date axis's labels start below its tick marks and a gap
                 // (Excel; a private workbook's chart's reach its legend
                 // otherwise).
                 let gap = if axis.ticks_outside { 3.75 * px_per_point } else { 0.0 };
                 // Staggered labels stand in two rows when they do not fit in one.
-                let rows = if axis.stagger_labels && widest > plot_w / count as f32 * 1.08 { 2.2 } else { 1.2 };
+                let wrapped_rows = if (axis.fixed_label_rotation || !axis.category_levels.is_empty()) && !axis.stagger_labels && widest > plot_w / count as f32 {
+                    2.2
+                } else if axis.stagger_labels && widest > plot_w / count as f32 * 1.08 {
+                    2.2
+                } else {
+                    1.2
+                };
+                let rows = wrapped_rows;
                 let label_depth = if upright {
                     if axis.label_rotation.abs() == 2_700_000 || (axis.time.is_some() && axis.label_rotation == 0) {
                         (widest * 0.75 + size * 0.5).max(size * rows)
@@ -2732,7 +3168,7 @@ fn automatic_plot(chart: &Chart, w: f32, h: f32, px_per_point: f32, res: &Resour
                 } else {
                     size * rows
                 };
-                let band = gap + label_depth + size * 0.3;
+                let band = gap + label_depth + size * 0.3 + axis.category_levels.len() as f32 * level_row_height(axis, px_per_point);
                 if axis.side == Side::Top {
                     // The labels stand in the margin above the plot, which is made up for by the room
                     // left below (measured against PowerPoint with PCHT: 15 and 11 px of the 31 px band).
@@ -2778,13 +3214,11 @@ fn automatic_plot(chart: &Chart, w: f32, h: f32, px_per_point: f32, res: &Resour
             ticks + size * 1.7
         });
         // (Value labels at the top, over reversed categories, take their room there.)
-        let on_top = value.is_some_and(|a| a.side == Side::Top);
+        let on_top = value.is_some_and(|a| axis_label_side(a, true) == Side::Top);
         let (below, value_top) = if on_top { (0.0, value_band) } else { (value_band, 0.0) };
         let x = pad + left + legend_left;
         // A title at the top pushes the plot down by its lines.
-        let title = chart.title.as_ref().filter(|t| t.at.is_none() && !chart.title_overlay).map_or(0.0, |t| {
-            t.text.lines().count().max(1) as f32 * t.style.size as f32 / 100.0 * px_per_point * 1.2 + pad * 0.5
-        });
+        let title = title_band(pad);
         let top = pad + legend_top + title + value_top;
         // Half the last value label beyond the plot's right end.
         let right = pad + value.map_or(0.0, |a| a.text.size as f32 / 100.0 * px_per_point);
@@ -2792,9 +3226,7 @@ fn automatic_plot(chart: &Chart, w: f32, h: f32, px_per_point: f32, res: &Resour
         return Area { x, y: top, w: plot_w, h: (h - top - pad - below - legend_bottom).max(h * 0.2) };
     }
     if radar {
-        let title = chart.title.as_ref().filter(|t| t.at.is_none()).map_or(0.0, |t| {
-            t.text.lines().count().max(1) as f32 * t.style.size as f32 / 100.0 * px_per_point * 1.2 + 4.0 * px_per_point
-        });
+        let title = title_band(8.0 * px_per_point);
         let (lt, lb) = legend_band.unwrap_or((0.0, 0.0));
         let pad = chart_padding_pt(chart) * px_per_point;
         let left = legend_left + pad;
@@ -2810,15 +3242,31 @@ fn automatic_plot(chart: &Chart, w: f32, h: f32, px_per_point: f32, res: &Resour
     let centered_round = (chart.groups.iter().all(|g| matches!(g.kind, ChartType::Pie { .. }))
         || chart.groups.iter().all(|g| matches!(g.kind, ChartType::Doughnut { .. }))
         || chart.groups.iter().all(|g| matches!(g.kind, ChartType::OfPie { .. })))
-        && round && chart.legend.as_ref().is_some_and(|l| l.layout.is_none() && l.side == Side::Bottom);
+        && round && chart.legend.as_ref().is_none_or(|l| l.layout.is_none() && l.side == Side::Bottom);
+    if has_title {
+        let pad = CHART_PADDING_PT * px_per_point;
+        let top = chart.title.as_ref().map_or(0.0, |t| {
+            let lines = wrapped_title_text(t, w, px_per_point, res).lines().count().max(1) as f32;
+            let line_h = t.style.size as f32 / 100.0 * px_per_point * 1.2;
+            2.0 * pad + (lines + 1.0) * line_h
+        });
+        let bottom = legend_band.map_or(pad, |(_, lb)| if lb > 0.0 { lb + 2.5 * pad } else { pad });
+        return Area {
+            x: w * if centered_round { 0.08 } else { 0.1 },
+            y: top,
+            w: w * 0.84,
+            h: (h - top - bottom).max(h * 0.2),
+        };
+    }
     // Keep the existing fractional inset, but reserve at least 2.7 text
     // sizes for the bottom legend. Native 8pt legends leave about 21.67pt
     // on both 140.16pt presentation and 108pt spreadsheet frames.
     let size = chart.legend.as_ref().map_or(0.0, |l| l.text.size as f32 / 100.0 * px_per_point);
-    let legend_lift = if centered_round {
+    let legend_lift = if centered_round && chart.legend.is_some() {
         (size * 0.3).max(size * 1.35 - h * 0.06)
     } else { 0.0 };
-    Area { x: w * if centered_round { 0.08 } else { 0.1 }, y: h * 0.08 - legend_lift, w: w * 0.84, h: h * 0.72 }
+    let top = h * 0.08 - legend_lift;
+    Area { x: w * if centered_round { 0.08 } else { 0.1 }, y: top, w: w * 0.84, h: (h * 0.72).max(h * 0.2) }
 }
 
 /// The room the value axis labels take at the left and the right of the
@@ -2890,11 +3338,11 @@ fn side_axes_layout(chart: &Chart, plot: Area, w: f32, px_per_point: f32) -> Are
 fn slanted_labels_layout(chart: &Chart, plot: Area, h: f32, px_per_point: f32) -> Area {
     let horizontal_bars = chart.groups.iter().any(|g| matches!(g.kind, ChartType::Bar { horizontal: true, .. }));
     let Some(axis) = chart.axes.iter().find(|a| a.kind == AxisKind::Category && !a.deleted && a.show_labels) else { return plot };
-    if horizontal_bars || axis.label_rotation != 0 {
+    if horizontal_bars || axis.label_rotation != 0 || axis.fixed_label_rotation || !axis.category_levels.is_empty() {
         return plot;
     }
     let names: Vec<String> = chart.groups.iter().flat_map(|g| &g.series).map(|s| s.categories.clone()).find(|c| !c.is_empty()).unwrap_or_default();
-    let count = chart.groups.iter().flat_map(|g| &g.series).map(|s| s.values.len().max(s.categories.len())).max().unwrap_or(1).max(1);
+    let count = category_count(chart).max(1);
     let band = plot.w / count as f32 * axis.label_skip.max(1) as f32;
     let widest = names.iter().map(|n| text_width(n, &axis.text, px_per_point)).fold(0.0, f32::max);
     if widest <= band {
@@ -2925,15 +3373,37 @@ fn crowded_rotation(text: &ChartText, room: f32, px_per_point: f32) -> i32 {
 
 fn value_axis<'c>(chart: &'c Chart, group: &ChartGroup) -> Option<&'c Axis> {
     // A scatter's two value axes: the upright one is its y axis.
-    if is_scatter(group) {
-        return group.axes.iter().filter_map(|id| chart.axis(*id)).find(|a| a.kind == AxisKind::Value && matches!(a.side, Side::Left | Side::Right));
+    let scatter = is_scatter(group);
+    let is_val = |a: &&Axis| a.kind == AxisKind::Value && (!scatter || matches!(a.side, Side::Left | Side::Right));
+    let own = group.axes.iter().filter_map(|id| chart.axis(*id)).find(is_val);
+    if own.is_some_and(|a| a.deleted && a.min.is_none() && a.max.is_none())
+        && let Some(primary) = chart.axes.iter().find(|a| is_val(&a) && !a.deleted)
+    {
+        return Some(primary);
     }
-    group.axes.iter().filter_map(|id| chart.axis(*id)).find(|a| a.kind == AxisKind::Value)
+    own
 }
 
 /// A scatter's (or bubble chart's) x axis: its level value axis.
 fn x_axis<'c>(chart: &'c Chart, group: &ChartGroup) -> Option<&'c Axis> {
     group.axes.iter().filter_map(|id| chart.axis(*id)).find(|a| a.kind == AxisKind::Value && matches!(a.side, Side::Top | Side::Bottom))
+}
+
+/// How many categories the chart's category axis has: the most values (or names) of a series
+/// of the groups that stand on it. A scatter or bubble group in a chart with other groups stands on
+/// its own axes, and its points are not categories.
+fn category_count(chart: &Chart) -> usize {
+    let others = chart.groups.iter().any(|g| !is_scatter(g));
+    chart
+        .groups
+        .iter()
+        .filter(|g| !others || !is_scatter(g))
+        .flat_map(|g| &g.series)
+        // PowerPoint gives every cell of the value range a category, even
+        // when fewer category names are cached.
+        .map(|s| s.values.len().max(s.categories.len()))
+        .max()
+        .unwrap_or(0)
 }
 
 fn is_scatter(group: &ChartGroup) -> bool {
@@ -2982,9 +3452,51 @@ fn value_range(chart: &Chart, id: u32) -> (f64, f64) {
                 }
             }
             Grouping::Standard => {
-                for v in group.series.iter().flat_map(|s| s.values.iter().flatten()) {
-                    low = low.min(v.0);
-                    high = high.max(v.0);
+                for s in &group.series {
+                    let valid: Vec<f64> = s.values.iter().flatten().map(|n| n.0).collect();
+                    let n = valid.len();
+                    let mean = if n > 0 { valid.iter().sum::<f64>() / n as f64 } else { 0.0 };
+                    let std_dev = if n > 1 {
+                        (valid.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1) as f64).sqrt()
+                    } else {
+                        0.0
+                    };
+                    let std_err = if n > 0 { std_dev / (n as f64).sqrt() } else { 0.0 };
+                    for (ci, v) in s.values.iter().enumerate() {
+                        let Some(v) = v else { continue };
+                        low = low.min(v.0);
+                        high = high.max(v.0);
+                        if let Some(eb) = &s.error_bars {
+                            use ibis_doc_model::{ErrorBarType, ErrorBarValueType};
+                            let (p, m) = match eb.val_type {
+                                ErrorBarValueType::FixedValue => {
+                                    let d = eb.value.map(|n| n.0).unwrap_or(1.0);
+                                    (d, d)
+                                }
+                                ErrorBarValueType::Percentage => {
+                                    let d = v.0.abs() * (eb.value.map(|n| n.0).unwrap_or(5.0) / 100.0);
+                                    (d, d)
+                                }
+                                ErrorBarValueType::StandardDeviation => {
+                                    let d = eb.value.map(|n| n.0).unwrap_or(1.0) * std_dev;
+                                    (d, d)
+                                }
+                                ErrorBarValueType::StandardError => (std_err, std_err),
+                                ErrorBarValueType::Custom => {
+                                    let fb = eb.value.map(|n| n.0).unwrap_or(1.0);
+                                    let p = if eb.plus.is_empty() { fb } else { eb.plus.get(ci).copied().flatten().map_or(0.0, |n| n.0) };
+                                    let m = if eb.minus.is_empty() { fb } else { eb.minus.get(ci).copied().flatten().map_or(0.0, |n| n.0) };
+                                    (p, m)
+                                }
+                            };
+                            if matches!(eb.bar_type, ErrorBarType::Both | ErrorBarType::Plus) {
+                                high = high.max(v.0 + p);
+                            }
+                            if matches!(eb.bar_type, ErrorBarType::Both | ErrorBarType::Minus) {
+                                low = low.min(v.0 - m);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -3108,10 +3620,19 @@ fn push_label(
     if point.is_some_and(|p| p.deleted) {
         return;
     }
-    let format = settings.format.as_deref().unwrap_or(&series.format);
+    let show_series_name = point.and_then(|p| p.show_series_name).unwrap_or(settings.show_series_name);
+    let show_category = point.and_then(|p| p.show_category).unwrap_or(settings.show_category);
+    let show_value = point.and_then(|p| p.show_value).unwrap_or(settings.show_value);
+    let show_percent = point.and_then(|p| p.show_percent).unwrap_or(settings.show_percent);
     let piece_text = |piece: &LabelPiece| match piece {
         LabelPiece::Text(t) => t.clone(),
-        LabelPiece::Value => format_number(value, format),
+        // The labels' format is for the percentage when it is a percent
+        // format and the label shows a percentage too: the value then keeps
+        // the series' format.
+        LabelPiece::Value => format_number(
+            value,
+            settings.format.as_deref().filter(|f| !(show_percent && f.contains('%'))).unwrap_or(&series.format),
+        ),
         // A percentage takes the labels' own format when it is one (`0.0%`).
         LabelPiece::Percent => format_number(
             if total != 0.0 { value / total } else { 0.0 },
@@ -3124,25 +3645,27 @@ fn push_label(
         Some(pieces) => pieces.iter().map(piece_text).collect::<String>(),
         None => {
             let mut parts = Vec::new();
-            if settings.show_series_name {
+            if show_series_name {
                 parts.push(piece_text(&LabelPiece::SeriesName));
             }
-            if settings.show_category {
+            if show_category {
                 parts.push(piece_text(&LabelPiece::Category));
             }
-            if settings.show_value {
+            if show_value {
                 parts.push(piece_text(&LabelPiece::Value));
             }
-            if settings.show_percent {
+            if show_percent {
                 parts.push(piece_text(&LabelPiece::Percent));
             }
             if parts.is_empty() {
                 return;
             }
-            parts.join(", ")
+            parts.join(settings.separator.as_deref().unwrap_or(", "))
         }
     };
     let style = point.and_then(|p| p.style.clone()).unwrap_or_else(|| settings.style.clone());
+    let fill = point.and_then(|p| p.fill.clone()).unwrap_or_else(|| settings.fill.clone());
+    let border = point.and_then(|p| p.border.clone()).unwrap_or_else(|| settings.border.clone());
     let position = point.and_then(|p| p.position).or(settings.position).unwrap_or(default);
     let lines = text.lines().count().max(1) as f32;
     let text_h = label_line(&text, &style, px_per_point, res) * lines;
@@ -3162,7 +3685,16 @@ fn push_label(
     let (x, y) = (x + dx as f32 / 100_000.0 * move_w, y + dy as f32 / 100_000.0 * move_h);
     // A label moved by hand may leave the plot area.
     let y = if (dx, dy) == (0, 0) { inside(y) } else { y };
-    labels.push(Label { x, y, text, style, anchor });
+    labels.push(Label { x, y, text, style, anchor, fill, border });
+}
+
+/// The side on which a value axis places its tick labels (`c:tickLblPos`).
+fn axis_label_side(axis: &Axis, horizontal: bool) -> Side {
+    if axis.labels_low {
+        if horizontal { Side::Bottom } else { Side::Left }
+    } else {
+        axis.side
+    }
 }
 
 /// The font to draw `text` in `style` with.
@@ -3202,12 +3734,21 @@ fn label_element(label: Label, px_per_point: f32, res: &Resources) -> Option<Div
     let lines = label.text.lines().count().max(1) as f32;
     let line = label_line(&label.text, &label.style, px_per_point, res);
     let height = line * lines;
-    let text = text_div(&label.text, &label.style, px_per_point, res)?.line_height(px(line)).flex_shrink_0();
+    let scale = px_per_point / EMU_PER_POINT as f32;
+    let bg = background(&label.fill);
+    let has_box = bg.is_some() || label.border.is_some();
+    let pad_y = if has_box { 1.5 * px_per_point } else { 0.0 };
+    let text = text_div(&label.text, &label.style, px_per_point, res)?
+        .line_height(px(line))
+        .flex_shrink_0()
+        .when(has_box, |d| d.px(px(3.0 * px_per_point)).py(px(pad_y)))
+        .when_some(bg, |d, b| d.bg(b))
+        .when_some(label.border, |d, b| d.border(px((b.width as f32 * scale).max(0.5))).border_color(hsla(b.color)));
     Some(
         div()
             .absolute()
             .left(px(label.x))
-            .top(px(label.y - height / 2.0))
+            .top(px(label.y - height / 2.0 - pad_y))
             .w(px(0.))
             .flex()
             .map(|d| match label.anchor {
@@ -3223,26 +3764,36 @@ fn label_element(label: Label, px_per_point: f32, res: &Resources) -> Option<Div
 /// or centred at the top.
 fn title_label(chart: &Chart, w: f32, h: f32, px_per_point: f32, res: &Resources) -> Option<Label> {
     let title = chart.title.as_ref()?;
-    let lines = title.text.lines().count().max(1) as f32;
-    let height = label_line(&title.text, &title.style, px_per_point, res) * lines;
+    let text = wrapped_title_text(title, w, px_per_point, res);
+    let lines = text.lines().count().max(1) as f32;
+    let height = label_line(&text, &title.style, px_per_point, res) * lines;
     let (x, y, anchor) = match title.at {
         // The corner is the title box's, whose text sits inside its insets
         // (3 pt at the sides, 1.5 pt above and below, as for data labels).
         Some((fx, fy)) => (fx as f32 / 100_000.0 * w + 3.0 * px_per_point, fy as f32 / 100_000.0 * h + 1.5 * px_per_point, Anchor::Start),
         None => (w / 2.0, CHART_PADDING_PT * px_per_point, Anchor::Center),
     };
-    Some(Label { x, y: y + height / 2.0, text: title.text.clone(), style: title.style.clone(), anchor })
+    Some(Label::plain(x, y + height / 2.0, text, title.style.clone(), anchor))
 }
 
 /// The axes' titles as horizontal labels (top and bottom axes).
-fn axis_title_labels(chart: &Chart, plot: Area, px_per_point: f32, res: &Resources) -> Vec<Label> {
+fn axis_title_labels(chart: &Chart, plot: Area, w: f32, h: f32, px_per_point: f32, res: &Resources) -> Vec<Label> {
     let mut labels = Vec::new();
-    for axis in chart.axes.iter().filter(|a| !a.deleted) {
+    // (A deleted axis keeps its title, which Office draws over the plot area's edge.)
+    for axis in chart.axes.iter() {
         let Some(title) = &axis.title else { continue };
         let lines = title.text.lines().count().max(1) as f32;
         let line_h = label_line(&title.text, &title.style, px_per_point, res);
         let height = line_h * lines;
         let (x, y, anchor) = match axis.side {
+            // A side axis' title set horizontal (`rot="0"`) at a place of its own: its box's top-left corner, the text
+            // inside the box's insets (as the chart's title).
+            Side::Left | Side::Right if axis.title_rotation == Some(0) && title.at.is_some() => {
+                let (fx, fy) = title.at.unwrap_or((0, 0));
+                (fx as f32 / 100_000.0 * w + 3.0 * px_per_point, fy as f32 / 100_000.0 * h + 1.5 * px_per_point + height / 2.0, Anchor::Start)
+            }
+            Side::Bottom if axis.deleted => (plot.x + plot.w / 2.0, plot.bottom() - 2.0 * px_per_point - height / 2.0, Anchor::Center),
+            Side::Top if axis.deleted => (plot.x + plot.w / 2.0, plot.y + 2.0 * px_per_point + height / 2.0, Anchor::Center),
             Side::Bottom => {
                 let x = plot.x + plot.w / 2.0;
                 let size = axis.text.size as f32 / 100.0 * px_per_point;
@@ -3257,7 +3808,7 @@ fn axis_title_labels(chart: &Chart, plot: Area, px_per_point: f32, res: &Resourc
             }
             Side::Left | Side::Right => continue,
         };
-        labels.push(Label { x, y, text: title.text.clone(), style: title.style.clone(), anchor });
+        labels.push(Label::plain(x, y, title.text.clone(), title.style.clone(), anchor));
     }
     labels
 }
@@ -3266,13 +3817,19 @@ fn axis_title_labels(chart: &Chart, plot: Area, px_per_point: f32, res: &Resourc
 fn axis_title_rotated(chart: &Chart, plot: Area, px_per_point: f32, res: &Resources) -> Vec<crate::render::rotated_text::RotatedLine> {
     let mut rotated = Vec::new();
     let (left_w, right_w) = value_label_widths(chart, px_per_point, 0.5);
-    for axis in chart.axes.iter().filter(|a| !a.deleted) {
+    for axis in chart.axes.iter() {
         let Some(title) = &axis.title else { continue };
+        // (One set horizontal at a place of its own is drawn as a label: `axis_title_labels`.)
+        if axis.title_rotation == Some(0) && title.at.is_some() {
+            continue;
+        }
         let line_h = label_line(&title.text, &title.style, px_per_point, res);
         let color = title.style.color.unwrap_or(ibis_doc_model::Color::opaque(ibis_doc_model::Rgb::BLACK));
         let font = chart_font(&title.style, &title.text, res);
         let size = px(title.style.size as f32 / 100.0 * px_per_point);
         let at = match axis.side {
+            Side::Left if axis.deleted => (plot.x + 2.0 * px_per_point + line_h / 2.0, plot.y + plot.h / 2.0),
+            Side::Right if axis.deleted => (plot.right() - 2.0 * px_per_point - line_h / 2.0, plot.y + plot.h / 2.0),
             Side::Left => {
                 let offset = if axis.show_labels { left_w + 4.0 * px_per_point } else { 4.0 * px_per_point };
                 let x = (plot.x - offset - line_h / 2.0).max(CHART_PADDING_PT * px_per_point + line_h / 2.0);
@@ -3301,6 +3858,20 @@ fn axis_title_rotated(chart: &Chart, plot: Area, px_per_point: f32, res: &Resour
     rotated
 }
 
+/// The legend's entry for a series' trendline, as Office names it: the kind and the series (`線形 (S1)`).
+fn trendline_legend_name(series: &Series, trendline: &ibis_doc_model::Trendline) -> String {
+    use ibis_doc_model::TrendlineType as T;
+    let id = match trendline.kind {
+        T::Linear => "pptx.chart.legend.trendline.linear",
+        T::Exponential => "pptx.chart.legend.trendline.exp",
+        T::Logarithmic => "pptx.chart.legend.trendline.log",
+        T::Polynomial => "pptx.chart.legend.trendline.poly",
+        T::Power => "pptx.chart.legend.trendline.power",
+        T::MovingAverage => "pptx.chart.legend.trendline.moving-avg",
+    };
+    crate::shell::i18n::format(id, &[("series", &series.name), ("period", &trendline.period)])
+}
+
 /// Whether a series has a legend entry: some data, or a range of cells
 /// (empty ones) in a workbook.
 fn listed(series: &Series) -> bool {
@@ -3326,17 +3897,38 @@ fn legend_names(chart: &Chart, legend: &ibis_doc_model::Legend) -> Vec<String> {
     }
     let names: Vec<String> = match chart.groups.iter().find(|g| is_round(g)).or(varied_line).and_then(|g| g.series.first()) {
         Some(series) => series.categories.clone(),
-        None => chart.groups.iter().flat_map(|g| g.series.iter().filter(|s| listed(s))).map(|s| s.name.clone()).collect(),
+        None => {
+            let mut names: Vec<String> = chart.groups.iter().flat_map(|g| g.series.iter().filter(|s| listed(s))).map(|s| s.name.clone()).collect();
+            // The trendlines are listed after the series.
+            names.extend(chart.groups.iter().flat_map(|g| g.series.iter().filter(|s| listed(s))).filter_map(|s| s.trendline.as_ref().map(|t| trendline_legend_name(s, t))));
+            names
+        }
     };
     names.into_iter().enumerate().filter(|(i, _)| !legend.hidden.contains(i)).map(|(_, n)| n).collect()
 }
 
 /// The rows an automatic legend above or below the plot wraps into (one
 /// when its entries fit a row; else a grid of as many columns as fit).
+/// Whether this legend wraps by the chart's padding: one of a PowerPoint chart, above or below the plot, laid out automatically.
+fn power_point_legend_wraps(chart: &Chart, legend: &ibis_doc_model::Legend) -> bool {
+    !chart.excel_layout && legend.layout.is_none() && matches!(legend.side, Side::Bottom | Side::Top)
+}
+
 fn legend_rows(chart: &Chart, legend: &ibis_doc_model::Legend, w: f32, px_per_point: f32, res: &Resources) -> usize {
+    legend_layout(chart, legend, w, px_per_point, res).0
+}
+
+/// The height of a legend's rows in lines of one and a half of its text: a column stands wider apart (`LEGEND_ENTRY_PITCH`).
+fn legend_lines(chart: &Chart, legend: &ibis_doc_model::Legend, w: f32, px_per_point: f32, res: &Resources) -> f32 {
+    let (rows, column) = legend_layout(chart, legend, w, px_per_point, res);
+    rows as f32 * if column { LEGEND_ENTRY_PITCH / 1.5 } else { 1.0 }
+}
+
+/// How many rows an automatic legend above or below stands in, and whether they are one column.
+fn legend_layout(chart: &Chart, legend: &ibis_doc_model::Legend, w: f32, px_per_point: f32, res: &Resources) -> (usize, bool) {
     let names = legend_names(chart, legend);
     if names.len() <= 1 {
-        return 1;
+        return (1, false);
     }
     let size = legend.text.size as f32 / 100.0 * px_per_point;
     let has_line = chart.groups.iter().any(|g| g.kind == ChartType::Line);
@@ -3344,14 +3936,29 @@ fn legend_rows(chart: &Chart, legend: &ibis_doc_model::Legend, w: f32, px_per_po
     let key = if excel_key { (19.4 + 2.6) * px_per_point } else { size * if has_line { 2.44 } else { 0.56 } + size * 0.37 };
     let widths: Vec<f32> = names.iter().map(|n| key + res.text_width(n, &chart_font(&legend.text, n, res), size)).collect();
     let total: f32 = widths.iter().sum::<f32>() + (names.len() - 1) as f32 * size * 0.5;
+    // PowerPoint's legend above or below the plot wraps when its row would pass the chart's padding (PCHT-00204: a row of 160 pt
+    // in a chart 167 pt wide stands in a column; one of 130 pt stays a row).
+    if power_point_legend_wraps(chart, legend) {
+        let room = w - 2.0 * CHART_PADDING_PT * px_per_point;
+        if total <= room {
+            return (1, false);
+        }
+        let widest = widths.iter().cloned().fold(0.0, f32::max).max(1.0);
+        let columns = ((room + size * 0.5) / (widest + size * 0.5)).floor().max(1.0) as usize;
+        return (names.len().div_ceil(columns), columns == 1);
+    }
     // As the grid is made in `legend_element`: only a row well past the box wraps.
     if total <= w * 1.15 {
-        return 1;
+        return (1, false);
     }
     let widest = widths.iter().cloned().fold(0.0, f32::max).max(1.0);
-    let columns = if excel_key { ((w * 0.9) / (widest + 4.9 * px_per_point)).floor().max(1.0) as usize } else { ((w * 1.05) / widest).floor().max(1.0) as usize };
-    names.len().div_ceil(columns)
+    let columns = if excel_key { ((w * 0.9) / (widest + 4.9 * px_per_point)).floor().max(1.0) as usize } else { ((w * 1.0) / (widest + size * LEGEND_MIN_GAP)).floor().max(1.0) as usize };
+    (names.len().div_ceil(columns), false)
 }
+
+/// The least room between two entries of a legend's grid, in ems of its text: the grid's columns are as many as fit with it
+/// (the entries of a full row of equal columns touched, a name running into the next key).
+const LEGEND_MIN_GAP: f32 = 0.3;
 
 /// Line pitch of a legend's entries in a column, in ems of its text.
 const LEGEND_ENTRY_PITCH: f32 = 1.85;
@@ -3421,19 +4028,28 @@ fn legend_element(chart: &Chart, legend: &ibis_doc_model::Legend, w: f32, h: f32
                     let is_radar_line = matches!(g.kind, ChartType::Radar { style: None | Some(ibis_doc_model::RadarStyle::Standard | ibis_doc_model::RadarStyle::Marker) });
                     let is_radar_marker = matches!(g.kind, ChartType::Radar { style: Some(ibis_doc_model::RadarStyle::Marker) });
                     g.series.iter().filter(|s| listed(s)).map(move |s| {
-                        let line = g.kind == ChartType::Line || (matches!(g.kind, ChartType::Scatter { .. }) && s.stroke.is_some()) || is_radar_line;
+                        let has_marker = s.marker.as_ref().is_some_and(|m| m.symbol != MarkerSymbol::None);
+                        let line = g.kind == ChartType::Line || (matches!(g.kind, ChartType::Scatter { .. }) && (s.stroke.is_some() || has_marker)) || is_radar_line;
                         (s, line, is_radar_marker)
                     })
                 })
                 .enumerate()
                 .map(|(index, (s, line, is_radar_marker))| {
                     let color = if line {
-                        s.stroke.as_ref().map(|st| hsla(st.color)).or_else(|| series_color(s))
+                        s.stroke.as_ref().map(|st| hsla(st.color)).or_else(|| series_color(s)).or_else(|| s.marker.as_ref().and_then(|m| background_color(&m.fill)))
                     } else {
                         series_color(s)
                     };
                     (s.name.clone(), color, line.then_some((s, is_radar_marker, index)))
                 })
+                .chain(
+                    // The trendlines follow the series: a dashed key (`usize::MAX` marks it).
+                    chart.groups.iter().flat_map(|g| g.series.iter().filter(|s| listed(s))).filter_map(|s| {
+                        let t = s.trendline.as_ref()?;
+                        let color = t.stroke.as_ref().map(|st| hsla(st.color)).or_else(|| series_color(s));
+                        Some((trendline_legend_name(s, t), color, Some((s, false, usize::MAX))))
+                    }),
+                )
                 .collect(),
         }
     };
@@ -3445,7 +4061,7 @@ fn legend_element(chart: &Chart, legend: &ibis_doc_model::Legend, w: f32, h: f32
                 Some(title) => {
                     let lines = title.text.lines().count().max(1) as f32;
                     let top = CHART_PADDING_PT * px_per_point + label_line(&title.text, &title.style, px_per_point, res) * lines;
-                    Area { x: 0.0, y: top, w, h: legend.text.size as f32 / 100.0 * px_per_point * 1.5 * legend_rows(chart, legend, w, px_per_point, res) as f32 + legend.text.size as f32 / 100.0 * px_per_point }
+                    Area { x: 0.0, y: top, w, h: legend.text.size as f32 / 100.0 * px_per_point * 1.5 * legend_lines(chart, legend, w, px_per_point, res) + legend.text.size as f32 / 100.0 * px_per_point }
                 }
                 None => Area { x: 0.0, y: 0.0, w, h: h * 0.1 },
             },
@@ -3453,7 +4069,7 @@ fn legend_element(chart: &Chart, legend: &ibis_doc_model::Legend, w: f32, h: f32
             // A line and a half high, the chart's padding above its bottom.
             Side::Bottom => {
                 let size = legend.text.size as f32 / 100.0 * px_per_point;
-                let line = size * 1.5 * legend_rows(chart, legend, w, px_per_point, res) as f32;
+                let line = size * 1.5 * legend_lines(chart, legend, w, px_per_point, res);
                 // Native automatic pie/doughnut legend keys sit about 0.83pt higher
                 // at 8pt text, in both presentation and spreadsheet frames.
                 let lift = if chart.groups.iter().all(|g| matches!(g.kind, ChartType::Pie { .. }))
@@ -3505,7 +4121,8 @@ fn legend_element(chart: &Chart, legend: &ibis_doc_model::Legend, w: f32, h: f32
     // Measured in the legend's font: whether the entries fit in a row.
     let measured = |name: &str| res.text_width(name, &chart_font(&legend.text, name, res), size);
     let total: f32 = entries.iter().map(|(name, _, _)| key_w + key_gap + measured(name)).sum();
-    let fits_row = total.min(visible * widest) + (visible - 1.0) * entry_gap <= area.w;
+    let pp_wrap = power_point_legend_wraps(chart, legend);
+    let fits_row = total.min(visible * widest) + (visible - 1.0) * entry_gap <= if pp_wrap { area.w - 2.0 * CHART_PADDING_PT * px_per_point } else { area.w };
     // A row narrows its gaps to stay within the box, down to half a size.
     let entry_gap = if visible > 1.0 { entry_gap.min((area.w - total) / (visible - 1.0)).max(size * 0.5) } else { entry_gap };
     // Two entries' widths side by side (with 5 % to spare: the substitute
@@ -3515,7 +4132,8 @@ fn legend_element(chart: &Chart, legend: &ibis_doc_model::Legend, w: f32, h: f32
     let column = match legend.layout {
         Some(_) if matches!(legend.side, Side::Left | Side::Right) => !two_fit || area.w < w * 0.45,
         Some(_) => !fits_row && !two_fit && area.h >= visible * size * 1.2,
-        None => matches!(legend.side, Side::Left | Side::Right),
+        // A row past the chart's padding stands in a column when only one entry's width fits across (PCHT-00204).
+        None => matches!(legend.side, Side::Left | Side::Right) || (pp_wrap && !fits_row && visible > 1.0 && 2.0 * widest + entry_gap > area.w - 2.0 * CHART_PADDING_PT * px_per_point),
     };
     // Entries in a row that do not fit it wrap into a grid of equal
     // columns, as many as fit (Excel's bottom legend of eight series).
@@ -3530,8 +4148,8 @@ fn legend_element(chart: &Chart, legend: &ibis_doc_model::Legend, w: f32, h: f32
     // Excel's grid is as wide as its entries (4.9 pt between them) and
     // centred, in at most 90 % of the chart (a private workbook's legend of
     // 55 entries: 7 columns of 58.5 pt on a chart about 505 pt wide).
-    let by_width = if excel_key { ((area.w * 0.9) / (measured_widest + 4.9 * px_per_point).max(1.0)).floor().max(1.0) } else { ((area.w * 1.05) / measured_widest.max(1.0)).floor().max(1.0) };
-    let rows_fit = (area.h / (size * 1.5)).floor().max(1.0);
+    let by_width = if excel_key { ((area.w * 0.9) / (measured_widest + 4.9 * px_per_point).max(1.0)).floor().max(1.0) } else { ((area.w * 1.0) / (measured_widest + size * LEGEND_MIN_GAP).max(1.0)).floor().max(1.0) };
+    let rows_fit = (area.h / (size * 1.2)).floor().max(1.0);
     let grid_columns = by_width.max((visible / rows_fit).ceil()).min(visible);
     // (A hair under the share, so rounding does not wrap the last column.)
     let grid_width = if excel_key { measured_widest + 4.9 * px_per_point } else { area.w / grid_columns - 0.5 };
@@ -3539,6 +4157,15 @@ fn legend_element(chart: &Chart, legend: &ibis_doc_model::Legend, w: f32, h: f32
         let swatch = match line {
             // A line's key is its line, as thick as the series', with its
             // marker in the middle at the marker's size.
+            // A trendline's key: its dashes.
+            Some((series, _, usize::MAX)) => {
+                let thickness = series.trendline.as_ref().and_then(|t| t.stroke.as_ref()).map_or(1.5, |st| st.width as f32 * px_per_point / EMU_PER_POINT as f32).max(0.5);
+                let dashes = (0..3).map(|k| {
+                    let step = key_w / 3.0;
+                    div().absolute().left(px(step * k as f32)).w(px(step * 0.62)).top(px(size * 0.5 - thickness / 2.0)).h(px(thickness)).when_some(color, |d, c| d.bg(c))
+                });
+                div().relative().flex_shrink_0().w(px(key_w)).h(px(size)).children(dashes)
+            }
             Some((series, is_radar_marker, index)) => {
                 let thickness = series.stroke.as_ref().map_or(1.0, |st| st.width as f32 * px_per_point / EMU_PER_POINT as f32).max(0.5);
                 let has_marker = series.marker.as_ref().is_some_and(|m| m.symbol != MarkerSymbol::None) || is_radar_marker;
@@ -3577,7 +4204,7 @@ fn legend_element(chart: &Chart, legend: &ibis_doc_model::Legend, w: f32, h: f32
                     .flex_shrink_0()
                     .w(px(key_w))
                     .h(px(size))
-                    .child(div().absolute().left_0().w_full().top(px(size * 0.5 - thickness / 2.0)).h(px(thickness)).when_some(color, |d, c| d.bg(c)))
+                    .children((series.stroke.is_some() || !has_marker).then(|| key_line(series.stroke.as_ref(), key_w, size, thickness, color)).into_iter().flatten())
                     .children(marker)
             }
             None => div().flex_shrink_0().w(px(key_w)).h(px(size * 0.56)).when_some(color, |d, c| d.bg(c)),
@@ -3701,7 +4328,7 @@ fn draw_treemap(nodes: &[ibis_doc_model::TreeNode], (overlapping, values, at_end
                 let label = if text_width(&text, &style, px_per_point) + 6.0 * px_per_point <= w { text } else { node.name.clone() };
                 // The members' names stand at the bottom when asked to (`inEnd`); the groups' always at the top.
                 let ly = if leaf && at_end && overlapping { y + h - 1.5 * px_per_point - line / 2.0 } else { y + 1.5 * px_per_point + line / 2.0 };
-                labels.push(Label { x: x + 3.0 * px_per_point, y: ly, text: label, style: style.clone(), anchor: Anchor::Start });
+                labels.push(Label::plain(x + 3.0 * px_per_point, ly, label, style.clone(), Anchor::Start));
             }
             if !leaf {
                 let inner = if overlapping { (x, y, w, h) } else { (x + 1.0 * px_per_point, y + header, (w - 2.0 * px_per_point).max(0.0), (h - header - 1.0 * px_per_point).max(0.0)) };
@@ -3755,7 +4382,7 @@ fn draw_sunburst(nodes: &[ibis_doc_model::TreeNode], area: Area, px_per_point: f
             let chord = (r0 + r1) / 2.0 * sweep;
             if chord > 2.2 * text_height(style, px_per_point) && !node.name.is_empty() {
                 let r = (r0 + r1) / 2.0;
-                labels.push(Label { x: c.0 + r * mid.cos(), y: c.1 + r * mid.sin(), text: node.name.clone(), style: style.clone(), anchor: Anchor::Center });
+                labels.push(Label::plain(c.0 + r * mid.cos(), c.1 + r * mid.sin(), node.name.clone(), style.clone(), Anchor::Center));
             }
             arcs(&node.children, start, sweep, level + 1, c, (ring, hole), px_per_point, white, style, marks, labels);
             start += sweep;
@@ -3796,10 +4423,10 @@ fn draw_data_table(
         .unwrap_or(0)
         .max(1);
 
-    let row_h = 13.0 * px_per_point;
-    let table_h = row_h * series_list.len() as f32;
-    let table_top = plot.bottom() + 4.0 * px_per_point;
-    let table_bottom = table_top + table_h;
+    let row_h = data_table_row_height(chart, px_per_point);
+    let cat_top = plot.bottom();
+    let table_top = cat_top + row_h;
+    let table_bottom = table_top + row_h * series_list.len() as f32;
 
     let name_col_w = (plot.w * 0.22).clamp(40.0 * px_per_point, 120.0 * px_per_point);
     let table_left = (plot.x - name_col_w).max(2.0 * px_per_point);
@@ -3807,13 +4434,15 @@ fn draw_data_table(
 
     let data_w = table_right - (table_left + name_col_w);
     let col_w = data_w / categories as f32;
+    let sep_x = table_left + name_col_w;
 
     let border_color = hsla(ibis_doc_model::Color::opaque(ibis_doc_model::Rgb(0xbfbfbf)));
     let border_stroke = 1.0;
 
     // 1. 水平罫線 (show_horz_border)
     if table.show_horz_border {
-        for i in 1..series_list.len() {
+        marks.push(Mark::Stroke(vec![(sep_x, cat_top), (table_right, cat_top)], border_stroke, border_color));
+        for i in 0..series_list.len() {
             let y = table_top + i as f32 * row_h;
             marks.push(Mark::Stroke(vec![(table_left, y), (table_right, y)], border_stroke, border_color));
         }
@@ -3821,16 +4450,26 @@ fn draw_data_table(
 
     // 2. 垂直罫線 (show_vert_border)
     if table.show_vert_border {
-        let sep_x = table_left + name_col_w;
-        marks.push(Mark::Stroke(vec![(sep_x, table_top), (sep_x, table_bottom)], border_stroke, border_color));
+        marks.push(Mark::Stroke(vec![(sep_x, cat_top), (sep_x, table_bottom)], border_stroke, border_color));
         for j in 1..categories {
             let x = sep_x + j as f32 * col_w;
-            marks.push(Mark::Stroke(vec![(x, table_top), (x, table_bottom)], border_stroke, border_color));
+            marks.push(Mark::Stroke(vec![(x, cat_top), (x, table_bottom)], border_stroke, border_color));
         }
     }
 
     // 3. 外枠 (show_outline)
     if table.show_outline {
+        marks.push(Mark::Stroke(
+            vec![
+                (sep_x, cat_top),
+                (table_right, cat_top),
+                (table_right, table_top),
+                (sep_x, table_top),
+                (sep_x, cat_top),
+            ],
+            border_stroke,
+            border_color,
+        ));
         marks.push(Mark::Stroke(
             vec![
                 (table_left, table_top),
@@ -3844,18 +4483,19 @@ fn draw_data_table(
         ));
     }
 
+    let cat_text = chart.axes.iter().find(|a| a.kind == AxisKind::Category).map(|a| &a.text);
     let text_style = ChartText {
-        size: 900,
+        size: cat_text.map_or(900, |t| t.size),
         bold: false,
-        color: Some(ibis_doc_model::Color::opaque(ibis_doc_model::Rgb(0x333333))),
-        font: None,
-        east_asian_font: None,
+        color: cat_text.and_then(|t| t.color).or(Some(ibis_doc_model::Color::opaque(ibis_doc_model::Rgb(0x333333)))),
+        font: cat_text.and_then(|t| t.font.clone()),
+        east_asian_font: cat_text.and_then(|t| t.east_asian_font.clone()),
     };
 
     // 4. 各行（系列）のデータ
     for (row_idx, series) in series_list.iter().enumerate() {
         let row_y = table_top + row_idx as f32 * row_h;
-        let text_y = row_y + row_h * 0.75;
+        let text_y = row_y + row_h * 0.5;
 
         // 系列名と凡例キー
         let mut name_x = table_left + 4.0 * px_per_point;
@@ -3877,13 +4517,13 @@ fn draw_data_table(
             name_x += key_w + 3.0 * px_per_point;
         }
 
-        labels.push(Label {
-            x: name_x,
-            y: text_y,
-            text: series.name.clone(),
-            style: text_style.clone(),
-            anchor: Anchor::Start,
-        });
+        labels.push(Label::plain(
+            name_x,
+            text_y,
+            series.name.clone(),
+            text_style.clone(),
+            Anchor::Start,
+        ));
 
         // データ列
         let sep_x = table_left + name_col_w;
@@ -3900,13 +4540,13 @@ fn draw_data_table(
                 }
             }).unwrap_or_default();
 
-            labels.push(Label {
-                x: cell_center_x,
-                y: text_y,
+            labels.push(Label::plain(
+                cell_center_x,
+                text_y,
                 text,
-                style: text_style.clone(),
-                anchor: Anchor::Center,
-            });
+                text_style.clone(),
+                Anchor::Center,
+            ));
         }
     }
 }
@@ -3964,8 +4604,8 @@ fn draw_error_bars(
     marks: &mut Vec<Mark>,
     eb: &ibis_doc_model::ErrorBars,
     _series: &ibis_doc_model::Series,
-    // (data_value, screen_x, screen_y)
-    points: &[(f64, f32, f32)],
+    // (point_index, data_value, screen_x, screen_y)
+    points: &[(usize, f64, f32, f32)],
     plot: Area,
     scale: f32,
     scale_ref: &Scale,
@@ -3977,7 +4617,7 @@ fn draw_error_bars(
 
     use ibis_doc_model::{ErrorBarType, ErrorBarValueType};
 
-    let valid_vals: Vec<f64> = points.iter().map(|p| p.0).collect();
+    let valid_vals: Vec<f64> = points.iter().map(|p| p.1).collect();
     let n = valid_vals.len();
     let mean = if n > 0 { valid_vals.iter().sum::<f64>() / (n as f64) } else { 0.0 };
     let std_dev = if n > 1 {
@@ -3994,24 +4634,34 @@ fn draw_error_bars(
     let stroke_width = eb.stroke.as_ref().map(|s| s.width as f32 * scale).unwrap_or(1.0 * scale).max(1.0);
     let cap_w = 3.5 * scale;
 
-    for &(val, sx, sy) in points {
-        let err_amount = match eb.val_type {
-            ErrorBarValueType::FixedValue => eb.value.map(|n| n.0).unwrap_or(1.0),
+    for &(ci, val, sx, sy) in points {
+        let (err_plus, err_minus) = match eb.val_type {
+            ErrorBarValueType::FixedValue => {
+                let v = eb.value.map(|n| n.0).unwrap_or(1.0);
+                (v, v)
+            }
             ErrorBarValueType::Percentage => {
                 let pct = eb.value.map(|n| n.0).unwrap_or(5.0);
-                val.abs() * (pct / 100.0)
+                let v = val.abs() * (pct / 100.0);
+                (v, v)
             }
             ErrorBarValueType::StandardDeviation => {
                 let mult = eb.value.map(|n| n.0).unwrap_or(1.0);
-                mult * std_dev
+                let v = mult * std_dev;
+                (v, v)
             }
-            ErrorBarValueType::StandardError => std_err,
-            ErrorBarValueType::Custom => eb.value.map(|n| n.0).unwrap_or(1.0),
+            ErrorBarValueType::StandardError => (std_err, std_err),
+            ErrorBarValueType::Custom => {
+                let fallback = eb.value.map(|n| n.0).unwrap_or(1.0);
+                let p = if eb.plus.is_empty() { fallback } else { eb.plus.get(ci).copied().flatten().map_or(0.0, |n| n.0) };
+                let m = if eb.minus.is_empty() { fallback } else { eb.minus.get(ci).copied().flatten().map_or(0.0, |n| n.0) };
+                (p, m)
+            }
         };
 
         if !horizontal {
-            let v_plus = val + err_amount;
-            let v_minus = val - err_amount;
+            let v_plus = val + err_plus;
+            let v_minus = val - err_minus;
             let py_plus = plot.bottom() - scale_ref.at(v_plus).clamp(-0.5, 1.5) * plot.h;
             let py_minus = plot.bottom() - scale_ref.at(v_minus).clamp(-0.5, 1.5) * plot.h;
 
@@ -4037,8 +4687,8 @@ fn draw_error_bars(
                 }
             }
         } else {
-            let v_plus = val + err_amount;
-            let v_minus = val - err_amount;
+            let v_plus = val + err_plus;
+            let v_minus = val - err_minus;
             let px_plus = plot.x + scale_ref.at(v_plus).clamp(-0.5, 1.5) * plot.w;
             let px_minus = plot.x + scale_ref.at(v_minus).clamp(-0.5, 1.5) * plot.w;
 
@@ -4113,12 +4763,14 @@ fn draw_trendline(
         },
     };
     let stroke_color = trendline.stroke.as_ref().map(|s| s.color).unwrap_or(default_color);
-    let stroke_width = trendline.stroke.as_ref().map(|s| s.width as f32 * scale).unwrap_or(1.5 * scale);
+    let stroke_width = trendline.stroke.as_ref().map(|s| s.width as f32 * scale).unwrap_or(1.5 * EMU_PER_POINT as f32 * scale);
 
-    let min_x = valid_points.first().map(|p| p.0).unwrap_or(0.0);
-    let max_x = valid_points.last().map(|p| p.0).unwrap_or(1.0);
-    let min_sx = valid_points.first().map(|p| p.2).unwrap_or(plot.x);
-    let max_sx = valid_points.last().map(|p| p.2).unwrap_or(plot.right());
+    let min_pt = valid_points.iter().min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let max_pt = valid_points.iter().max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let min_x = min_pt.map(|p| p.0).unwrap_or(0.0);
+    let max_x = max_pt.map(|p| p.0).unwrap_or(1.0);
+    let min_sx = min_pt.map(|p| p.2).unwrap_or(plot.x);
+    let max_sx = max_pt.map(|p| p.2).unwrap_or(plot.right());
     let dx_val = max_x - min_x;
     let dx_scr = max_sx - min_sx;
 
@@ -4373,7 +5025,7 @@ fn draw_trendline(
     }
 
     if line_points.len() >= 2 {
-        let segments = dashed_line(&line_points, 6.0 * scale, 4.0 * scale);
+        let segments = dashed_line(&line_points, 6.0 * EMU_PER_POINT as f32 * scale, 4.0 * EMU_PER_POINT as f32 * scale);
         for seg in segments {
             marks.push(Mark::Stroke(seg, stroke_width, hsla(stroke_color)));
         }
@@ -4403,13 +5055,13 @@ fn draw_trendline(
             font: None,
             east_asian_font: None,
         };
-        labels.push(Label {
-            x: label_x,
-            y: label_y,
+        labels.push(Label::plain(
+            label_x,
+            label_y,
             text,
             style,
-            anchor: Anchor::Center,
-        });
+            Anchor::Center,
+        ));
     }
 }
 
@@ -4466,7 +5118,7 @@ mod marker_tests {
         let series = Series {
             name: "S1".into(), categories: vec![], values: vec![], format: "General".into(),
             fill: blue, stroke: None, point_fills: vec![(1, green.clone()), (2, Fill::None)],
-            point_strokes: vec![], marker: Some(marker.clone()), labels: None, trendline: None, error_bars: None, x_values: vec![], bubble_sizes: vec![], bubble_3d: false,
+            point_strokes: vec![], explosion: 0, point_explosions: vec![], marker: Some(marker.clone()), labels: None, trendline: None, error_bars: None, x_values: vec![], bubble_sizes: vec![], bubble_3d: false,
         };
         assert_eq!(marker_fill(&series, 0, &marker), &red);
         assert_eq!(marker_fill(&series, 1, &marker), &green);
@@ -4475,3 +5127,124 @@ mod marker_tests {
         assert_eq!(marker_fill(&series, 0, &unfilled), &Fill::None);
     }
 }
+
+#[cfg(test)]
+mod shadow_tests {
+    use super::{Mark, soft_shadow};
+
+    /// Chart style 10: a bar's soft shadow reaches about 3 pt out, lies 1.8 pt lower than the bar, and is
+    /// drawn as layers from the widest to the narrowest (GitHub #22: the chart of style 10 has a shadow).
+    #[test]
+    fn a_bars_shadow_is_layers_from_the_widest_down_a_little() {
+        let scale = 1.0 / 12_700.0; // one pixel per point
+        let bar = vec![(10.0, 20.0), (30.0, 20.0), (30.0, 60.0), (10.0, 60.0)];
+        let mut marks = Vec::new();
+        soft_shadow(&mut marks, &bar, scale);
+        let rects: Vec<&Vec<(f32, f32)>> = marks.iter().map(|m| match m { Mark::Fill(points, _) => points, _ => panic!("a fill") }).collect();
+        assert_eq!(rects.len(), 6);
+        let widths: Vec<f32> = rects.iter().map(|r| r[1].0 - r[0].0).collect();
+        assert!(widths.windows(2).all(|w| w[0] > w[1]), "the widest first: {widths:?}");
+        // The widest reaches 2 sigma = 3.15 pt out of the bar at the sides, and is moved 1.8 pt down.
+        assert!((widths[0] - (20.0 + 2.0 * 3.15)).abs() < 0.05, "{widths:?}");
+        assert!((rects[0][0].1 - (20.0 - 3.15 + 1.8)).abs() < 0.05, "{:?}", rects[0]);
+        assert!((rects[0][2].1 - (60.0 + 3.15 + 1.8)).abs() < 0.05, "{:?}", rects[0]);
+    }
+
+    /// A dashed line (`a:prstDash`) is one mark of its dashes, not a mark for each, and a solid one stays one line.
+    #[test]
+    fn a_dashed_line_is_one_mark_of_its_dashes() {
+        use super::push_stroke;
+        use ibis_doc_model::{Color, LineDash, Rgb, Stroke};
+        let mut stroke = Stroke::solid(Color::opaque(Rgb(0xff0000)), 12_700);
+        let mut marks = Vec::new();
+        push_stroke(&mut marks, vec![(0.0, 0.0), (100.0, 0.0)], 1.0, &stroke);
+        assert!(matches!(marks.as_slice(), [Mark::Stroke(points, ..)] if points.len() == 2));
+        stroke.dash = LineDash::Dash;
+        marks.clear();
+        push_stroke(&mut marks, vec![(0.0, 0.0), (100.0, 0.0)], 1.0, &stroke);
+        // Dashes of 4 line widths and gaps of 3: 100 / 7 = 14.3 of them, in one mark.
+        match marks.as_slice() {
+            [Mark::Dashes(pieces, width, _)] => {
+                assert_eq!(pieces.len(), 15, "{pieces:?}");
+                assert_eq!(*width, 1.0);
+                assert_eq!(pieces[0], vec![(0.0, 0.0), (4.0, 0.0)]);
+                assert_eq!(pieces[1][0], (7.0, 0.0));
+            }
+            other => panic!("one mark of dashes, got {} marks", other.len()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod dash_line_tests {
+    use super::{Mark, push_stroke};
+    use ibis_doc_model::{Color, LineDash, Rgb, Stroke};
+
+    const ALL: [LineDash; 10] = [
+        LineDash::Dot, LineDash::Dash, LineDash::LgDash, LineDash::DashDot, LineDash::LgDashDot, LineDash::LgDashDotDot,
+        LineDash::SysDash, LineDash::SysDot, LineDash::SysDashDot, LineDash::SysDashDotDot,
+    ];
+
+    fn dashes(dash: LineDash, points: Vec<(f32, f32)>, width: f32) -> Vec<Vec<(f32, f32)>> {
+        let mut stroke = Stroke::solid(Color::opaque(Rgb(0xff0000)), 12_700);
+        stroke.dash = dash;
+        let mut marks = Vec::new();
+        push_stroke(&mut marks, points, width, &stroke);
+        match marks.as_slice() {
+            [Mark::Dashes(pieces, w, _)] => {
+                assert_eq!(*w, width, "{dash:?}: the dashes are as wide as the line");
+                pieces.clone()
+            }
+            other => panic!("{dash:?}: one mark of dashes, got {} marks", other.len()),
+        }
+    }
+
+    fn length(piece: &[(f32, f32)]) -> f32 {
+        piece.windows(2).map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt()).sum()
+    }
+
+    /// Every line type (`a:prstDash`, ECMA-376 §20.1.10.48), at several widths, is one mark whose dashes and gaps are
+    /// the pattern's in line widths, from the start of the line.
+    #[test]
+    fn every_dash_type_keeps_its_pattern_at_every_width() {
+        for dash in ALL {
+            let pattern = dash.pattern();
+            let (on, off): (Vec<f32>, Vec<f32>) = (pattern.iter().step_by(2).copied().collect(), pattern.iter().skip(1).step_by(2).copied().collect());
+            for width in [1.0f32, 2.0, 3.5] {
+                let pieces = dashes(dash, vec![(0.0, 5.0), (400.0, 5.0)], width);
+                assert!(pieces.len() > 3, "{dash:?} at {width}");
+                assert_eq!(pieces[0][0], (0.0, 5.0), "{dash:?}: starts at the line's start");
+                for (k, piece) in pieces.iter().enumerate().take(pieces.len() - 1) {
+                    let want = on[k % on.len()] * width;
+                    assert!((length(piece) - want).abs() < 1e-3, "{dash:?} at {width}: dash {k} is {} long, not {want}", length(piece));
+                    let gap = pieces[k + 1][0].0 - piece[piece.len() - 1].0;
+                    let want_gap = off[k % off.len()] * width;
+                    assert!((gap - want_gap).abs() < 1e-3, "{dash:?} at {width}: gap {k} is {gap}, not {want_gap}");
+                }
+            }
+        }
+    }
+
+    /// A line thinner than a pixel dashes as one of a pixel (the dashes would be finer than any screen or page shows),
+    /// still as one mark; a solid line is a line.
+    #[test]
+    fn a_thin_line_dashes_as_a_pixel_and_a_solid_line_is_one_line() {
+        let thin = dashes(LineDash::SysDot, vec![(0.0, 0.0), (20.0, 0.0)], 0.25);
+        assert_eq!(thin[0], vec![(0.0, 0.0), (1.0, 0.0)]);
+        assert_eq!(thin[1][0], (2.0, 0.0));
+        let mut marks = Vec::new();
+        push_stroke(&mut marks, vec![(0.0, 0.0), (20.0, 0.0)], 0.25, &Stroke::solid(Color::opaque(Rgb(0)), 3_175));
+        assert!(matches!(marks.as_slice(), [Mark::Stroke(points, w, _)] if points.len() == 2 && *w == 0.25));
+    }
+
+    /// The dashes go on round a bend of the line, the pattern unbroken.
+    #[test]
+    fn the_pattern_goes_on_round_a_bend() {
+        let pieces = dashes(LineDash::Dash, vec![(0.0, 0.0), (10.0, 0.0), (10.0, 20.0)], 1.0);
+        let along: f32 = pieces.iter().map(|p| length(p)).sum();
+        // 30 long in dashes of 4 and gaps of 3: four whole dashes and 2 of the fifth (at 28).
+        assert!((along - 18.0).abs() < 1e-3, "{along}");
+        assert!(pieces.iter().any(|p| p.len() == 3), "a dash bends with the line: {pieces:?}");
+    }
+}
+

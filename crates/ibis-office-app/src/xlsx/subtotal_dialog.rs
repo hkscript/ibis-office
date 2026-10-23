@@ -343,7 +343,7 @@ impl SlideEditor {
                                 .into_any_element(),
                         )),
                 )
-                .child(mark("xlsx.subtotal.range", Input::new(&p.range).small().into_any_element())),
+                .child(mark("xlsx.subtotal.range", Input::new(&p.range).small().cleanable(true).into_any_element())),
         );
 
         // 1. グループの基準 (Group by column)

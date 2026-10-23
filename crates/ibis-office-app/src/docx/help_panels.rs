@@ -508,39 +508,28 @@ impl SlideEditor {
                     .into_any_element(),
             )
         };
-        let field = |i: usize| {
+        let aligned_row = |mark_id: &str, label_text: SharedString, input: &Entity<InputState>, unit_text: SharedString| {
             h_flex()
-                .gap_2()
+                .w_full()
                 .items_center()
-                .child(div().w(px(84.)).text_size(px(12.)).child(text(FIELDS[i])))
-                .child(mark(&format!("field-{i}"), div().w(px(90.)).child(Input::new(&p.fields[i]).small()).into_any_element()))
-                .child(div().text_size(px(12.)).child("mm"))
+                .justify_between()
+                .gap_2()
+                .child(div().text_size(px(12.)).child(label_text))
+                .child(
+                    h_flex()
+                        .flex_none()
+                        .items_center()
+                        .gap_1()
+                        .child(mark(mark_id, div().w(px(96.)).child(crate::shell::chrome::clearable_text_field(input)).into_any_element()))
+                        .child(div().w(px(36.)).text_size(px(12.)).child(unit_text)),
+                )
         };
-        // The buttons first: the fields below are many.
+        let field = |i: usize| aligned_row(&format!("field-{i}"), text(FIELDS[i]), &p.fields[i], "mm".into());
         let mut body = v_flex()
             .gap_2()
             .px(px(18.))
             .py(px(8.))
             .child(div().text_size(px(12.)).child(SharedString::from(p.message.clone())))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(mark("apply", Button::new("page-setup-apply").primary().small().label(text("OK")).on_click(cx.listener(|this, _, _, cx| this.apply_page_setup_panel(cx))).into_any_element()))
-                    .child(mark(
-                        "close",
-                        Button::new("page-setup-close")
-                            .small()
-                            .ghost()
-                            .label(text("_shell.close"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if let Some(s) = this.doc_state_mut() {
-                                    s.helper.page_setup = None;
-                                }
-                                cx.notify();
-                            }))
-                            .into_any_element(),
-                    )),
-            )
             .child(div().text_size(px(13.)).child(text("_shell.margins")));
         for i in 0..5 {
             body = body.child(field(i));
@@ -574,14 +563,12 @@ impl SlideEditor {
                     })),
             );
         if p.multiple_pages.is_book_fold() {
-            body = body.child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(div().w(px(120.)).text_size(px(12.)).child(text("docx.page.book-fold-sheets")))
-                    .child(mark("book-fold-sheets", div().w(px(70.)).child(Input::new(&p.book_fold_sheets).small()).into_any_element()))
-                    .child(div().text_size(px(11.)).child(text("docx.help-panels.book-fold-sheets-hint"))),
-            );
+            body = body.child(aligned_row(
+                "book-fold-sheets",
+                text("docx.page.book-fold-sheets"),
+                &p.book_fold_sheets,
+                text("docx.help-panels.book-fold-sheets-hint"),
+            ));
         }
         body = body
             .child(div().text_size(px(13.)).child(text("docx.help-panels.document-grid")))
@@ -593,38 +580,10 @@ impl SlideEditor {
                     .child(choice("grid-lines", p.grid_type == ibis_doc_model::DocGridType::Lines, "docx.help-panels.lines-only", |p| p.grid_type = ibis_doc_model::DocGridType::Lines))
                     .child(choice("grid-lines-chars", p.grid_type == ibis_doc_model::DocGridType::LinesAndChars, "docx.help-panels.document-grid", |p| p.grid_type = ibis_doc_model::DocGridType::LinesAndChars)),
             )
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(div().w(px(84.)).text_size(px(12.)).child(text("docx.help-panels.lines")))
-                    .child(mark("grid-lines", div().w(px(90.)).child(Input::new(&p.lines).small()).into_any_element()))
-                    .child(div().text_size(px(12.)).child(text("_xlsx.row"))),
-            )
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(div().w(px(84.)).text_size(px(12.)).child(text("docx.help-panels.line-pitch")))
-                    .child(mark("grid-line-pitch", div().w(px(90.)).child(Input::new(&p.line_pitch).small()).into_any_element()))
-                    .child(div().text_size(px(12.)).child("pt")),
-            )
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(div().w(px(84.)).text_size(px(12.)).child(text("docx.help-panels.characters")))
-                    .child(mark("grid-chars", div().w(px(90.)).child(Input::new(&p.chars).small()).into_any_element()))
-                    .child(div().text_size(px(12.)).child(text("docx.paragraph-panel.characters"))),
-            )
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(div().w(px(84.)).text_size(px(12.)).child(text("docx.help-panels.character-pitch")))
-                    .child(mark("grid-char-space", div().w(px(90.)).child(Input::new(&p.char_space).small()).into_any_element()))
-                    .child(div().text_size(px(12.)).child("pt")),
-            );
+            .child(aligned_row("grid-lines-input", text("docx.help-panels.lines"), &p.lines, text("_xlsx.row")))
+            .child(aligned_row("grid-line-pitch", text("docx.help-panels.line-pitch"), &p.line_pitch, "pt".into()))
+            .child(aligned_row("grid-chars", text("docx.help-panels.characters"), &p.chars, text("docx.paragraph-panel.characters")))
+            .child(aligned_row("grid-char-space", text("docx.help-panels.character-pitch"), &p.char_space, "pt".into()));
         body = body.child(div().text_size(px(13.)).child(text("_shell.vertical-alignment"))).child(
             h_flex()
                 .gap_1()
@@ -643,14 +602,7 @@ impl SlideEditor {
                     .child(choice("direction-vertical", p.vertical, "_shell.vertical", |p| p.vertical = true)),
             )
             .child(div().text_size(px(13.)).child(text("_xlsx.page-number")))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(div().w(px(84.)).text_size(px(12.)).child(text("fix.help-panels.start")))
-                    .child(mark("start", div().w(px(90.)).child(Input::new(&p.start).small()).into_any_element()))
-                    .child(div().text_size(px(12.)).child(text("docx.help-panels.blank-continue"))),
-            );
+            .child(aligned_row("start", text("fix.help-panels.start"), &p.start, text("docx.help-panels.blank-continue")));
         body = body.child(div().text_size(px(13.)).child(text("_shell.paper-size")));
         for i in 7..9 {
             body = body.child(field(i));
@@ -659,7 +611,38 @@ impl SlideEditor {
         for i in 5..7 {
             body = body.child(field(i));
         }
-        Some(SidebarPanel { title: crate::shell::i18n::text("_shell.page-setup").into(), body: body.into_any_element() })
+        let footer = h_flex()
+            .w_full()
+            .justify_between()
+            .items_center()
+            .child(mark(
+                "close",
+                div()
+                    .id("page-setup-close-target")
+                    .w(px(2.))
+                    .h(px(2.))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(s) = this.doc_state_mut() {
+                            s.helper.page_setup = None;
+                        }
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            ))
+            .child(mark(
+                "apply",
+                Button::new("page-setup-apply")
+                    .primary()
+                    .small()
+                    .label(text("OK"))
+                    .on_click(cx.listener(|this, _, _, cx| this.apply_page_setup_panel(cx)))
+                    .into_any_element(),
+            ));
+        Some(SidebarPanel::with_footer(
+            crate::shell::i18n::text("_shell.page-setup"),
+            body.into_any_element(),
+            footer.into_any_element(),
+        ))
     }
 }
 
@@ -838,7 +821,7 @@ impl SlideEditor {
             .child(div().text_size(px(13.)).child(text("fix.help-panels.number-format")))
             .child(formats)
             .child(div().text_size(px(13.)).child(text("fix.help-panels.start")))
-            .child(mark("start", Input::new(&p.start).small().into_any_element()))
+            .child(mark("start", Input::new(&p.start).small().cleanable(true).into_any_element()))
             .child(div().text_size(px(13.)).child(text("fix.help-panels.numbering")));
         let mut restarts = h_flex().gap_1().flex_wrap();
         for (i, (restart, label)) in [(NoteRestart::Continuous, "fix.help-panels.continuous"), (NoteRestart::EachSection, "fix.help-panels.restart-each-section"), (NoteRestart::EachPage, "fix.help-panels.restart-each-page")].into_iter().enumerate() {
@@ -946,7 +929,7 @@ impl SlideEditor {
             .px(px(18.))
             .py(px(8.))
             .child(div().text_size(px(13.)).child(text("fix.help-panels.bookmark-name")))
-            .child(mark("name", Input::new(&p.name).small().into_any_element()))
+            .child(mark("name", Input::new(&p.name).small().cleanable(true).into_any_element()))
             .child(div().text_size(px(12.)).child(SharedString::from(p.message.clone())))
             .child(
                 h_flex()
@@ -1135,10 +1118,10 @@ impl SlideEditor {
                     .child(mark("remove", Button::new("watermark-remove").small().ghost().label(text("fix.help-panels.remove-watermark")).on_click(cx.listener(|this, _, _, cx| this.remove_watermark(cx))).into_any_element())),
             )
             .child(div().text_size(px(13.)).child(text("_shell.text")))
-            .child(mark("text", Input::new(&p.text).small().into_any_element()))
+            .child(mark("text", Input::new(&p.text).small().cleanable(true).into_any_element()))
             .child(presets)
             .child(div().text_size(px(13.)).child(text("_shell.font")))
-            .child(mark("font", Input::new(&p.font).small().into_any_element()))
+            .child(mark("font", Input::new(&p.font).small().cleanable(true).into_any_element()))
             .child(div().text_size(px(13.)).child(text("docx.common.color")))
             .child(colors)
             .child(mark("semi", toggle("semi", check(p.semitransparent, "fix.help-panels.semitransparent"), |p| p.semitransparent = !p.semitransparent)))
@@ -1573,7 +1556,7 @@ impl SlideEditor {
             v_flex()
                 .gap_1()
                 .child(div().text_size(px(12.)).text_color(theme.muted_foreground).child(text("_docx.field-codes")))
-                .child(Input::new(&p.code).small())
+                .child(Input::new(&p.code).small().cleanable(true))
         );
 
         if !p.message.is_empty() {
@@ -1740,7 +1723,7 @@ impl SlideEditor {
             v_flex()
                 .gap_1()
                 .child(div().text_size(px(12.)).text_color(theme.muted_foreground).child(text("_docx.label-2")))
-                .child(Input::new(&p.label).small())
+                .child(Input::new(&p.label).small().cleanable(true))
                 .child(presets)
         );
 
@@ -1749,7 +1732,7 @@ impl SlideEditor {
             v_flex()
                 .gap_1()
                 .child(div().text_size(px(12.)).text_color(theme.muted_foreground).child(text("_docx.caption-text-2")))
-                .child(Input::new(&p.text).small())
+                .child(Input::new(&p.text).small().cleanable(true))
         );
 
         // 番号書式選択
@@ -2153,7 +2136,7 @@ impl SlideEditor {
                 .gap_1()
                 .py(px(3.))
                 .child(div().text_size(px(11.)).font_weight(FontWeight::MEDIUM).text_color(theme.muted_foreground).child(text(label)))
-                .child(mark(id, Input::new(entity).small().into_any_element()))
+                .child(mark(id, Input::new(entity).small().cleanable(true).into_any_element()))
         };
 
         let mut body = v_flex()
@@ -2236,8 +2219,8 @@ impl SlideEditor {
             .gap_1()
             .items_center()
             .pt(px(2.))
-            .child(div().flex_1().child(mark("new_custom_name", Input::new(&p.new_custom_name).small().into_any_element())))
-            .child(div().flex_1().child(mark("new_custom_val", Input::new(&p.new_custom_val).small().into_any_element())))
+            .child(div().flex_1().child(mark("new_custom_name", Input::new(&p.new_custom_name).small().cleanable(true).into_any_element())))
+            .child(div().flex_1().child(mark("new_custom_val", Input::new(&p.new_custom_val).small().cleanable(true).into_any_element())))
             .child(
                 mark(
                     "add_custom",
@@ -2881,7 +2864,7 @@ impl SlideEditor {
             v_flex()
                 .gap_1()
                 .child(div().text_size(px(12.)).text_color(theme.muted_foreground).child(text("docx.user-info.name")))
-                .child(Input::new(&p.name_input).small())
+                .child(Input::new(&p.name_input).small().cleanable(true))
         );
 
         // 頭文字
@@ -2889,7 +2872,7 @@ impl SlideEditor {
             v_flex()
                 .gap_1()
                 .child(div().text_size(px(12.)).text_color(theme.muted_foreground).child(text("docx.user-info.initials")))
-                .child(Input::new(&p.initials_input).small())
+                .child(Input::new(&p.initials_input).small().cleanable(true))
         );
 
         // アクションボタン: 適用 / 既定に戻す / キャンセル

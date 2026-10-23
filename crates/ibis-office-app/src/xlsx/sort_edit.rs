@@ -237,6 +237,13 @@ impl SlideEditor {
         }
         cx.notify();
     }
+    /// The panel's 並べ替え button: sorts, then gives the keyboard back to the sheet. The panel stays open, and its text
+    /// boxes take ⌘Z for their own undo; left focused, they would swallow the ⌘Z meant to undo the sort.
+    pub(crate) fn apply_sort_button(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_sort_panel(cx);
+        self.focus_handle.focus(window, cx);
+    }
+
     pub(crate) fn apply_sort_panel(&mut self, cx: &mut Context<Self>) {
         let Some(p) = self.sheet_state().and_then(|s| s.sort_edit.as_ref()) else {
             return;
@@ -424,7 +431,7 @@ impl SlideEditor {
             )
             .child(mark(
                 "range",
-                Input::new(&p.range).small().into_any_element(),
+                Input::new(&p.range).small().cleanable(true).into_any_element(),
             ))
             .child(
                 h_flex()
@@ -490,7 +497,7 @@ impl SlideEditor {
                 .gap_1()
                 .child(mark(
                     &format!("column-{i}"),
-                    Input::new(column).small().w(px(56.)).into_any_element(),
+                    Input::new(column).small().cleanable(true).w(px(56.)).into_any_element(),
                 ))
                 .child(mark(
                     &format!("pick-{i}"),
@@ -552,7 +559,7 @@ impl SlideEditor {
                         )
                         .child(mark(
                             &format!("custom-input-{i}"),
-                            Input::new(custom_input).small().into_any_element(),
+                            Input::new(custom_input).small().cleanable(true).into_any_element(),
                         ));
 
                     let presets: [(&str, &str); 7] = [
@@ -850,7 +857,7 @@ impl SlideEditor {
                 Button::new("sort-apply").primary()
                     .small()
                     .label(crate::shell::i18n::text("_xlsx.sort"))
-                    .on_click(cx.listener(|this, _, _, cx| this.apply_sort_panel(cx)))
+                    .on_click(cx.listener(|this, _, window, cx| this.apply_sort_button(window, cx)))
                     .into_any_element(),
             ))
             .child(mark(

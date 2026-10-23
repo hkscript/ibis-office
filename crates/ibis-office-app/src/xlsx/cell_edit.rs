@@ -64,6 +64,10 @@ pub(crate) struct CellEdit {
     pub(crate) dragging_in_bar: bool,
     /// Font changes asked for with the caret alone (⌘B…): they go to the text typed next.
     pub(crate) pending: Option<PendingFormat>,
+    /// How far the text is scrolled up in the cell's box (pixels), when its lines go below the highest box (409.5 pt).
+    pub(crate) scroll_y: Rc<Cell<f32>>,
+    /// The caret the scroll last followed (UTF-16 units): when the caret moves, the box scrolls to show it.
+    pub(crate) followed_caret: Rc<Cell<Option<usize>>>,
 }
 
 /// Font changes for the next typed text (Excel's ⌘B with the caret alone),
@@ -342,7 +346,8 @@ impl SlideEditor {
         let rect = edit.rect.get()?;
         let layout = edit.layout.borrow().clone()?;
         let x = f32::from(position.x - rect.origin.x);
-        let y = f32::from(position.y - rect.origin.y);
+        // The box may be scrolled (text below the highest box): the line under the pointer is that far down.
+        let y = f32::from(position.y - rect.origin.y) + edit.scroll_y.get();
         // The line whose middle is nearest to the pointer, then the boundary between characters nearest in x.
         let middle = |l: &super::sheet_view::EditLine| l.baseline + (l.descent - l.ascent) / 2.0;
         let line = layout.lines.iter().min_by(|a, b| (y - middle(a)).abs().total_cmp(&(y - middle(b)).abs()))?;
@@ -470,19 +475,20 @@ impl SlideEditor {
         }
         let Some((column, row)) = self.current_cell() else { return };
         let text = if keep_content {
-            self.current_sheet().and_then(|(_, sheet)| sheet.cell(row, column).map(|c| (sheet, c))).map(|(sheet, c)| match &c.formula {
-                Some(f) => format!("={}", sheet.formula_shown(row, column, f)),
-                None => match &c.value {
+            self.current_sheet().and_then(|(_, sheet)| sheet.cell(row, column).map(|c| (sheet, c))).and_then(|(sheet, c)| match &c.formula {
+                Some(f) => Some(format!("={}", sheet.formula_shown(row, column, f))),
+                None if super::sheet_ui::spilled_ghost_formula_on(sheet, row, column).is_some() => None,
+                None => Some(match &c.value {
                     // A number as typed, not as shown.
                     CellValue::Number(n) => ibis_calc::eval::number_to_text(*n),
                     _ => c.text.clone(),
-                },
+                }),
             })
         } else {
             None
         }
         .unwrap_or_default();
-        let caret = utf16_len(&text);
+        let mut caret = utf16_len(&text);
         let slide = self.current_slide;
         // A text constant with parts in their own fonts keeps them while edited.
         let runs = if keep_content {
@@ -490,9 +496,46 @@ impl SlideEditor {
         } else {
             None
         };
+        // When editing existing cell content, measure its edit-box layout: if lines overflow the box (reaching the
+        // bottom of the sheet view), start with the caret at the beginning; and scroll horizontally so the box (and
+        // its scrollbar) fits on screen (or aligns its left edge with the row header's right edge when wider than the window).
+        let mut scroll_span: Option<(u32, f32)> = None;
+        if keep_content
+            && !text.is_empty()
+            && let Some((shape, sheet)) = self.current_sheet()
+        {
+            let scale = self.workspace_content().map_or(1.0 / ibis_doc_model::EMU_PER_POINT as f32, |c| c.scale);
+            let px_per_point = (ibis_doc_model::EMU_PER_POINT as f32 * scale).max(0.1);
+            let (xs, ys) = (sheet.column_offsets(), sheet.row_offsets());
+            let at = |offsets: &[i64], i: u32, default: i64| {
+                if (i as usize) < offsets.len() {
+                    offsets[i as usize]
+                } else {
+                    offsets.last().copied().unwrap_or(0) + (i as usize - offsets.len().saturating_sub(1)) as i64 * default.max(1)
+                }
+            };
+            let range = sheet.merge_at(row, column).unwrap_or(ibis_doc_model::CellRange { first_row: row, first_column: column, last_row: row, last_column: column });
+            let (l, r) = (at(&xs, range.first_column, sheet.default_column), at(&xs, range.last_column + 1, sheet.default_column));
+            let (t, b) = (at(&ys, range.first_row, sheet.default_row), at(&ys, range.last_row + 1, sheet.default_row));
+            let (ex0, ex1) = ((shape.frame.x + l) as f32 * scale, (shape.frame.x + r) as f32 * scale);
+            let (ey0, ey1) = ((shape.frame.y + t) as f32 * scale, (shape.frame.y + b) as f32 * scale);
+            let default_style = self.presentation().workbook.as_ref().and_then(|w| w.default_style.as_ref());
+            let ts = WindowTextSystem::new(cx.text_system().clone());
+            let layout = super::sheet_view::edit_layout(&ts, sheet, default_style, &self.resources, row, column, &text, runs.clone().map(std::sync::Arc::new), (l as f32 * scale, t as f32 * scale), (ex1 - ex0, ey1 - ey0), px_per_point);
+            let max_box_h = self.max_edit_box_height_px(row, ey0, ey1, px_per_point);
+            let overflows = layout.height - max_box_h > 0.5;
+            if text.contains('\n') && (overflows || layout.height > (ey1 - ey0) + 0.5) {
+                caret = 0;
+            }
+            let bar_w = if overflows { 10.0 } else { 0.0 };
+            scroll_span = Some((range.first_column, layout.width + 1.0 + bar_w));
+        }
+        if let Some((first_col, width_px)) = scroll_span {
+            self.scroll_span_horizontally_into_view(first_col, width_px);
+        }
         if let Some(state) = self.sheet_state_mut() {
             state.validation_warning = None;
-            state.cell_edit = Some(CellEdit { slide, column, row, text, caret, marked: None, mode, anchor: None, runs, pointed: None, rect: Rc::new(Cell::new(None)), pixels_per_point: Rc::new(Cell::new(0.0)), layout: Default::default(), dragging: None, dragging_in_bar: false, pending: None });
+            state.cell_edit = Some(CellEdit { slide, column, row, text, caret, marked: None, mode, anchor: None, runs, pointed: None, rect: Rc::new(Cell::new(None)), pixels_per_point: Rc::new(Cell::new(0.0)), layout: Default::default(), dragging: None, dragging_in_bar: false, pending: None, scroll_y: Default::default(), followed_caret: Default::default() });
         }
         cx.notify();
     }
@@ -515,8 +558,13 @@ impl SlideEditor {
         }
         let date1904 = self.presentation().workbook.as_ref().is_some_and(|w| w.date1904);
         let sheet = self.presentation().slide(edit.slide).and_then(ibis_doc_model::sheet_calc::sheet_of_slide);
+        // A cell formatted as Text (@) keeps what is typed as text, a date or
+        // a formula too, as Excel does (#13).
+        let text_formatted = sheet.and_then(|sheet| sheet.cell(edit.row, edit.column)).zip(sheet).is_some_and(|(c, sheet)| sheet.styles[c.style as usize].number_format == "@");
         let (input, format): (CellInput, Option<String>) = if edit.text.is_empty() {
             (CellInput::Clear, None)
+        } else if text_formatted {
+            (CellInput::Value(CellValue::Text(edit.text.strip_prefix('\'').unwrap_or(&edit.text).to_string())), None)
         } else {
             match parse_input(&edit.text, date1904) {
                 Typed::Formula(f) => {
@@ -748,6 +796,41 @@ impl SlideEditor {
             edit.pending = None;
             cx.notify();
         }
+        true
+    }
+
+    /// PageUp or PageDown while typing in Edit mode into text of several lines: the caret goes up or down by about the lines
+    /// the box shows (to the first or last line at most); the box then scrolls to show it (issue #17). False when the text is
+    /// one line, or not in Edit mode: the key is for the sheet then.
+    pub(crate) fn cell_caret_page(&mut self, forward: bool, cx: &mut Context<Self>) -> bool {
+        let Some(edit) = self.cell_edit_mut() else { return false };
+        if edit.mode != EditMode::Edit || !edit.text.contains('\n') {
+            return false;
+        }
+        let lines = text_lines(&edit.text);
+        // The lines a box of the highest size shows, one kept in view.
+        let step = edit
+            .layout
+            .borrow()
+            .as_ref()
+            .and_then(|layout| {
+                let first = layout.lines.first()?;
+                let second = layout.lines.get(1)?;
+                let pitch = (second.baseline - first.baseline).abs().max(1.0);
+                let visible = (409.5 * edit.pixels_per_point.get()).min(layout.height.max(pitch));
+                Some(((visible / pitch).floor() as i32 - 1).max(1))
+            })
+            .unwrap_or(15);
+        let current = edit.caret_line() as i32;
+        let target = (current + if forward { step } else { -step }).clamp(0, lines.len() as i32 - 1);
+        if target != current {
+            let column = edit.caret - lines[current as usize].0;
+            let (start, line) = lines[target as usize];
+            edit.caret = start + column.min(utf16_len(line));
+        }
+        edit.anchor = None;
+        edit.pending = None;
+        cx.notify();
         true
     }
 
@@ -1305,6 +1388,8 @@ mod caret_items_tests {
             dragging: None,
             dragging_in_bar: false,
             pending: None,
+            scroll_y: Default::default(),
+            followed_caret: Default::default(),
         };
         let baseline_items = edit.items();
         assert_eq!(baseline_items.len(), 1);

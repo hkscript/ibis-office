@@ -489,3 +489,7 @@ fix.formula-bar.collapse	数式バーを折りたたむ
 xlsx.chart-type	グラフの種類
 fix.validation.continue	続けますか？
 fix.validation.cancel	キャンセル
+fix.move.overwrite	目的のセルに既にデータがあります。置き換えますか?
+fix.move.ok	OK
+fix.menu.search-placeholder	検索
+fix.menu.not-found	みつかりません

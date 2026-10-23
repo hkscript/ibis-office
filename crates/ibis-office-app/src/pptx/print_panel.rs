@@ -9,6 +9,7 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 
 use crate::shell::chrome::SidebarPanel;
 use crate::shell::editor::SlideEditor;
@@ -213,7 +214,7 @@ impl SlideEditor {
             .child(Button::new("pptx-print-all").small().ghost().label(mark(settings.range == PrintRange::All, "pptx.slideshow.see-all-slides")).on_click(cx.listener(|e, _, _, cx| e.edit_print_panel(|s| s.range = PrintRange::All, cx))))
             .child(Button::new("pptx-print-current").small().ghost().label(mark(settings.range == PrintRange::Current, "pptx.print-panel.current-slide")).on_click(cx.listener(|e, _, _, cx| e.edit_print_panel(|s| s.range = PrintRange::Current, cx))))
             .child(Button::new("pptx-print-custom").small().ghost().label(mark(settings.range == PrintRange::Custom, "pptx.print-panel.custom-range")).on_click(cx.listener(|e, _, _, cx| e.edit_print_panel(|s| s.range = PrintRange::Custom, cx))))
-            .child(div().w(px(200.)).child(Input::new(&custom).small()))
+            .child(div().w(px(200.)).child(Input::new(&custom).small().cleanable(true)))
             .child(heading("_shell.print-layout"))
             .child(Button::new("pptx-print-slides").small().ghost().label(mark(settings.handout.is_none() && !settings.notes_pages && !settings.outline, "pptx.print-panel.full-page-slides")).on_click(cx.listener(|e, _, _, cx| e.edit_print_panel(|s| { s.handout = None; s.notes_pages = false; s.outline = false }, cx))))
             .child(Button::new("pptx-print-notes").small().ghost().label(mark(settings.notes_pages, "pptx.print-panel.notes-pages-1-slide-its")).on_click(cx.listener(|e, _, _, cx| e.edit_print_panel(|s| { s.handout = None; s.notes_pages = true; s.outline = false }, cx))))

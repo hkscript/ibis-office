@@ -904,6 +904,8 @@ impl SlideEditor {
                         );
                         let _ = std::process::Command::new("osascript").args(["-e", &script]).output();
                     }
+                    #[cfg(not(target_os = "macos"))]
+                    let _ = crate::shell::file_actions::open_pdf_in_default_app(&temp_pdf, cx);
                     self.status = Some(crate::shell::i18n::format("docx.merge.printed-count", &[("n", &count.to_string())]).into());
                     cx.notify();
                 }
@@ -946,6 +948,12 @@ impl SlideEditor {
     }
 
     pub(crate) fn merge_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
+        self.merge_state()?;
+        self.render_merge_panel(cx)
+    }
+
+    #[inline(never)]
+    fn render_merge_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
         let m = self.merge_state()?;
         let selected = m.selected();
         let (text, fields, count, current, preview) = (m.text.clone(), m.fields.clone(), selected.len(), m.current, m.preview);
@@ -1009,7 +1017,7 @@ impl SlideEditor {
                     .gap_1()
                     .child(div().text_sm().child(crate::shell::i18n::text("docx.merge-panel.envelope-setup")))
                     .child(h_flex().flex_wrap().gap_0p5().children(preset_buttons))
-                    .child(Input::new(&sender_field).small())
+                    .child(Input::new(&sender_field).small().cleanable(true))
                     .child(
                         Button::new("merge-apply-envelope")
                             .primary()
@@ -1131,15 +1139,15 @@ impl SlideEditor {
                     .child(div().text_sm().child(format!("{} / {}", page + 1, pages)))
                     .child(Button::new("merge-page-next").small().ghost().label("▶").on_click(cx.listener(|this, _, _, cx| this.step_merge_page(1, cx)))),
             )
-            .child(h_flex().gap_1().child(Input::new(&new_field).small()).child(Button::new("merge-add-field").small().ghost().label(crate::shell::i18n::text("docx.merge-panel.add-field")).on_click(cx.listener(|this, _, window, cx| {
+            .child(h_flex().gap_1().child(Input::new(&new_field).small().cleanable(true)).child(Button::new("merge-add-field").small().ghost().label(crate::shell::i18n::text("docx.merge-panel.add-field")).on_click(cx.listener(|this, _, window, cx| {
                 let name = this.merge_state().map(|m| m.new_field.read(cx).value().to_string()).unwrap_or_default();
                 this.add_merge_field(&name, window, cx);
             }))))
-            .child(h_flex().gap_1().child(Input::new(&sort_field).small()).child(Button::new("merge-sort-up").small().ghost().label("↑").on_click(cx.listener(|this, _, _, cx| this.sort_merge_records(true, cx)))).child(Button::new("merge-sort-down").small().ghost().label("↓").on_click(cx.listener(|this, _, _, cx| this.sort_merge_records(false, cx)))))
-            .child(h_flex().gap_1().child(Input::new(&filter_field).small()).child(Button::new("merge-filter").small().ghost().label(crate::shell::i18n::text("docx.merge-panel.filter")).on_click(cx.listener(|this, _, _, cx| this.filter_merge_records(cx)))))
+            .child(h_flex().gap_1().child(Input::new(&sort_field).small().cleanable(true)).child(Button::new("merge-sort-up").small().ghost().label("↑").on_click(cx.listener(|this, _, _, cx| this.sort_merge_records(true, cx)))).child(Button::new("merge-sort-down").small().ghost().label("↓").on_click(cx.listener(|this, _, _, cx| this.sort_merge_records(false, cx)))))
+            .child(h_flex().gap_1().child(Input::new(&filter_field).small().cleanable(true)).child(Button::new("merge-filter").small().ghost().label(crate::shell::i18n::text("docx.merge-panel.filter")).on_click(cx.listener(|this, _, _, cx| this.filter_merge_records(cx)))))
             .child(div().text_sm().child(crate::shell::i18n::text("docx.merge-panel.insert-merge-field")))
             .child(h_flex().flex_wrap().gap_1().children(field_buttons))
-            .child(h_flex().gap_1().child(Input::new(&rule_field).small()).child(Button::new("merge-rule").small().ghost().label(crate::shell::i18n::text("docx.merge-panel.insert-rule")).on_click(cx.listener(|this, _, _, cx| this.insert_merge_rule(cx)))))
+            .child(h_flex().gap_1().child(Input::new(&rule_field).small().cleanable(true)).child(Button::new("merge-rule").small().ghost().label(crate::shell::i18n::text("docx.merge-panel.insert-rule")).on_click(cx.listener(|this, _, _, cx| this.insert_merge_rule(cx)))))
             .child(
                 h_flex()
                     .gap_1()
@@ -1167,13 +1175,13 @@ impl SlideEditor {
                     .gap_1()
                     .child(Button::new("merge-first").small().ghost().label("⏮").on_click(cx.listener(|this, _, _, cx| this.goto_merge_record(1, cx))))
                     .child(Button::new("merge-last").small().ghost().label("⏭").on_click(cx.listener(|this, _, _, cx| this.goto_merge_record(usize::MAX, cx))))
-                    .child(Input::new(&goto_field).small())
+                    .child(Input::new(&goto_field).small().cleanable(true))
                     .child(Button::new("merge-goto").small().ghost().label(crate::shell::i18n::text("docx.merge-panel.go-to")).on_click(cx.listener(|this, _, _, cx| {
                         let n = this.merge_state().and_then(|m| m.goto_field.read(cx).value().trim().parse::<usize>().ok()).unwrap_or(1);
                         this.goto_merge_record(n, cx);
                     }))),
             )
-            .child(h_flex().gap_1().child(Input::new(&find_field).small()).child(Button::new("merge-find").small().ghost().label(crate::shell::i18n::text("docx.merge-panel.find-recipient")).on_click(cx.listener(|this, _, _, cx| { this.find_merge_record(cx); }))))
+            .child(h_flex().gap_1().child(Input::new(&find_field).small().cleanable(true)).child(Button::new("merge-find").small().ghost().label(crate::shell::i18n::text("docx.merge-panel.find-recipient")).on_click(cx.listener(|this, _, _, cx| { this.find_merge_record(cx); }))))
             .child(
                 h_flex()
                     .gap_1()
@@ -1190,9 +1198,9 @@ impl SlideEditor {
                     .gap_1()
                     .items_center()
                     .child(div().text_xs().child(crate::shell::i18n::text("docx.merge-panel.print-from")))
-                    .child(Input::new(&print_from_field).small())
+                    .child(Input::new(&print_from_field).small().cleanable(true))
                     .child(div().text_xs().child(crate::shell::i18n::text("docx.merge-panel.print-to")))
-                    .child(Input::new(&print_to_field).small())
+                    .child(Input::new(&print_to_field).small().cleanable(true))
                     .into_any_element(),
             )
         } else {

@@ -89,7 +89,9 @@ pub mod master_page;
 pub mod handout_master;
 pub mod notes_page;
 mod xls_formula;
+pub mod font_digit;
 mod xlsx;
+pub use xlsx::{EXCEL_METRICS, ExcelMetrics};
 mod xlsx_external;
 mod xlsx_pivot;
 mod xlsx_slicer;
@@ -201,6 +203,9 @@ pub fn read(data: &[u8]) -> Result<Presentation, Error> {
     } else if odp::is_odp(data) {
         converted = odp::to_pptx(data)?;
         converted.as_slice()
+    } else if docx_convert::is_odt(data) {
+        converted = docx_convert::import_odt_to_docx_bytes(data)?;
+        converted.as_slice()
     } else {
         data
     };
@@ -229,7 +234,7 @@ impl Kind {
         match extension.to_ascii_lowercase().as_str() {
             "pptx" | "pptm" | "ppsx" | "ppsm" | "potx" | "potm" | "ppt" | "pps" | "pot" | "odp" | "otp" => Some(Kind::Presentation),
             "xlsx" | "xlsm" | "xlsb" | "xls" | "ods" | "ots" | "csv" | "tsv" | "tab" | "xltx" | "xltm" | "xlk" => Some(Kind::Workbook),
-            "docx" | "docm" | "dotx" | "dotm" => Some(Kind::Document),
+            "docx" | "docm" | "dotx" | "dotm" | "odt" | "ott" => Some(Kind::Document),
             _ => None,
         }
     }

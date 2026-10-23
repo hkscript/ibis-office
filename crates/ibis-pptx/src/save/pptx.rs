@@ -879,7 +879,7 @@ fn write_background(
     old: &ibis_doc_model::Fill,
     fill: &ibis_doc_model::Fill,
 ) -> Result<(), Error> {
-    if let ibis_doc_model::Fill::Image(m) | ibis_doc_model::Fill::TileImage { media: m, .. } = fill {
+    if let Some(m) = fill.media().as_ref() {
         let media_p = super::pptx_shapes::media_part(package, current, *m, media_parts)?;
         let rel = package.add_relationship(part, super::pptx_shapes::REL_IMAGE, &relative(part, &media_p), false)?;
         let mut rels = HashMap::new();

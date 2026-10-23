@@ -143,22 +143,22 @@ impl SlideEditor {
             .px(px(18.))
             .py(px(8.))
             .child(div().text_size(px(13.)).child(text("docx.control-panel.title")))
-            .child(Input::new(&title).small())
+            .child(Input::new(&title).small().cleanable(true))
             .child(div().text_size(px(13.)).child(text("docx.control-panel.tag")))
-            .child(Input::new(&tag).small());
+            .child(Input::new(&tag).small().cleanable(true));
 
         if let Some((gallery_in, category_in)) = gallery_fields {
             body = body
                 .child(div().text_size(px(13.)).child(text("docx.control-panel.gallery")))
-                .child(Input::new(&gallery_in).small())
+                .child(Input::new(&gallery_in).small().cleanable(true))
                 .child(div().text_size(px(13.)).child(text("docx.control-panel.category")))
-                .child(Input::new(&category_in).small());
+                .child(Input::new(&category_in).small().cleanable(true));
         }
 
         if let Some((section_title_in, no_edit)) = repeating_fields {
             body = body
                 .child(div().text_size(px(13.)).child(text("docx.control-panel.section-title")))
-                .child(Input::new(&section_title_in).small())
+                .child(Input::new(&section_title_in).small().cleanable(true))
                 .child(Button::new("control-repeating-no-insert-delete").small().label(text("docx.control-panel.no-insert-delete")).selected(no_edit).on_click(cx.listener(move |this, _, _, cx| {
                     if let Some(state) = this.doc_state_mut().and_then(|s| s.control.as_mut()) {
                         if let Some((_, ref mut flag)) = state.repeating_fields {

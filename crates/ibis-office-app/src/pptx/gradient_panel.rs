@@ -6,6 +6,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use gpui_kit::component::Disableable as _;
 use ibis_doc_model::{Color,Command,Fill,GradientPath,GradientStop,Shape,ShapeId,ShapeKind,SlideId};
 use crate::shell::chrome::SidebarPanel;
@@ -204,18 +205,18 @@ impl SlideEditor {
                 choices=choices.child(Button::new(id).small().ghost().label(if path==selected {format!("✓ {label}")} else {label.to_string()}).on_click(cx.listener(move|e,_,_,cx|e.set_gradient_path(path,cx))));
             }
             body=body.child(choices);
-            for (label,field) in [crate::shell::i18n::text("pptx.gradient-panel.focus-left-percent"),crate::shell::i18n::text("pptx.gradient-panel.focus-top-percent"),crate::shell::i18n::text("pptx.gradient-panel.focus-right-percent"),crate::shell::i18n::text("pptx.gradient-panel.focus-bottom-percent")].into_iter().zip(focus) {body=body.child(div().text_size(px(13.)).child(label)).child(Input::new(&field).small());}
-        } else {body=body.child(div().text_size(px(13.)).child(crate::shell::i18n::text("pptx.gradient-panel.angle-degrees"))).child(Input::new(&angle).small());}
+            for (label,field) in [crate::shell::i18n::text("pptx.gradient-panel.focus-left-percent"),crate::shell::i18n::text("pptx.gradient-panel.focus-top-percent"),crate::shell::i18n::text("pptx.gradient-panel.focus-right-percent"),crate::shell::i18n::text("pptx.gradient-panel.focus-bottom-percent")].into_iter().zip(focus) {body=body.child(div().text_size(px(13.)).child(label)).child(Input::new(&field).small().cleanable(true));}
+        } else {body=body.child(div().text_size(px(13.)).child(crate::shell::i18n::text("pptx.gradient-panel.angle-degrees"))).child(Input::new(&angle).small().cleanable(true));}
         let can_remove=stops.len()>2;
         if pattern.is_some() {
             for (label,fields) in [crate::shell::i18n::text("pptx.gradient-panel.foreground"),crate::shell::i18n::text("_shell.background")].into_iter().zip(stops) {
                 body=body.child(div().child(label));
-                for (label,field) in [crate::shell::i18n::text("pptx.gradient-panel.color-rgb-rrggbb"),crate::shell::i18n::text("pptx.gradient-panel.intensity-percent")].into_iter().zip(fields.into_iter().skip(1)) {body=body.child(div().text_size(px(13.)).child(label)).child(Input::new(&field).small());}
+                for (label,field) in [crate::shell::i18n::text("pptx.gradient-panel.color-rgb-rrggbb"),crate::shell::i18n::text("pptx.gradient-panel.intensity-percent")].into_iter().zip(fields.into_iter().skip(1)) {body=body.child(div().text_size(px(13.)).child(label)).child(Input::new(&field).small().cleanable(true));}
             }
         } else {
         for (i,fields) in stops.into_iter().enumerate() {
             body=body.child(h_flex().justify_between().child(div().child(format!("stop {}",i+1))).child(Button::new(ElementId::Name(format!("pptx-gradient-remove-{i}").into())).small().ghost().label(crate::shell::i18n::text("_shell.delete")).disabled(!can_remove).on_click(cx.listener(move|e,_,w,cx|e.remove_gradient_stop(i,w,cx)))));
-            for (label,field) in [crate::shell::i18n::text("pptx.gradient-panel.position-percent"),crate::shell::i18n::text("pptx.gradient-panel.color-rgb-rrggbb"),crate::shell::i18n::text("pptx.gradient-panel.intensity-percent")].into_iter().zip(fields) {body=body.child(div().text_size(px(13.)).child(label)).child(Input::new(&field).small());}
+            for (label,field) in [crate::shell::i18n::text("pptx.gradient-panel.position-percent"),crate::shell::i18n::text("pptx.gradient-panel.color-rgb-rrggbb"),crate::shell::i18n::text("pptx.gradient-panel.intensity-percent")].into_iter().zip(fields) {body=body.child(div().text_size(px(13.)).child(label)).child(Input::new(&field).small().cleanable(true));}
         }
         body=body.child(Button::new("pptx-gradient-add").small().ghost().label(crate::shell::i18n::text("pptx.chrome.add-stop")).on_click(cx.listener(|e,_,w,cx|e.add_gradient_stop(w,cx))));
         }

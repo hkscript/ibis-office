@@ -6,6 +6,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::{h_flex, v_flex, Disableable as _, Sizable as _};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::{Block, Crop, FlowCommand, FlowPos, FlowRunKind, MediaFormat, MediaId, ShapeKind};
 #[cfg(all(target_os = "macos", feature = "export"))]
 use crate::pptx::compress::{compress_picture, Resolution};

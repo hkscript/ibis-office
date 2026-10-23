@@ -10,6 +10,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 
 use super::header_footer::{join_sections, split_sections};
 use crate::shell::chrome::SidebarPanel;
@@ -410,7 +411,7 @@ impl SlideEditor {
                             cx.notify();
                         }))),
                 )
-                .child(Input::new(state).small())
+                .child(Input::new(state).small().cleanable(true))
         };
 
         let direct_code_row = v_flex()
@@ -420,7 +421,7 @@ impl SlideEditor {
                 h_flex()
                     .gap_1()
                     .items_center()
-                    .child(div().flex_1().child(Input::new(&code_state).small()))
+                    .child(div().flex_1().child(Input::new(&code_state).small().cleanable(true)))
                     .child(Button::new("hf-apply-code").primary().small().label(text("xlsx.hf.apply-code")).on_click(cx.listener(move |this, _, window, cx| {
                         this.apply_hf_code_direct(window, cx);
                     }))),

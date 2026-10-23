@@ -203,8 +203,8 @@ impl SlideEditor {
                         })),
                     ),
             )
-            .child(v_flex().gap_1().child(label("docx.kinsoku.start")).child(Input::new(&p.start).small()))
-            .child(v_flex().gap_1().child(label("docx.kinsoku.end")).child(Input::new(&p.end).small()))
+            .child(v_flex().gap_1().child(label("docx.kinsoku.start")).child(Input::new(&p.start).small().cleanable(true)))
+            .child(v_flex().gap_1().child(label("docx.kinsoku.end")).child(Input::new(&p.end).small().cleanable(true)))
             .child(
                 h_flex()
                     .gap_2()

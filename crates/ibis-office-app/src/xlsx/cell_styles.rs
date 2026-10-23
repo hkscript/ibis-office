@@ -228,7 +228,7 @@ impl SlideEditor {
         let mut body = v_flex().gap_2().px(px(16.)).py(px(8.));
 
         body = body.child(div().text_size(px(13.)).font_weight(FontWeight::BOLD).child(text("_xlsx.style-name")));
-        body = body.child(mark("style-name", Input::new(&p.name).small().into_any_element()));
+        body = body.child(mark("style-name", Input::new(&p.name).small().cleanable(true).into_any_element()));
 
         if !p.message.is_empty() {
             body = body.child(div().text_size(px(12.)).text_color(red()).child(SharedString::from(p.message.clone())));

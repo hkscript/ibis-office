@@ -12,6 +12,7 @@ use ibis_doc_model::{Animation, AnimationAfterEffect, AnimationClass as C, Anima
 use crate::shell::chrome::{MenuEntry, MenuItem, Submenu};
 use crate::shell::editor::SlideEditor;
 use gpui_kit::Context;
+use crate::shell::palette::rgb;
 
 /// An effect PowerPoint names by its preset (`presetID`, `presetSubtype`),
 /// with its usual time (milliseconds): as the file is read back.
@@ -1017,7 +1018,7 @@ impl SlideEditor {
                 .items_center()
                 .justify_center()
                 .text_xs()
-                .text_color(rgb(0xffffff))
+                .text_color(crate::shell::palette::doc(0xffffff))
                 .child(format!("{:.1}s", a.duration as f32 / 1000.0));
             timeline_track = timeline_track.child(bar_element);
 
@@ -1038,6 +1039,12 @@ impl SlideEditor {
 
     /// 効果のオプション詳細設定パネル (Effect Options Panel / Dialog) の描画.
     pub(crate) fn animation_options_panel(&mut self, cx: &mut Context<Self>) -> Option<crate::shell::chrome::SidebarPanel> {
+        self.pptx()?.animation_options_panel.as_ref()?;
+        self.render_animation_options_panel(cx)
+    }
+
+    #[inline(never)]
+    fn render_animation_options_panel(&mut self, cx: &mut Context<Self>) -> Option<crate::shell::chrome::SidebarPanel> {
         use gpui_kit::component::button::{Button, ButtonVariants as _};
         use gpui_kit::component::{Disableable as _, Sizable as _, h_flex, v_flex};
         use gpui_kit::*;

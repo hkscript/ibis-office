@@ -6,7 +6,8 @@
 
 use std::sync::Arc;
 
-use gpui_kit::{Context, TextSystem, rgb};
+use gpui_kit::{Context, TextSystem};
+use crate::shell::palette::rgb;
 use ibis_doc_model::{CellStyle, Command, EMU_PER_POINT, Presentation, Shape, ShapeId, ShapeKind, Sheet, SheetCommand, SlideId};
 
 use crate::render::shape_view::Resources;
@@ -1622,6 +1623,12 @@ impl SlideEditor {
     }
 
     pub(crate) fn pivot_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
+        self.sheet_state()?.panels.pivot.as_ref()?;
+        self.render_pivot_panel(cx)
+    }
+
+    #[inline(never)]
+    fn render_pivot_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
         let p = self.sheet_state()?.panels.pivot.as_ref()?;
         let message = p.message.clone();
         if let Some(c) = &p.create {
@@ -1639,11 +1646,11 @@ impl SlideEditor {
                 .px(px(18.))
                 .py(px(8.))
                 .child(text("_xlsx.table-or-range"))
-                .child(Input::new(&c.source).small())
+                .child(Input::new(&c.source).small().cleanable(true))
                 .child(text("_xlsx.where-to-place-the-pivottable"))
                 .child(radio("pivot-new-sheet", new_sheet, "_xlsx.new-worksheet", true))
                 .child(radio("pivot-existing", !new_sheet, "_xlsx.existing-worksheet", false))
-                .child(Input::new(&c.at).small())
+                .child(Input::new(&c.at).small().cleanable(true))
                 .child(div().text_size(px(12.)).child(SharedString::from(message)))
                 .child(Button::new("pivot-create").primary().small().label(text("_xlsx.create")).on_click(cx.listener(|this, _, window, cx| this.create_pivot(window, cx))));
             return Some(SidebarPanel { title: "_xlsx.create-pivottable".into(), body: body.into_any_element() });
@@ -1652,7 +1659,7 @@ impl SlideEditor {
             let label = |s: &str| div().text_size(px(12.)).child(s.to_string());
             let mut body = v_flex().gap_2().px(px(18.)).py(px(8.));
             body = body.child(label(&crate::shell::i18n::text("xlsx.pivot-source-range")));
-            body = body.child(Input::new(&cs.source).small());
+            body = body.child(Input::new(&cs.source).small().cleanable(true));
             if !message.is_empty() {
                 body = body.child(div().text_size(px(12.)).text_color(rgb(0xb3261e)).child(message));
             }
@@ -1668,7 +1675,7 @@ impl SlideEditor {
             let label = |s: &str| div().text_size(px(12.)).child(s.to_string());
             let mut body = v_flex().gap_2().px(px(18.)).py(px(8.));
             body = body.child(label(&text("_xlsx.where-to-place-the-pivottable")));
-            body = body.child(Input::new(&mv.destination).small());
+            body = body.child(Input::new(&mv.destination).small().cleanable(true));
             if !message.is_empty() {
                 body = body.child(div().text_size(px(12.)).text_color(rgb(0xb3261e)).child(message));
             }
@@ -1778,7 +1785,7 @@ impl SlideEditor {
                     // 1. 名前 (指定した名前)
                     settings = settings.child(div().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).child(text("_xlsx.name-custom-name")));
                     if let Some(input_state) = self.sheet_state().and_then(|s| s.panels.pivot.as_ref()).and_then(|p| p.value_name.as_ref()) {
-                        let name_row = h_flex().gap_1().child(Input::new(input_state).small()).child(
+                        let name_row = h_flex().gap_1().child(Input::new(input_state).small().cleanable(true)).child(
                             Button::new(id("apply-name")).small().label(text("_shell.apply")).on_click(cx.listener(move |this, _, _, cx| {
                                 let name = this.sheet_state().and_then(|s| s.panels.pivot.as_ref()).and_then(|p| p.value_name.as_ref()).map(|st| st.read(cx).value().to_string()).unwrap_or_default();
                                 this.change_pivot(target, |p| p.set_data_field_name(pos, &name), cx);
@@ -2122,9 +2129,9 @@ impl SlideEditor {
         if let Some((Some(missing), Some(error))) = inputs {
             body = body
                 .child(text("_xlsx.for-empty-cells-show"))
-                .child(Input::new(&missing).small())
+                .child(Input::new(&missing).small().cleanable(true))
                 .child(text("_xlsx.for-error-values-show"))
-                .child(Input::new(&error).small())
+                .child(Input::new(&error).small().cleanable(true))
                 .child(Button::new("pivot-captions").small().label(text("_xlsx.apply-captions")).on_click(cx.listener(move |this, _, _, cx| {
                     let read = |this: &Self, pick: fn(&PivotPanel) -> Option<Entity<InputState>>, cx: &Context<Self>| this.sheet_state().and_then(|s| s.panels.pivot.as_ref()).and_then(pick).map(|e| e.read(cx).value().to_string()).unwrap_or_default();
                     let (m, e) = (read(this, |p| p.missing.clone(), cx), read(this, |p| p.error.clone(), cx));
@@ -2577,13 +2584,13 @@ impl SlideEditor {
             }
             body = body
                 .child(h_flex().gap_1().child(Button::new("pivot-dialog-top").small().label(format!("{} {}", if d.top { "◉" } else { "○" }, text("_xlsx.top"))).on_click(cx.listener(|this, _, _, cx| this.with_pivot_dialog(cx, |d| d.top = true)))).child(Button::new("pivot-dialog-bottom").small().label(format!("{} {}", if d.top { "○" } else { "◉" }, text("_xlsx.bottom"))).on_click(cx.listener(|this, _, _, cx| this.with_pivot_dialog(cx, |d| d.top = false)))))
-                .child(Input::new(&d.values[0]).small())
+                .child(Input::new(&d.values[0]).small().cleanable(true))
                 .child(unit);
         } else {
             let label = LABEL_FILTERS.iter().chain(VALUE_FILTERS).find(|(_, k)| *k == d.kind).map_or("", |(l, _)| l.trim_end_matches('…'));
-            body = body.child(div().child(text(label))).child(Input::new(&d.values[0]).small());
+            body = body.child(div().child(text(label))).child(Input::new(&d.values[0]).small().cleanable(true));
             if d.kind.ends_with("Between") {
-                body = body.child(div().child(text("_xlsx.and"))).child(Input::new(&d.values[1]).small());
+                body = body.child(div().child(text("_xlsx.and"))).child(Input::new(&d.values[1]).small().cleanable(true));
             }
             if d.label {
                 body = body.child(div().text_color(theme.muted_foreground).child(text("_xlsx.use-to-represent-any-single-character-use-to-rep")));
@@ -2679,7 +2686,7 @@ impl SlideEditor {
             body = body
                 .child(menu)
                 .child(div().h(px(1.)).my_1().bg(theme.border))
-                .child(Input::new(&popup.search).small())
+                .child(Input::new(&popup.search).small().cleanable(true))
                 .child(div().id("pivot-popup-items").h(px(200.)).overflow_y_scroll().border_1().border_color(theme.border).rounded_sm().child(list));
         }
         if let Some(d) = popup.dialog.as_ref() {

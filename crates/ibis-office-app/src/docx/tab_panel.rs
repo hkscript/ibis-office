@@ -10,6 +10,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Selectable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::{Emu, FlowDocument, ParaChange, TabAlign, TabChange, TabStop};
 
 use crate::shell::{chrome::SidebarPanel, editor::SlideEditor};
@@ -272,7 +273,7 @@ impl SlideEditor {
                 h_flex()
                     .gap_2()
                     .child(div().w(px(92.)).text_sm().child(crate::shell::i18n::text("_docx.tab-stop-position-pt")))
-                    .child(Input::new(&pos_field).small()),
+                    .child(Input::new(&pos_field).small().cleanable(true)),
             )
             .child(
                 div()

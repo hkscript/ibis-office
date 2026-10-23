@@ -942,6 +942,7 @@ pub(crate) fn write_chart(package: &mut Package, part: &str, old: &Chart, new: &
         style: old.style,
         axes: old.axes.clone(),
         plot_background: old.plot_background.clone(),
+        plot_border: old.plot_border.clone(),
         cell_refs: old.cell_refs.clone(),
         ..new.clone()
     };

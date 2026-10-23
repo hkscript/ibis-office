@@ -238,6 +238,63 @@ pub(crate) fn fill_xml(x: &Prefixes, fill: &Fill) -> Result<String, Error> {
             };
             format!("<{a}blipFill><{a}blip {r}embed=\"{rel}\">{blip_ext}</{a}blip><{a}tile tx=\"{tx}\" ty=\"{ty}\" sx=\"{sx}\" sy=\"{sy}\" flip=\"{flip_attr}\" algn=\"{algn_attr}\"/></{a}blipFill>", r = x.r)
         }
+        Fill::Blip(blip) => {
+            let media = blip.media;
+            let rel = MEDIA_RELS.with(|m| m.borrow().get(&media).cloned()).ok_or_else(|| unsupported("画像塗りつぶしの関係ID"))?;
+            let mut effects = String::new();
+            let e = &blip.effects;
+            if let Some(v) = e.opacity {
+                write!(effects, "<{a}alphaModFix amt=\"{v}\"/>").unwrap();
+            }
+            if e.grayscale {
+                write!(effects, "<{a}grayscl/>").unwrap();
+            }
+            if let Some(v) = e.bilevel {
+                write!(effects, "<{a}biLevel thresh=\"{v}\"/>").unwrap();
+            }
+            if let Some((bright, contrast)) = blip.luminance {
+                write!(effects, "<{a}lum bright=\"{bright}\" contrast=\"{contrast}\"/>").unwrap();
+            }
+            if let Some((dark, light)) = blip.duotone {
+                write!(effects, "<{a}duotone><{a}srgbClr val=\"{:06X}\"/><{a}srgbClr val=\"{:06X}\"/></{a}duotone>", dark.0, light.0).unwrap();
+            }
+            let blip_ext = if is_svg_media(media) {
+                format!("<{a}extLst><{a}ext uri=\"{{96DAC542-7B81-4868-9F9E-1EA1F31DC1F3}}\"><asvg:svgBlip xmlns:asvg=\"http://schemas.microsoft.com/office/drawing/2016/SVG/main\" {r}embed=\"{rel}\"/></{a}ext></{a}extLst>", r = x.r)
+            } else {
+                String::new()
+            };
+            let crop = &blip.crop;
+            let src = if *crop == ibis_doc_model::Crop::default() {
+                String::new()
+            } else {
+                format!("<{a}srcRect l=\"{}\" t=\"{}\" r=\"{}\" b=\"{}\"/>", crop.left, crop.top, crop.right, crop.bottom)
+            };
+            let place = match (blip.tile, blip.fill_rect) {
+                (Some(t), _) => {
+                    let flip = match t.flip {
+                        ibis_doc_model::TileFlip::None => "none",
+                        ibis_doc_model::TileFlip::X => "x",
+                        ibis_doc_model::TileFlip::Y => "y",
+                        ibis_doc_model::TileFlip::Xy => "xy",
+                    };
+                    let algn = match t.align {
+                        ibis_doc_model::TileAlign::TopLeft => "tl",
+                        ibis_doc_model::TileAlign::Top => "t",
+                        ibis_doc_model::TileAlign::TopRight => "tr",
+                        ibis_doc_model::TileAlign::Left => "l",
+                        ibis_doc_model::TileAlign::Center => "ctr",
+                        ibis_doc_model::TileAlign::Right => "r",
+                        ibis_doc_model::TileAlign::BottomLeft => "bl",
+                        ibis_doc_model::TileAlign::Bottom => "b",
+                        ibis_doc_model::TileAlign::BottomRight => "br",
+                    };
+                    format!("<{a}tile tx=\"{}\" ty=\"{}\" sx=\"{}\" sy=\"{}\" flip=\"{flip}\" algn=\"{algn}\"/>", t.tx, t.ty, t.sx, t.sy)
+                }
+                (None, Some([l, t, r, b])) => format!("<{a}stretch><{a}fillRect l=\"{l}\" t=\"{t}\" r=\"{r}\" b=\"{b}\"/></{a}stretch>"),
+                (None, None) => format!("<{a}stretch><{a}fillRect/></{a}stretch>"),
+            };
+            format!("<{a}blipFill><{a}blip {r}embed=\"{rel}\">{effects}{blip_ext}</{a}blip>{src}{place}</{a}blipFill>", r = x.r)
+        }
         Fill::Pattern { preset, foreground, background } => format!(
             "<{a}pattFill prst=\"{}\"><{a}fgClr>{}</{a}fgClr><{a}bgClr>{}</{a}bgClr></{a}pattFill>",
             escape(preset),

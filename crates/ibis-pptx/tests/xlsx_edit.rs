@@ -16,6 +16,8 @@ use ibis_pptx::SaveOptions;
 fn open(name: &str) -> (Vec<u8>, ibis_pptx::Opened) {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/editing").join(name);
     let data = std::fs::read(&path).unwrap();
+    // The tests keep copies of what they save in `target/xlsx-edit/` (a fresh checkout has none).
+    std::fs::create_dir_all(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/xlsx-edit")).unwrap();
     let opened = ibis_pptx::open(data.clone()).unwrap();
     (data, opened)
 }
@@ -6336,6 +6338,7 @@ fn chart_error_bars_save_and_reopen_roundtrip() {
         no_end_cap: false,
         value: Some(Number(1.5)),
         stroke: None,
+        ..Default::default()
     };
     let mut modified1 = initial_chart.clone();
     for g in modified1.groups.iter_mut() {
@@ -6368,6 +6371,7 @@ fn chart_error_bars_save_and_reopen_roundtrip() {
         no_end_cap: true,
         value: Some(Number(5.0)),
         stroke: None,
+        ..Default::default()
     };
     let mut modified2 = initial_chart.clone();
     for g in modified2.groups.iter_mut() {
@@ -7418,6 +7422,7 @@ fn test_chart_template_crtx_roundtrip() {
         no_end_cap: false,
         value: Some(ibis_doc_model::Number(5.0)),
         stroke: None,
+        ..Default::default()
     });
 
     // 2. .crtx パッケージを生成
@@ -8747,7 +8752,7 @@ fn groupby_and_pivotby_spill_and_a_function_by_its_name_is_saved_as_the_file_has
     set(&mut d, s, vec![(0, 9, CellInput::Formula("GROUPBY(A4:A8,B4:B8,SUM)".into())), (0, 12, CellInput::Formula("BYROW(B4:D8,SUM)".into()))]);
     let p = d.presentation();
     // Excel for Mac's order of kanji (by reading: 駅 first, 北 last) where the system has it; else by code.
-    let (first, first_sum, last) = if cfg!(target_os = "macos") { ("駅前店", 2_100_000.0, "北町店") } else { ("北町店", 1_250_000.0, "駅前店") };
+    let (first, first_sum, last) = if cfg!(any(target_os = "macos", windows)) { ("駅前店", 2_100_000.0, "北町店") } else { ("北町店", 1_250_000.0, "駅前店") };
     assert_eq!(value(p, "月次売上", 0, 9), CellValue::Text(first.into()));
     assert_eq!(value(p, "月次売上", 0, 10), CellValue::Number(first_sum));
     assert_eq!(value(p, "月次売上", 4, 9), CellValue::Text(last.into()));

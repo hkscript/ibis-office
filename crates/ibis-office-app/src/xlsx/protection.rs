@@ -247,7 +247,7 @@ impl SlideEditor {
                 ))
         };
         if p.protect {
-            body = body.child(div().text_size(px(13.)).child(text("fix.protection.protect-worksheet-contents-locked"))).child(mark("password", Input::new(&p.password).small().into_any_element())).child(mark("confirm", Input::new(&p.confirm).small().into_any_element()));
+            body = body.child(div().text_size(px(13.)).child(text("fix.protection.protect-worksheet-contents-locked"))).child(mark("password", Input::new(&p.password).small().cleanable(true).into_any_element())).child(mark("confirm", Input::new(&p.confirm).small().cleanable(true).into_any_element()));
             body = buttons(body, cx);
             body = body.child(div().text_size(px(13.)).child(text("fix.protection.allow-all-users-worksheet")));
             for (i, (label, field)) in FLAGS.iter().enumerate() {
@@ -271,7 +271,7 @@ impl SlideEditor {
                 ));
             }
         } else {
-            body = body.child(div().text_size(px(13.)).child(text("fix.protection.unprotect-sheet"))).child(mark("password", Input::new(&p.password).small().into_any_element()));
+            body = body.child(div().text_size(px(13.)).child(text("fix.protection.unprotect-sheet"))).child(mark("password", Input::new(&p.password).small().cleanable(true).into_any_element()));
             body = buttons(body, cx);
         }
         Some(SidebarPanel { title: if p.protect { "fix.protection.protect-sheet-2".into() } else { "fix.protection.unprotect-sheet".into() }, body: body.into_any_element() })
@@ -398,8 +398,8 @@ impl SlideEditor {
         if p.protect {
             body = body
                 .child(div().text_size(px(13.)).child(text("_xlsx.protect-structure-and-windows")))
-                .child(mark("password", Input::new(&p.password).small().into_any_element()))
-                .child(mark("confirm", Input::new(&p.confirm).small().into_any_element()));
+                .child(mark("password", Input::new(&p.password).small().cleanable(true).into_any_element()))
+                .child(mark("confirm", Input::new(&p.confirm).small().cleanable(true).into_any_element()));
             body = buttons(body, cx);
             body = body.child(div().text_size(px(13.)).child(text("_xlsx.protect")));
             let lock_structure = p.lock_structure;
@@ -435,7 +435,7 @@ impl SlideEditor {
         } else {
             body = body
                 .child(div().text_size(px(13.)).child(text("_xlsx.unprotect-workbook")))
-                .child(mark("password", Input::new(&p.password).small().into_any_element()));
+                .child(mark("password", Input::new(&p.password).small().cleanable(true).into_any_element()));
             body = buttons(body, cx);
         }
         Some(SidebarPanel { title: if p.protect { text("_xlsx.workbook-protection") } else { text("_xlsx.unprotect-workbook") }, body: body.into_any_element() })
@@ -601,13 +601,13 @@ impl SlideEditor {
 
         // Input fields for adding / editing
         body = body.child(div().text_size(px(12.)).child(text("_shell.title")));
-        body = body.child(mark("title", Input::new(&p.title).small().into_any_element()));
+        body = body.child(mark("title", Input::new(&p.title).small().cleanable(true).into_any_element()));
 
         body = body.child(div().text_size(px(12.)).child(text("_xlsx.refers-to-cells")));
-        body = body.child(mark("sqref", Input::new(&p.sqref).small().into_any_element()));
+        body = body.child(mark("sqref", Input::new(&p.sqref).small().cleanable(true).into_any_element()));
 
         body = body.child(div().text_size(px(12.)).child(text("_xlsx.range-password-optional")));
-        body = body.child(mark("password", Input::new(&p.password).small().into_any_element()));
+        body = body.child(mark("password", Input::new(&p.password).small().cleanable(true).into_any_element()));
 
         // Buttons
         let mut btn_row = div().flex().flex_row().gap_2();

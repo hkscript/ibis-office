@@ -10,6 +10,7 @@ use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{Selectable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::{FlowAlign, ListLevel, ListSuffix, ParaFormat, RunFormat};
 
 use crate::shell::chrome::{PRIMARY_BUTTON_BG, SidebarPanel};
@@ -168,7 +169,7 @@ impl SlideEditor {
                     .child({
                         let state = self.doc_state().unwrap();
                         let ls = state.list_style.as_ref().unwrap();
-                        Input::new(&ls.name).small()
+                        Input::new(&ls.name).small().cleanable(true)
                     }),
             )
             .child(
@@ -235,7 +236,7 @@ impl SlideEditor {
                             .child({
                                 let state = self.doc_state().unwrap();
                                 let ls = state.list_style.as_ref().unwrap();
-                                Input::new(&ls.prefix).small()
+                                Input::new(&ls.prefix).small().cleanable(true)
                             })
                     )
                     .child(
@@ -246,7 +247,7 @@ impl SlideEditor {
                             .child({
                                 let state = self.doc_state().unwrap();
                                 let ls = state.list_style.as_ref().unwrap();
-                                Input::new(&ls.suffix_text).small()
+                                Input::new(&ls.suffix_text).small().cleanable(true)
                             })
                     )
                     .child(
@@ -257,7 +258,7 @@ impl SlideEditor {
                             .child({
                                 let state = self.doc_state().unwrap();
                                 let ls = state.list_style.as_ref().unwrap();
-                                Input::new(&ls.start).small()
+                                Input::new(&ls.start).small().cleanable(true)
                             })
                     )
             )
@@ -379,7 +380,7 @@ impl SlideEditor {
                             .child({
                                 let state = self.doc_state().unwrap();
                                 let ls = state.list_style.as_ref().unwrap();
-                                Input::new(&ls.indent_left).small()
+                                Input::new(&ls.indent_left).small().cleanable(true)
                             })
                     )
                     .child(
@@ -390,7 +391,7 @@ impl SlideEditor {
                             .child({
                                 let state = self.doc_state().unwrap();
                                 let ls = state.list_style.as_ref().unwrap();
-                                Input::new(&ls.indent_hanging).small()
+                                Input::new(&ls.indent_hanging).small().cleanable(true)
                             })
                     )
             )
@@ -403,7 +404,7 @@ impl SlideEditor {
                             .label(text("docx.list.define-style.ok").to_string())
                             .small()
                             .bg(rgb(PRIMARY_BUTTON_BG))
-                            .text_color(rgb(0xffffff))
+                            .text_color(crate::shell::palette::doc(0xffffff))
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.apply_list_style_panel(true, cx);
                             }))

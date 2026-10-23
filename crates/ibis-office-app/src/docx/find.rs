@@ -15,10 +15,11 @@
 //! `^+` an em dash, `^=` an en dash, `^^` a caret.
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::flow_command::{self, ParaChange, RunChange};
 use ibis_doc_model::{Block, FlowAlign, FlowCommand, FlowDocument, FlowPos, InsertFormat, Rgb};
 
@@ -1217,6 +1218,12 @@ impl SlideEditor {
 
     /// The panel's body.
     pub(crate) fn find_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
+        self.doc_state()?.find.as_ref()?;
+        self.render_find_panel(cx)
+    }
+
+    #[inline(never)]
+    fn render_find_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
         let state = self.doc_state()?.find.as_ref()?;
         let (query, replacement) = (state.query.clone(), state.replacement.clone());
         let case_sensitive = state.case_sensitive;
@@ -1255,7 +1262,7 @@ impl SlideEditor {
             if is_selected { btn.primary() } else { btn.ghost() }
         };
 
-        let mut query_section = v_flex().gap_1().child(Input::new(&query).small());
+        let mut query_section = v_flex().gap_1().child(crate::shell::chrome::clearable_text_field(&query));
         if !find_fmt.is_empty() {
             let desc: SharedString = find_fmt.description().into();
             query_section = query_section.child(
@@ -1281,7 +1288,7 @@ impl SlideEditor {
             );
         }
 
-        let mut rep_section = v_flex().gap_1().child(Input::new(&replacement).small());
+        let mut rep_section = v_flex().gap_1().child(crate::shell::chrome::clearable_text_field(&replacement));
         if !rep_fmt.is_empty() {
             let desc: SharedString = rep_fmt.description().into();
             rep_section = rep_section.child(

@@ -11,6 +11,7 @@ use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::{Command, EmuRect, ShapeId, SlideId};
 
 use crate::pptx::SlidePopup;
@@ -387,7 +388,7 @@ impl SlideEditor {
         ];
         for (label, idx) in labels {
             if let Some(field) = fields.get(idx) {
-                body = body.child(div().text_size(px(13.)).child(crate::shell::i18n::text(label))).child(Input::new(field).small());
+                body = body.child(div().text_size(px(13.)).child(crate::shell::i18n::text(label))).child(Input::new(field).small().cleanable(true));
             }
         }
         body = body.child(

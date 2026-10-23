@@ -58,7 +58,7 @@ impl SlideEditor {
                     }
                 });
             let name = self.file_name.clone().unwrap_or_default();
-            let picked = cx.prompt_for_new_path(&directory, Some(&name));
+            let picked = cx.prompt_for_new_path_with_formats(&directory, Some(&name), &self.save_formats());
             cx.spawn_in(window, async move |this, cx| {
                 let Ok(Ok(Some(path))) = picked.await else { return };
                 this.update_in(cx, |this, window, cx| {
@@ -77,6 +77,78 @@ impl SlideEditor {
         }
     }
 
+    /// Save (as ⌘S, asking where for a file that has no path yet) and then, once the file is written, `then` (the
+    /// save confirmation's 保存: close afterwards). A cancelled or failed save does not go on to `then`. What is being
+    /// typed in a cell is put in first, so it is saved too.
+    pub(crate) fn save_then(&mut self, window: &mut Window, cx: &mut Context<Self>, then: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static) {
+        self.commit_cell_edit(cx);
+        self.commit_edit(window, cx);
+        #[cfg(not(target_family = "wasm"))]
+        {
+            if let Some(path) = self.path.clone() {
+                let result = self.save_to(path, window);
+                let saved = result.is_ok();
+                self.report_save(result, cx);
+                if saved {
+                    then(self, window, cx);
+                }
+                return;
+            }
+            if self.source.is_none() {
+                self.status = Some(crate::shell::i18n::text("_shell.saving-new-documents-is-not-yet-supported").into());
+                return cx.notify();
+            }
+            let directory = if self.is_workbook() {
+                crate::xlsx::backup_save::effective_default_save_location()
+            } else {
+                std::env::var_os("HOME").map(Into::into).unwrap_or_else(|| ".".into())
+            };
+            let name = self.file_name.clone().unwrap_or_default();
+            let picked = cx.prompt_for_new_path_with_formats(&directory, Some(&name), &self.save_formats());
+            cx.spawn_in(window, async move |this, cx| {
+                let Ok(Ok(Some(path))) = picked.await else { return };
+                this.update_in(cx, |this, window, cx| {
+                    let result = this.save_to(path, window);
+                    let saved = result.is_ok();
+                    this.report_save(result, cx);
+                    if saved {
+                        then(this, window, cx);
+                    }
+                })
+                .ok();
+            })
+            .detach();
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            let _ = (window, then);
+            self.status = Some(crate::shell::i18n::text("_shell.saving-is-not-yet-available-in-the-browser-versi").into());
+            cx.notify();
+        }
+    }
+
+    /// The formats the save dialog offers for the kind of the open file (the pop-up of the dialog; a name typed with another
+    /// extension is kept). Each is one `save_to` writes by its extension.
+    #[cfg(not(target_family = "wasm"))]
+    fn save_formats(&self) -> Vec<SaveFormat> {
+        use crate::shell::i18n::text;
+        let format = |label: &str, extensions: &[&str]| SaveFormat { label: text(label), extensions: extensions.iter().map(|e| e.to_string()).collect() };
+        if self.is_workbook() {
+            vec![
+                format("file.save-format.xlsx", &["xlsx"]),
+                format("file.save-format.xltx", &["xltx"]),
+                format("file.save-format.xls", &["xls"]),
+                format("file.save-format.ods", &["ods"]),
+                format("file.save-format.csv", &["csv"]),
+                format("file.save-format.tsv", &["tsv"]),
+            ]
+        } else if self.is_presentation() {
+            vec![format("file.save-format.pptx", &["pptx"]), format("file.save-format.ppsx", &["ppsx"]), format("file.save-format.potx", &["potx"]), format("file.save-format.odp", &["odp"])]
+        } else {
+            vec![format("file.save-format.docx", &["docx"]), format("file.save-format.dotx", &["dotx"]), format("file.save-format.odt", &["odt"])]
+        }
+    }
+
     /// Save to `path`, and make it the file's path.
     #[cfg(not(target_family = "wasm"))]
     pub(crate) fn save_to(&mut self, path: std::path::PathBuf, window: &mut Window) -> Result<(), String> {
@@ -89,6 +161,8 @@ impl SlideEditor {
         let csv = self.is_workbook() && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("csv"));
         let tsv = self.is_workbook() && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("tsv") || e.eq_ignore_ascii_case("tab") || e.eq_ignore_ascii_case("txt"));
         let ods = self.is_workbook() && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ods"));
+        let odt = self.is_document() && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("odt"));
+        let odp = self.is_presentation() && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("odp"));
         let xls = self.is_workbook() && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("xls"));
         let xltx = self.is_workbook() && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("xltx") || e.eq_ignore_ascii_case("xltm"));
         let ppsx = self.is_presentation() && path.extension().and_then(|e| e.to_str()).is_some_and(ibis_pptx::is_slideshow);
@@ -103,6 +177,10 @@ impl SlideEditor {
             ibis_pptx::csv::sheet_to_tsv(self.presentation(), index)
         } else if ods {
             ibis_pptx::write_ods_with_source(self.presentation(), &source).map_err(|e| e.to_string())?
+        } else if odt {
+            ibis_pptx::docx_convert::export_docx_to_odt(self.presentation()).map_err(|e| e.to_string())?
+        } else if odp {
+            ibis_pptx::write_odp(self.presentation()).map_err(|e| e.to_string())?
         } else if xls {
             let (bytes, report) = ibis_pptx::write_xls_report(self.presentation()).map_err(|e| e.to_string())?;
             self.save_note = crate::xlsx::export_xls::note(&report);
@@ -135,6 +213,7 @@ impl SlideEditor {
         window.set_window_title(&format!("{name} - ibisOffice"));
         self.file_name = Some(name);
         self.set_file_path(Some(path));
+        self.document.mark_clean();
         if self.is_workbook() || self.is_presentation() || self.is_document() {
             self.cleanup_active_autorecover_file();
             self.is_recovered = false;

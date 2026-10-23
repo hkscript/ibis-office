@@ -88,13 +88,7 @@ impl Default for BackupSaveConfig {
 // ----------------------------------------------------------------------------
 
 fn config_store_path() -> Option<PathBuf> {
-    let env = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
-    #[cfg(target_os = "macos")]
-    let base = env("HOME").map(|home| home.join("Library/Application Support"));
-    #[cfg(target_os = "windows")]
-    let base = env("APPDATA");
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let base = env("XDG_DATA_HOME").or_else(|| env("HOME").map(|home| home.join(".local/share")));
+    let base = crate::shell::app_data::base();
     Some(base?.join("ibisOffice").join("backup-save-config.tsv"))
 }
 
@@ -458,7 +452,7 @@ impl SlideEditor {
                             .text_color(theme.muted_foreground)
                             .child(text("xlsx.backupsave.default-loc-desc")),
                     )
-                    .child(Input::new(&default_save_input).small())
+                    .child(Input::new(&default_save_input).small().cleanable(true))
                     .child(
                         h_flex()
                             .justify_end()
@@ -575,7 +569,7 @@ impl SlideEditor {
                                         .text_color(theme.muted_foreground)
                                         .child(text("xlsx.backupsave.custom-folder-label")),
                                 )
-                                .child(Input::new(&custom_input).small()),
+                                .child(Input::new(&custom_input).small().cleanable(true)),
                         )
                     }),
             )

@@ -313,13 +313,7 @@ fn store_path() -> Option<PathBuf> {
     if cfg!(feature = "scenarios") {
         return None;
     }
-    let env = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
-    #[cfg(target_os = "macos")]
-    let base = env("HOME").map(|home| home.join("Library/Application Support"));
-    #[cfg(target_os = "windows")]
-    let base = env("APPDATA");
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let base = env("XDG_DATA_HOME").or_else(|| env("HOME").map(|home| home.join(".local/share")));
+    let base = crate::shell::app_data::base();
     Some(base?.join("ibisOffice").join("autocorrect.tsv"))
 }
 
@@ -505,8 +499,8 @@ pub(crate) fn render_panel(editor: &mut SlideEditor, access: PanelAccess, cx: &m
         .child(toggle("days", w.days, "xlsx.autocorrect.days", |s| s.days = !s.days))
         .child(toggle("caps-lock", w.caps_lock, "xlsx.autocorrect.caps-lock", |s| s.caps_lock = !s.caps_lock))
         .child(toggle("replace", w.replace, "xlsx.autocorrect.replace", |s| s.replace = !s.replace));
-    body = body.child(div().text_size(px(13.)).child(text("xlsx.autocorrect.replace-box"))).child(mark("from", Input::new(&p.replace).small().into_any_element()));
-    body = body.child(div().text_size(px(13.)).child(text("xlsx.autocorrect.with-box"))).child(mark("to", Input::new(&p.with).small().into_any_element()));
+    body = body.child(div().text_size(px(13.)).child(text("xlsx.autocorrect.replace-box"))).child(mark("from", Input::new(&p.replace).small().cleanable(true).into_any_element()));
+    body = body.child(div().text_size(px(13.)).child(text("xlsx.autocorrect.with-box"))).child(mark("to", Input::new(&p.with).small().cleanable(true).into_any_element()));
     let selected = p.selected;
     body = body.child(
         h_flex()

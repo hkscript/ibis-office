@@ -346,7 +346,7 @@ impl SlideEditor {
         let indent_unit = edit.indent_unit;
         let error = edit.error.clone();
         let row = |label: &'static str, field: &Entity<InputState>| h_flex().gap_2()
-            .child(div().w(px(92.)).text_sm().child(crate::shell::i18n::text(label))).child(Input::new(field).small());
+            .child(div().w(px(92.)).text_sm().child(crate::shell::i18n::text(label))).child(Input::new(field).small().cleanable(true));
         let choice = |id: &'static str, label: &'static str, value: LineRule| Button::new(id).small().label(crate::shell::i18n::text(label)).selected(!mixed && rule == value)
             .on_click(cx.listener(move |this, _, window, cx| this.choose_paragraph_line_rule(value, window, cx)));
         let indent_choice = |id: &'static str, label: &'static str, value: IndentUnit| Button::new(id).small().label(crate::shell::i18n::text(label)).selected(indent_unit == value)

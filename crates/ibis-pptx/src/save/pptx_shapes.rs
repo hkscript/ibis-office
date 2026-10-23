@@ -123,8 +123,8 @@ pub(crate) fn write_slide(
     // Relationships for shape and table cell image fills.
     for shape in &slide.shapes {
         match &shape.kind {
-            ShapeKind::Auto(a) => match a.fill {
-                Fill::Image(m) | Fill::TileImage { media: m, .. } => {
+            ShapeKind::Auto(a) => match a.fill.media() {
+                Some(m) => {
                     if !slide_media_rels.contains_key(&m) {
                         let part = media_part(package, current, m, media)?;
                         let rel = package.add_relationship(&target.part, REL_IMAGE, &relative(&target.part, &part), false)?;
@@ -135,8 +135,8 @@ pub(crate) fn write_slide(
             },
             ShapeKind::Table(t) => {
                 for cell in t.rows.iter().flat_map(|r| &r.cells) {
-                    match cell.fill {
-                        Fill::Image(m) | Fill::TileImage { media: m, .. } => {
+                    match cell.fill.media() {
+                        Some(m) => {
                             if !slide_media_rels.contains_key(&m) {
                                 let part = media_part(package, current, m, media)?;
                                 let rel = package.add_relationship(&target.part, REL_IMAGE, &relative(&target.part, &part), false)?;
@@ -159,7 +159,7 @@ pub(crate) fn write_slide(
                 }
             }
             ShapeKind::Auto(a) => {
-                if let Fill::Image(m) | Fill::TileImage { media: m, .. } = a.fill {
+                if let Some(m) = a.fill.media() {
                     if current.media(m).is_some_and(|m| m.format == MediaFormat::Svg) {
                         svg_media_ids.insert(m);
                     }
@@ -167,7 +167,7 @@ pub(crate) fn write_slide(
             }
             ShapeKind::Table(t) => {
                 for cell in t.rows.iter().flat_map(|r| &r.cells) {
-                    if let Fill::Image(m) | Fill::TileImage { media: m, .. } = cell.fill {
+                    if let Some(m) = cell.fill.media() {
                         if current.media(m).is_some_and(|m| m.format == MediaFormat::Svg) {
                             svg_media_ids.insert(m);
                         }
@@ -1390,15 +1390,20 @@ fn write_picture_clip(doc: &mut XmlDocument, node: NodeId, clip: Option<ibis_doc
 }
 
 /// A frame in slide coordinates, in the coordinates of the shape's groups.
-fn to_group(frame: EmuRect, group: Option<[f64; 4]>) -> EmuRect {
+/// A shape turned about a quarter (`rotation`) takes the vertical scale on its width and the horizontal one on
+/// its height (see the reader's `turned_sideways`).
+fn to_group(frame: EmuRect, group: Option<[f64; 4]>, rotation: i32) -> EmuRect {
     let Some([sx, sy, tx, ty]) = group else { return frame };
     let div = |v: f64, s: f64| if s == 0.0 { v } else { v / s };
-    EmuRect::new(
-        div(frame.x as f64 - tx, sx).round() as i64,
-        div(frame.y as f64 - ty, sy).round() as i64,
-        div(frame.width as f64, sx).round() as i64,
-        div(frame.height as f64, sy).round() as i64,
-    )
+    let (w_scale, h_scale) = if crate::reader::turned_sideways(rotation) { (sy, sx) } else { (sx, sy) };
+    let (cx, cy) = (frame.x as f64 + frame.width as f64 / 2.0, frame.y as f64 + frame.height as f64 / 2.0);
+    let (w, h) = (div(frame.width as f64, w_scale), div(frame.height as f64, h_scale));
+    if w_scale == sx && h_scale == sy {
+        return EmuRect::new(div(frame.x as f64 - tx, sx).round() as i64, div(frame.y as f64 - ty, sy).round() as i64, w.round() as i64, h.round() as i64);
+    }
+    // The centre goes through the group's scale, the size through the swapped one.
+    let (cx, cy) = (div(cx - tx, sx), div(cy - ty, sy));
+    EmuRect::new((cx - w / 2.0).round() as i64, (cy - h / 2.0).round() as i64, w.round() as i64, h.round() as i64)
 }
 
 /// Whether two texts have the same paragraphs and runs (texts), whatever their formats.
@@ -1428,7 +1433,7 @@ fn xfrm_of(doc: &mut XmlDocument, node: NodeId, shape: &Shape, group: Option<[f6
     }
     let x = Prefixes::at(doc, sp_pr);
     let mut local = shape.clone();
-    local.frame = to_group(shape.frame, group);
+    local.frame = to_group(shape.frame, group, shape.rotation);
     let xfrm = x.import(doc, &new::xfrm_xml(&x, &format!("{}xfrm", x.a), &local))?;
     doc.insert(sp_pr, 0, xfrm);
     Ok((xfrm, true))
@@ -1470,7 +1475,7 @@ fn write_xfrm(doc: &mut XmlDocument, node: NodeId, source: &ShapeSource, old: &S
     if made {
         return Ok(());
     }
-    let b = to_group(new.frame, source.group);
+    let b = to_group(new.frame, source.group, new.rotation);
     let a_prefix = Prefixes::at(doc, xfrm).a;
     let sub = |doc: &mut XmlDocument, local: &str, index: usize| -> NodeId {
         match doc.child(xfrm, local) {

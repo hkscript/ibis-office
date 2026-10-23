@@ -603,7 +603,7 @@ impl SlideEditor {
     }
 
     /// Whether a press on the sheet is for drawing (or erasing, or lasso selecting).
-    fn ink_pen(&self) -> Option<PenKind> {
+    pub(crate) fn ink_pen(&self) -> Option<PenKind> {
         let p = self.sheet_state()?.panels.ink.as_ref()?;
         (p.mouse && (p.pen != PenKind::Select || p.lasso)).then_some(p.pen)
     }

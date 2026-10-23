@@ -272,7 +272,6 @@ docx.view.marks.tabs	タブ
 docx.view.marks.paragraph	段落記号
 docx.view.marks.line-breaks	改行記号
 docx.view.marks.hidden	隠し文字
-docx.show-outline	概要を表示
 docx.page-break	改ページ
 docx.column-break	段区切り
 docx.header-footer	ヘッダーとフッター
@@ -2176,3 +2175,4 @@ docx.template.parse-error	パースエラー: {error}
 docx.template.no-word-data	テンプレートに Word 文書データがありません
 docx.template.no-document	文書が開かれていません
 docx.template.updated-count	{title} ({n} 件)
+docx.view.view-mode	ビューモード

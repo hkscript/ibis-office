@@ -39,6 +39,7 @@ use gpui_kit::component::popover::Popover;
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, Selectable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 
 use crate::shell::editor::SlideEditor;
 use crate::shell::format::with_format;
@@ -70,8 +71,16 @@ pub(crate) const TITLE_ROW_PADDING_LEFT: f32 = 78.0;
 #[cfg(not(target_os = "macos"))]
 pub(crate) const TITLE_ROW_PADDING_LEFT: f32 = 14.0;
 
+/// How far from the window's left edge the toolbar starts (points). 8 everywhere, except on a Mac with the title row and the menus hidden
+/// (`compact`): then the toolbar is at the window's top, under the traffic lights (gpui puts them at 9 pt from the left and the top, three
+/// buttons of 12 pt with 8 pt between: they end at 61 pt), so it starts where the title row's content does (`TITLE_ROW_PADDING_LEFT`,
+/// 78 pt). Full screen hides the buttons.
+pub(crate) fn toolbar_left_inset(compact: bool, fullscreen: bool) -> f32 {
+    if cfg!(target_os = "macos") && compact && !fullscreen { TITLE_ROW_PADDING_LEFT } else { 8.0 }
+}
+
 fn disabled_color() -> Hsla {
-    hsla(0.0, 0.0, 0.12, 0.38)
+    crate::shell::palette::shade(0.12, 0.38)
 }
 
 // ----- What is registered --------------------------------------------------
@@ -91,6 +100,7 @@ pub(crate) enum MenuId {
     Slide,
     Arrange,
     Tools,
+    Window,
     Help,
 }
 
@@ -107,6 +117,7 @@ impl MenuId {
             MenuId::Slide => "menu.slide",
             MenuId::Arrange => "menu.arrange",
             MenuId::Tools => "menu.tools",
+            MenuId::Window => "menu.window",
             MenuId::Help => "menu.help",
         }
     }
@@ -134,6 +145,8 @@ pub(crate) struct MenuItem {
     /// For finding it (`Menus::connect`), such as `"xlsx.insert-row-above"`.
     pub id: &'static str,
     pub icon: Option<&'static str>,
+    /// Optional colour swatch drawn at the left of the row (e.g. sheet tab colour in #98).
+    pub swatch: Option<ibis_doc_model::Rgb>,
     pub label: SharedString,
     /// The shortcut shown, such as `"⌘S"`.
     pub shortcut: Option<&'static str>,
@@ -144,7 +157,7 @@ pub(crate) struct MenuItem {
 
 impl MenuItem {
     pub(crate) fn new(id: &'static str, label: impl Into<SharedString>) -> Self {
-        Self { id, icon: None, label: label.into(), shortcut: None, checked: false, disabled: false, handler: None }
+        Self { id, icon: None, swatch: None, label: label.into(), shortcut: None, checked: false, disabled: false, handler: None }
     }
 
     /// An item labelled in the UI's language by its id (`i18n/*.tsv`).
@@ -154,6 +167,16 @@ impl MenuItem {
 
     pub(crate) fn icon(mut self, icon: &'static str) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    pub(crate) fn swatch(mut self, swatch: ibis_doc_model::Rgb) -> Self {
+        self.swatch = Some(swatch);
+        self
+    }
+
+    pub(crate) fn swatch_opt(mut self, swatch: Option<ibis_doc_model::Rgb>) -> Self {
+        self.swatch = swatch;
         self
     }
 
@@ -214,9 +237,21 @@ impl From<Submenu> for MenuEntry {
     }
 }
 
+#[allow(dead_code)] // The registration API: used by the formats' code.
+fn canonical_menu_id(id: &str) -> &str {
+    match id {
+        "xlsx.insert-textbox" => "insert.text-box",
+        "xlsx.insert-shape" => "insert.shape",
+        "xlsx.insert-picture-menu" => "insert.image",
+        "xlsx.insert-link" => "insert.link",
+        "xlsx.insert-symbol" => "insert.symbol",
+        "xlsx.recommended-pivot-tables" => "xlsx.recommended-pivots",
+        _ => id,
+    }
+}
+
 /// The menu bar's menus, as built for the open document.
 #[derive(Clone, Default)]
-#[allow(dead_code)] // The registration API: used by the formats' code.
 pub(crate) struct Menus {
     pub menus: Vec<(MenuId, Vec<MenuEntry>)>,
 }
@@ -234,6 +269,7 @@ impl Menus {
 
     /// A copy of the entry (an item or a submenu) with id `id`, in any menu or submenu.
     pub(crate) fn find_entry(&self, id: &str) -> Option<MenuEntry> {
+        let id = canonical_menu_id(id);
         fn find(entries: &[MenuEntry], id: &str) -> Option<MenuEntry> {
             for entry in entries {
                 match entry {
@@ -257,6 +293,7 @@ impl Menus {
 
     /// The item with id `id`, in any menu or submenu.
     pub(crate) fn find_mut(&mut self, id: &str) -> Option<&mut MenuItem> {
+        let id = canonical_menu_id(id);
         fn find<'a>(entries: &'a mut [MenuEntry], id: &str) -> Option<&'a mut MenuItem> {
             for entry in entries {
                 match entry {
@@ -341,23 +378,40 @@ pub(crate) struct ToolButton {
     /// right having the menu.
     pub quick: Option<Handler>,
     /// Not drawn in the toolbar (its menu is for the Format menu, `menu_bridge.rs`, only).
+    pub(crate) pub_hidden_marker: (),
     pub hidden: bool,
     pub segment: SegmentRounding,
+    /// When true, the dropdown menu has a search TextField at the top that filters items by name (#98, #103).
+    pub searchable: bool,
+    /// When true, this searchable dropdown represents a single-selection list (one checked item highlighted in light blue).
+    pub single_select: bool,
 }
 
 impl ToolButton {
     pub(crate) fn new(id: &'static str, icon: &'static str, tooltip: impl Into<SharedString>) -> Self {
-        Self { id, icon: Some(icon), text: None, tooltip: tooltip.into(), on: false, disabled: false, color: None, menu: None, handler: None, quick: None, hidden: false, segment: SegmentRounding::All }
+        Self { id, icon: Some(icon), text: None, tooltip: tooltip.into(), on: false, disabled: false, color: None, menu: None, handler: None, quick: None, pub_hidden_marker: (), hidden: false, segment: SegmentRounding::All, searchable: false, single_select: false }
     }
 
     /// A text button.
     pub(crate) fn text(id: &'static str, text: impl Into<SharedString>, tooltip: impl Into<SharedString>) -> Self {
-        Self { id, icon: None, text: Some(text.into()), tooltip: tooltip.into(), on: false, disabled: false, color: None, menu: None, handler: None, quick: None, hidden: false, segment: SegmentRounding::All }
+        Self { id, icon: None, text: Some(text.into()), tooltip: tooltip.into(), on: false, disabled: false, color: None, menu: None, handler: None, quick: None, pub_hidden_marker: (), hidden: false, segment: SegmentRounding::All, searchable: false, single_select: false }
     }
 
     /// A drop-down button that has only a ▼ arrow (no separate icon).
     pub(crate) fn dropdown(id: &'static str, tooltip: impl Into<SharedString>) -> Self {
-        Self { id, icon: None, text: None, tooltip: tooltip.into(), on: false, disabled: false, color: None, menu: None, handler: None, quick: None, hidden: false, segment: SegmentRounding::All }
+        Self { id, icon: None, text: None, tooltip: tooltip.into(), on: false, disabled: false, color: None, menu: None, handler: None, quick: None, pub_hidden_marker: (), hidden: false, segment: SegmentRounding::All, searchable: false, single_select: false }
+    }
+
+    /// Add a search box at the top of this button's dropdown menu (#98, #103).
+    pub(crate) fn searchable(mut self) -> Self {
+        self.searchable = true;
+        self
+    }
+
+    /// Mark this searchable dropdown as a single-selection list (selected item gets checkmark + light blue background).
+    pub(crate) fn single_select(mut self) -> Self {
+        self.single_select = true;
+        self
     }
 
     pub(crate) fn segment(mut self, segment: SegmentRounding) -> Self {
@@ -496,14 +550,14 @@ impl ToolButton {
     }
 
     pub(crate) fn enabled(&self) -> bool {
-        !self.disabled && (self.handler.is_some() || self.menu.as_ref().is_some_and(|m| !m.is_empty()))
+        !self.disabled && (self.searchable || self.handler.is_some() || self.menu.as_ref().is_some_and(|m| !m.is_empty()))
     }
 
     /// The width it takes in the toolbar, in pixels (for folding into ︙).
     fn width(&self) -> f32 {
         let text = self.text.as_ref().map_or(0.0, |t| text_width(t, 14.0) + 12.0);
         let icon = if self.icon.is_some() { 26.0 } else { 0.0 };
-        let caret = if self.menu.is_some() { 14.0 } else { 0.0 };
+        let caret = if self.menu.is_some() && self.id != "menu-search" { 14.0 } else { 0.0 };
         // A split button is the icon's button and the ▼'s side by side.
         let split = if self.left_action().is_some() { 4.0 } else { 0.0 };
         (icon + text + caret + split).max(28.0)
@@ -547,10 +601,34 @@ pub(crate) struct SidebarTab {
     pub open: Handler,
 }
 
+/// The right pane's state for its buttons (the title row's, 表示 > サイドバー), found by `render_sidebar`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct RightPane {
+    /// The toggle can show something: the format has a pane on request, or a panel is open.
+    pub available: bool,
+    /// The pane is on screen.
+    pub shown: bool,
+}
+
 /// The sidebar's content.
 pub(crate) struct SidebarPanel {
     pub title: SharedString,
     pub body: AnyElement,
+}
+
+thread_local! {
+    static SIDEBAR_FOOTER: std::cell::RefCell<Option<AnyElement>> = const { std::cell::RefCell::new(None) };
+}
+
+impl SidebarPanel {
+    /// Construct a `SidebarPanel` with a sticky bottom footer rendered below the scrollable body (#151).
+    pub(crate) fn with_footer(title: impl Into<SharedString>, body: AnyElement, footer: AnyElement) -> Self {
+        SIDEBAR_FOOTER.with(|cell| *cell.borrow_mut() = Some(footer));
+        Self {
+            title: title.into(),
+            body,
+        }
+    }
 }
 
 /// A rough width of `text` at `size` px: full-width characters are square.
@@ -596,12 +674,85 @@ fn listener(editor: &WeakEntity<SlideEditor>, handler: &Handler) -> impl Fn(&Cli
     }
 }
 
+/// Resolve the display label for `item`: UI keys go through `i18n::text`, installed font names
+/// go through `i18n::font_label`, and document-specific / user-defined names are returned as-is.
+pub(crate) fn menu_item_display_label(item: &MenuItem) -> SharedString {
+    const NAMES: [&str; 11] = [
+        "file.recent.item",
+        "xlsx.unhide-sheet",
+        "xlsx.validation-item",
+        "xlsx.sheet-list.item",
+        "pptx.new-slide.layout",
+        "pptx.layout.apply",
+        "pptx.clip.bookmark-jump",
+        "pptx.clip.caption-item",
+        "pptx.custom-show-item",
+        "docx.style.update",
+        "xlsx.function",
+    ];
+    const FONT_ITEMS: [&str; 4] = ["xlsx.font", "pptx.font", "docx.font", "font.recent.item"];
+    let is_dynamic_id = item.id.starts_with("window.open.")
+        || item.id.starts_with("font.section.")
+        || item.id.starts_with("docx.style.doc.")
+        || item.id.starts_with("docx.style.char.")
+        || item.id.starts_with("docx.track.reviewers.author:")
+        || (item.id.starts_with("docx.xref.") && item.id != "docx.xref.dialog" && item.id != "docx.xref.none")
+        || (item.id.starts_with("docx.date.") && item.id != "docx.date.update");
+    if FONT_ITEMS.contains(&item.id) {
+        crate::shell::i18n::font_label(&item.label)
+    } else if NAMES.contains(&item.id) || is_dynamic_id {
+        item.label.clone()
+    } else if crate::shell::i18n::is_font_name(&item.label) {
+        crate::shell::i18n::font_label(&item.label)
+    } else {
+        crate::shell::i18n::text(&item.label)
+    }
+}
+
+/// Format a shortcut string for `is_macos` (`true`: keep macOS symbols `⌘⇧⌥⌃`; `false`: convert to `Ctrl+`, `Alt+`, `Shift+`, `Backspace`, `Enter`, etc.).
+pub(crate) fn format_shortcut_for_target(shortcut: &str, is_macos: bool) -> String {
+    if is_macos || shortcut.is_empty() {
+        return shortcut.to_string();
+    }
+    let mut has_ctrl = false;
+    let mut has_alt = false;
+    let mut has_shift = false;
+    let mut key_part = String::new();
+    for ch in shortcut.chars() {
+        match ch {
+            '⌘' | '⌃' => has_ctrl = true,
+            '⌥' => has_alt = true,
+            '⇧' => has_shift = true,
+            '⌫' => key_part.push_str("Backspace"),
+            '⌦' => key_part.push_str("Del"),
+            '↩' => key_part.push_str("Enter"),
+            '⎋' => key_part.push_str("Esc"),
+            '⇥' => key_part.push_str("Tab"),
+            other => key_part.push(other),
+        }
+    }
+    let mut out = String::new();
+    if has_ctrl {
+        out.push_str("Ctrl+");
+    }
+    if has_alt {
+        out.push_str("Alt+");
+    }
+    if has_shift {
+        out.push_str("Shift+");
+    }
+    out.push_str(&key_part);
+    out
+}
+
+pub(crate) fn format_shortcut_for_platform(shortcut: &str) -> String {
+    format_shortcut_for_target(shortcut, cfg!(target_os = "macos"))
+}
+
 pub(crate) fn menu_item_row(item: &MenuItem, editor: &WeakEntity<SlideEditor>) -> PopupMenuItem {
                 // Icon (or ✓) in the menu's icon column, the label, the shortcut.
                 // The code's words in the UI's language; a document's names (sheets,
                 // layouts, styles, fonts, files) as they are.
-                const NAMES: [&str; 7] = ["file.recent.item", "xlsx.unhide-sheet", "xlsx.validation-item", "pptx.new-slide.layout", "pptx.layout.apply", "docx.style.update", "xlsx.function"];
-                // The items of the font lists: the name of an installed font (in English in the English UI where the system gives it one).
                 const FONT_ITEMS: [&str; 4] = ["xlsx.font", "pptx.font", "docx.font", "font.recent.item"];
                 let is_font_item = FONT_ITEMS.contains(&item.id);
                 let is_font_section = item.id.starts_with("font.section.");
@@ -621,9 +772,9 @@ pub(crate) fn menu_item_row(item: &MenuItem, editor: &WeakEntity<SlideEditor>) -
                     .disabled(true);
                 }
 
-                let label = if is_font_item { crate::shell::i18n::font_label(&item.label) } else if NAMES.contains(&item.id) { item.label.clone() } else if crate::shell::i18n::is_font_name(&item.label) { crate::shell::i18n::font_label(&item.label) } else { crate::shell::i18n::text(&item.label) };
-                let (shortcut, enabled) = (item.shortcut, item.enabled());
-                let has_icon = item.icon.is_some_and(|i| !i.is_empty()) && !item.checked;
+                let label = menu_item_display_label(item);
+                let (shortcut, enabled, swatch) = (item.shortcut, item.enabled(), item.swatch);
+                let valid_icon = item.icon.filter(|i| !i.is_empty() && !item.checked && crate::shell::icons::icon_svg_bytes(i).is_some());
                 let raw_font_name = item.label.to_string();
                 let display_label = label.clone();
 
@@ -643,7 +794,13 @@ pub(crate) fn menu_item_row(item: &MenuItem, editor: &WeakEntity<SlideEditor>) -
                             div().pl(px(14.)).text_color(fg).child(display_label.clone())
                         }
                     } else {
-                        div().text_color(fg).when(has_icon, |d| d.pl(px(3.))).child(display_label.clone())
+                        h_flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .when_some(swatch, |d, c| {
+                                d.child(div().w(px(10.)).h(px(10.)).rounded(px(2.)).bg(rgb(c.0)).border_1().border_color(crate::shell::palette::shade(0.0, 0.2)))
+                            })
+                            .child(div().text_color(fg).child(display_label.clone()))
                     };
 
                     h_flex()
@@ -651,11 +808,11 @@ pub(crate) fn menu_item_row(item: &MenuItem, editor: &WeakEntity<SlideEditor>) -
                         .gap(px(16.))
                         .items_center()
                         .child(div().flex_1().child(content))
-                        .when_some(shortcut, |d, key| d.child(div().text_color(if enabled { cx.theme().muted_foreground } else { disabled_color() }).child(key)))
+                        .when_some(shortcut, |d, key| d.child(div().text_color(if enabled { cx.theme().muted_foreground } else { disabled_color() }).child(format_shortcut_for_platform(key))))
                 })
                 .checked(item.checked)
                 .disabled(!enabled);
-                if let Some(name) = item.icon.filter(|i| !i.is_empty() && !item.checked) {
+                if let Some(name) = valid_icon {
                     row = row.icon(menu_icon(name));
                 }
                 if let Some(handler) = &item.handler {
@@ -691,15 +848,37 @@ pub(crate) fn prune_entries(entries: Vec<MenuEntry>) -> Vec<MenuEntry> {
     out
 }
 
-/// `entries` into `menu`.
-pub(crate) fn fill_menu(mut menu: PopupMenu, entries: &[MenuEntry], editor: &WeakEntity<SlideEditor>, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
-    let entries = prune_entries(entries.to_vec());
-    for entry in &entries {
+/// Compute the fixed width required to display all `entries` without changing width while scrolling (#108).
+pub(crate) fn menu_width_for_entries(entries: &[MenuEntry]) -> f32 {
+    let mut max_w: f32 = 280.0;
+    for entry in entries {
+        match entry {
+            MenuEntry::Item(item) => {
+                let label = menu_item_display_label(item);
+                let shortcut_w = item.shortcut.map_or(0.0, |s| text_width(&format_shortcut_for_platform(s), 13.0) + 24.0);
+                let swatch_w = if item.swatch.is_some() { 18.0 } else { 0.0 };
+                let w = 48.0 + swatch_w + text_width(&label, 14.0) + shortcut_w + 24.0;
+                max_w = max_w.max(w);
+            }
+            MenuEntry::Submenu(sub) => {
+                let label = crate::shell::i18n::text(&sub.label);
+                let w = 48.0 + text_width(&label, 14.0) + 36.0;
+                max_w = max_w.max(w);
+            }
+            _ => {}
+        }
+    }
+    max_w.min(520.0)
+}
+
+/// Add `entries` directly into `menu` without re-pruning or applying `PopupMenu`'s internal scroll cap (#105).
+pub(crate) fn fill_menu_entries(mut menu: PopupMenu, entries: &[MenuEntry], editor: &WeakEntity<SlideEditor>, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
+    for entry in entries {
         menu = match entry {
             MenuEntry::Separator => menu.separator(),
             MenuEntry::Submenu(sub) => {
                 let (items, editor) = (sub.items.clone(), editor.clone());
-                let icon = sub.icon.map(menu_icon);
+                let icon = sub.icon.filter(|i| !i.is_empty() && crate::shell::icons::icon_svg_bytes(i).is_some()).map(menu_icon);
                 menu.submenu_with_icon(icon, crate::shell::i18n::text(&sub.label), window, cx, move |m, window, cx| fill_menu(m, &items, &editor, window, cx))
             }
             MenuEntry::Palette(palette) => crate::shell::color_palette::fill_palette(menu, palette, editor, cx),
@@ -709,20 +888,52 @@ pub(crate) fn fill_menu(mut menu: PopupMenu, entries: &[MenuEntry], editor: &Wea
     menu
 }
 
+/// `entries` into `menu`.
+pub(crate) fn fill_menu(menu: PopupMenu, entries: &[MenuEntry], editor: &WeakEntity<SlideEditor>, window: &mut Window, cx: &mut Context<PopupMenu>) -> PopupMenu {
+    let entries = prune_entries(entries.to_vec());
+    let width = menu_width_for_entries(&entries);
+    crate::shell::menu_bar::fill_scrollable_popup_menu(menu, entries, width, editor, window, cx)
+}
+
 /// The ibisOffice logo (the mark and the name, logo/ibisOffice_logo.svg) as
 /// the start view's title row shows it: its height in pixels, and its width
 /// over its height. The SVG's own size is this size (99.25×22): GPUI draws
 /// an SVG picture at twice its own size and scales that to the element, and
 /// scaled down from its 600×133 it came out jagged.
 const LOGO_HEIGHT: f32 = 22.0;
-const LOGO_ASPECT: f32 = 600.0 / 133.0;
+pub(crate) const LOGO_ASPECT: f32 = 600.0 / 133.0;
 
-fn app_logo() -> std::sync::Arc<Image> {
-    static LOGO: std::sync::OnceLock<std::sync::Arc<Image>> = std::sync::OnceLock::new();
-    LOGO.get_or_init(|| std::sync::Arc::new(Image::from_bytes(ImageFormat::Svg, include_bytes!("../../logo/ibisOffice_logo.svg").to_vec()))).clone()
+pub(crate) fn app_logo() -> std::sync::Arc<Image> {
+    static LIGHT: std::sync::OnceLock<std::sync::Arc<Image>> = std::sync::OnceLock::new();
+    static DARK: std::sync::OnceLock<std::sync::Arc<Image>> = std::sync::OnceLock::new();
+    let svg = include_str!("../../logo/ibisOffice_logo.svg");
+    if crate::shell::palette::is_dark() {
+        // The dark navy of the letters is a light colour over the dark chrome; the blues are kept.
+        DARK.get_or_init(|| std::sync::Arc::new(Image::from_bytes(ImageFormat::Svg, svg.replace("rgb(0,40,76)", "rgb(232,238,246)").replace("rgb(0,40,77)", "rgb(232,238,246)").into_bytes()))).clone()
+    } else {
+        LIGHT.get_or_init(|| std::sync::Arc::new(Image::from_bytes(ImageFormat::Svg, svg.as_bytes().to_vec()))).clone()
+    }
 }
 
-fn icon(name: &'static str, size: f32, color: Hsla) -> Icon {
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub(crate) fn office_app_logo(kind: ibis_pptx::Kind) -> std::sync::Arc<Image> {
+    static WORD: std::sync::OnceLock<std::sync::Arc<Image>> = std::sync::OnceLock::new();
+    static EXCEL: std::sync::OnceLock<std::sync::Arc<Image>> = std::sync::OnceLock::new();
+    static POWERPOINT: std::sync::OnceLock<std::sync::Arc<Image>> = std::sync::OnceLock::new();
+    match kind {
+        ibis_pptx::Kind::Document => WORD
+            .get_or_init(|| std::sync::Arc::new(Image::from_bytes(ImageFormat::Svg, include_bytes!("../../logo/open_in_word.svg").to_vec())))
+            .clone(),
+        ibis_pptx::Kind::Workbook => EXCEL
+            .get_or_init(|| std::sync::Arc::new(Image::from_bytes(ImageFormat::Svg, include_bytes!("../../logo/open_in_excel.svg").to_vec())))
+            .clone(),
+        ibis_pptx::Kind::Presentation => POWERPOINT
+            .get_or_init(|| std::sync::Arc::new(Image::from_bytes(ImageFormat::Svg, include_bytes!("../../logo/open_in_powerpoint.svg").to_vec())))
+            .clone(),
+    }
+}
+
+pub(crate) fn icon(name: &'static str, size: f32, color: Hsla) -> Icon {
     Icon::new(Material(name)).size(px(size)).text_color(color)
 }
 
@@ -782,7 +993,18 @@ pub(crate) fn apply_title_drag(div: Div, window: &Window) -> Div {
             div
         }
     }
-    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "freebsd")))]
+    #[cfg(target_os = "macos")]
+    {
+        // The title row is drawn by the app (the system's title bar is transparent): a double click does what the
+        // system's setting says (System Settings > Desktop & Dock > "Double-click a window's title bar to"), zoom by default.
+        let _ = window;
+        div.on_mouse_down(MouseButton::Left, |e, window, _| {
+            if e.click_count == 2 {
+                window.titlebar_double_click();
+            }
+        })
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "freebsd", target_os = "macos")))]
     {
         let _ = window;
         div
@@ -804,7 +1026,7 @@ fn system_menu_icon() -> AnyElement {
         .items_center()
         .justify_center()
         .rounded(px(4.))
-        .hover(|s| s.bg(hsla(0.0, 0.0, 0.0, 0.08)))
+        .hover(|s| s.bg(crate::shell::palette::shade(0.0, 0.08)))
         .child(img(image).w(px(20.)).h(px(20.)))
         .on_mouse_down(MouseButton::Left, |_, window, cx| {
             // Below the icon, in the window's client pixels.
@@ -893,7 +1115,7 @@ pub(crate) fn render_window_controls(window: &Window) -> Option<AnyElement> {
         .items_center()
         .justify_center()
         .cursor_pointer()
-        .hover(|s| s.bg(hsla(0.0, 0.0, 0.0, 0.08)))
+        .hover(|s| s.bg(crate::shell::palette::shade(0.0, 0.08)))
         .child(Icon::new(Material("remove")).size(px(18.)))
         .on_click(|_, window, _| {
             eprintln!("[DEBUG-WAYLAND] minimize button clicked! calling window.minimize_window()");
@@ -915,7 +1137,7 @@ pub(crate) fn render_window_controls(window: &Window) -> Option<AnyElement> {
         .items_center()
         .justify_center()
         .cursor_pointer()
-        .hover(|s| s.bg(hsla(0.0, 0.0, 0.0, 0.08)))
+        .hover(|s| s.bg(crate::shell::palette::shade(0.0, 0.08)))
         .child(Icon::new(Material(max_icon)).size(px(16.)))
         .on_click(|_, window, _| {
             eprintln!("[DEBUG-WAYLAND] maximize button clicked! calling window.zoom_window()");
@@ -936,7 +1158,7 @@ pub(crate) fn render_window_controls(window: &Window) -> Option<AnyElement> {
         .justify_center()
         .cursor_pointer()
         .text_color(rgb(ICON))
-        .hover(|s| s.bg(rgb(0xe81123)).text_color(white()))
+        .hover(|s| s.bg(rgb(0xe81123)).text_color(crate::shell::palette::white()))
         .child(Icon::new(Material("close")).size(px(18.)))
         .on_click(|_, window, _| {
             eprintln!("[DEBUG-WAYLAND] close button clicked! calling window.remove_window()");
@@ -1013,6 +1235,7 @@ impl SlideEditor {
                 .child(img(app_logo()).h(px(LOGO_HEIGHT)).w(px(LOGO_HEIGHT * LOGO_ASPECT)))
                 .child(apply_title_drag(div().flex_1().h_full(), window))
                 .child(title_button("help", "help", "_shell.help", None, &editor))
+                .children(self.embed_buttons(&editor))
                 .children(controls)
                 .into_any_element();
         }
@@ -1024,13 +1247,12 @@ impl SlideEditor {
         } else {
             self.file_name.clone().unwrap_or_default()
         };
-        let sidebar_open = self.sidebar_open;
         let add_comment = crate::shell::format::with_format!(self, add_comment(self));
         let show_comments = crate::shell::format::with_format!(self, show_comments(self));
         let buttons = |d: Div| {
             // The formats connect them (`FormatEditor::add_comment`,
             // `show_comments`).
-            d.child(title_button("add-comment", "add_comment", "_shell.new-comment-m", add_comment.clone(), &editor))
+            let d = d.child(title_button("add-comment", "add_comment", "_shell.new-comment-m", add_comment.clone(), &editor))
                 .child(match &show_comments {
                     Some((true, h)) => title_button_icon("show-comments", fill_icon("comment", 20.0, rgb(ICON).into()), "_shell.hide-comments", Some(h.clone()), &editor),
                     Some((false, h)) => title_button("show-comments", "comment", "_shell.show-comments", Some(h.clone()), &editor),
@@ -1039,7 +1261,7 @@ impl SlideEditor {
                 .when(self.kind() == ibis_pptx::Kind::Document, |d| {
                     let open = self.outline_open;
                     d.child(
-                        title_button_icon("outline", if open { fill_icon("dock_to_right", 20.0, rgb(ICON).into()) } else { icon("dock_to_right", 20.0, rgb(ICON).into()) }, if open { "_shell.hide-outline" } else { "_shell.show-outline" }, Some(Rc::new(|this: &mut SlideEditor, _, cx| {
+                        title_button_icon("outline", if open { fill_icon("dock_to_right", 20.0, rgb(ICON).into()) } else { icon("dock_to_right", 20.0, rgb(ICON).into()) }, "docx.navigation.title", Some(Rc::new(|this: &mut SlideEditor, _, cx| {
                             this.outline_open = !this.outline_open;
                             cx.notify();
                         })), &editor),
@@ -1056,15 +1278,48 @@ impl SlideEditor {
                         &editor,
                     ))
                 })
-                .child(title_button_icon(
-                    "sidebar",
-                    if sidebar_open { fill_icon("dock_to_left", 20.0, rgb(ICON).into()) } else { icon("dock_to_left", 20.0, rgb(ICON).into()) },
-                    if sidebar_open { "_shell.hide-sidebar" } else { "view.sidebar" },
-                    Some(Rc::new(|this: &mut SlideEditor, window, cx| {
-                        this.toggle_sidebar(window, cx);
-                    })),
-                    &editor,
-                ))
+                .child({
+                    // On and enabled as the pane is (`right_pane`, from `render_sidebar` this frame).
+                    let pane = self.right_pane;
+                    let color: Hsla = if pane.available { rgb(ICON).into() } else { disabled_color() };
+                    title_button_icon(
+                        "sidebar",
+                        if pane.shown { fill_icon("dock_to_left", 20.0, color) } else { icon("dock_to_left", 20.0, color) },
+                        if pane.shown { "_shell.hide-sidebar" } else { "view.sidebar" },
+                        pane.available.then(|| -> Handler { Rc::new(|this: &mut SlideEditor, window, cx| this.toggle_sidebar(window, cx)) }),
+                        &editor,
+                    )
+                });
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            let d = {
+                let kind = self.kind();
+                let tip = match kind {
+                    ibis_pptx::Kind::Document => "window.open-in-word",
+                    ibis_pptx::Kind::Workbook => "window.open-in-excel",
+                    ibis_pptx::Kind::Presentation => "window.open-in-powerpoint",
+                };
+                let can_open_in_office = self.has_file_on_disk();
+                let handler: Handler = Rc::new(|this: &mut SlideEditor, window, cx| this.open_in_office_action(window, cx));
+                d.child(
+                    div()
+                        .id("open-in-office")
+                        .size(px(32.))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .when(can_open_in_office, |d| {
+                            d.cursor_pointer()
+                                .hover(|s| s.bg(crate::shell::palette::shade(0.27, 0.08)))
+                                .on_click(listener(&editor, &handler))
+                        })
+                        .when(!can_open_in_office, |d| d.opacity(0.4))
+                        .child(img(office_app_logo(kind)).size(px(20.)))
+                        .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(crate::shell::i18n::text(tip)).build(window, cx)),
+                )
+            };
+            d
         };
         let slideshow = self.pages_are_slides().then(|| self.render_slideshow_button(&editor, false));
         #[cfg(target_os = "windows")]
@@ -1097,11 +1352,35 @@ impl SlideEditor {
                         .items_center(),
                     window,
                 )
-                .child(div().text_size(px(15.)).px(px(6.)).truncate().child(name)),
+                .child(div().text_size(px(15.)).px(px(6.)).truncate().child(name))
+                .when(self.is_dirty(), |d| d.child(div().id("title-dirty-mark").text_size(px(12.)).ml(px(-2.)).text_color(rgb(ICON)).child("●"))),
             )
             .child(buttons(h_flex()))
+            .children(self.embed_buttons(&editor))
             .children(controls)
             .into_any_element()
+    }
+
+    /// The buttons the embedding page asked for at the top right of the browser version: download, then close.
+    fn embed_buttons(&self, editor: &WeakEntity<SlideEditor>) -> Vec<AnyElement> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let mut buttons = Vec::new();
+            if crate::shell::embed::show_download() {
+                let handler: Handler = Rc::new(|this: &mut SlideEditor, window, cx| this.embed_download(window, cx));
+                buttons.push(title_button("embed-download", "download", "shell.embed.download", Some(handler), editor));
+            }
+            if crate::shell::embed::show_close() {
+                let handler: Handler = Rc::new(|this: &mut SlideEditor, window, cx| this.embed_close(window, cx));
+                buttons.push(title_button("embed-close", "close", "shell.embed.close", Some(handler), editor));
+            }
+            buttons
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = editor;
+            Vec::new()
+        }
     }
 
     /// The button with the format's icon that opens a start window.
@@ -1124,9 +1403,26 @@ impl SlideEditor {
         }
         let menus = self.menus();
         ids.iter()
-            .filter_map(|id| match menus.find_entry(id)? {
+            .filter_map(|id| {
+                // A submenu whose first command has the submenu's own id (ウィンドウ枠の固定) is
+                // shown as that command, with the submenu's icon.
+                match menus.find_entry(id)? {
+                    MenuEntry::Submenu(sub) => {
+                        let mut inner = sub.items.iter().find_map(|e| match e {
+                            MenuEntry::Item(i) if i.id == id.as_str() => Some(i.clone()),
+                            _ => None,
+                        })?;
+                        if inner.icon.is_none_or(str::is_empty) {
+                            inner.icon = sub.icon;
+                        }
+                        Some(MenuEntry::Item(inner))
+                    }
+                    other => Some(other),
+                }
+            })
+            .filter_map(|entry| match entry {
                 MenuEntry::Item(item) => {
-                    let icon_name = item.icon?;
+                    let icon_name = item.icon.filter(|n| !n.is_empty())?;
                     let handler = if item.disabled { None } else { item.handler.clone() };
                     let color: Hsla = if handler.is_some() { rgb(ICON).into() } else { disabled_color() };
                     Some(title_button_icon(item.id, icon(icon_name, 20.0, color), item.id, handler, editor))
@@ -1173,7 +1469,7 @@ impl SlideEditor {
             .rounded(px(15.))
             .border_1()
             .border_color(theme_border)
-            .bg(white())
+            .bg(crate::shell::palette::white())
             .when(disabled, |d| d.opacity(0.5))
             .child(
                 div()
@@ -1188,13 +1484,13 @@ impl SlideEditor {
                     .text_size(px(13.))
                     .font_weight(FontWeight::MEDIUM)
                     .cursor_pointer()
-                    .hover(|s| s.bg(hsla(0.0, 0.0, 0.0, 0.04)))
+                    .hover(|s| s.bg(crate::shell::palette::shade(0.0, 0.04)))
                     .child(icon("slideshow", 18.0, rgb(ICON).into()))
                     .when(!icon_only, |d| d.child(crate::shell::i18n::text("_shell.slide-show")))
                     .when(!disabled, |d| d.on_click(listener(editor, &start)))
                     .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new(crate::shell::i18n::text("_shell.play-from-current-slide")).build(window, cx)),
             )
-            .child(div().w(px(1.)).h(px(18.)).bg(hsla(0.0, 0.0, 0.0, 0.15)))
+            .child(div().w(px(1.)).h(px(18.)).bg(crate::shell::palette::shade(0.0, 0.15)))
             .child(
                 Button::new("slideshow-caret")
                     .ghost()
@@ -1211,6 +1507,7 @@ impl SlideEditor {
     /// The toolbar: the common left part, the format's right part, the
     /// buttons that do not fit folded into ︙, and ^ to hide the menus.
     pub(crate) fn render_toolbar(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        set_current_toolbar_open(self.font_size_menu_open, self.toolbar_search_open);
         let editor = cx.entity().downgrade();
         let mut items = self.toolbar_items();
         items.retain(|item| !matches!(item, ToolItem::Button(b) if b.hidden));
@@ -1225,10 +1522,13 @@ impl SlideEditor {
         let system_menu_icon_width = if cfg!(target_os = "windows") { 28.0 + 8.0 } else { 0.0 };
         // The slide show's button, its icon and ▾ (a presentation).
         let slideshow_width = if self.pages_are_slides() { 8.0 + 64.0 } else { 0.0 };
+        // On a Mac, with the title row and the menus hidden the toolbar is at the window's top, where the window's three buttons are
+        // (the traffic lights): the bar starts right of them (not with the window full screen, which hides them).
+        let mac_inset = toolbar_left_inset(self.chrome_compact, window.is_fullscreen());
         let title_parts = if in_title_row { TITLE_ROW_PADDING_LEFT + system_menu_icon_width + 28.0 + slideshow_width + 3.0 * 46.0 } else { 0.0 };
         // Linux (CSD) draws the window's shadow inside the viewport, at its sides.
         let paddings = gpui_kit::component::window_paddings(window);
-        let available = f32::from(window.viewport_size().width - paddings.left - paddings.right) - 16.0 - 12.0 - 2.0 * 29.0 - title_parts;
+        let available = f32::from(window.viewport_size().width - paddings.left - paddings.right) - 16.0 - 12.0 - 2.0 * 29.0 - title_parts - (mac_inset - 8.0).max(0.0);
         let mut used = 0.0;
         let mut shown = Vec::new();
         let mut folded = Vec::new();
@@ -1247,7 +1547,7 @@ impl SlideEditor {
         while matches!(folded.first(), Some(ToolItem::Separator)) {
             folded.remove(0);
         }
-        let compact = self.chrome_compact;
+        let compact = self.chrome_compact || !self.show_menu_bar;
         let more = (!folded.is_empty()).then(|| {
             let folded = Rc::new(folded);
             let editor = editor.clone();
@@ -1266,20 +1566,28 @@ impl SlideEditor {
         });
         // In the title row, the bar's empty middle moves the window.
         let gap = if in_title_row { apply_title_drag(div().flex_1().h_full(), window) } else { div().flex_1() };
+        let toolbar_bounds = self.toolbar_bounds.clone();
         let bar = h_flex()
+            .relative()
             .h(px(36.))
             .px(px(6.))
             .gap(px(1.))
             .items_center()
             .rounded(px(18.))
             .bg(rgb(TOOLBAR_BG))
+            .child(canvas(|_, _, _| {}, move |bounds, _, _, _| toolbar_bounds.set(bounds)).absolute().top_0().left_0().size_full())
             .children(shown.iter().enumerate().map(|(i, item)| tool_item(item, i, &editor)))
             .child(gap)
             .children(more)
             .child(tool_item(
                 &ToolButton::new("toggle-menus", if compact { "keyboard_arrow_down" } else { "keyboard_arrow_up" }, if compact { "_shell.show-menus-f" } else { "_shell.hide-menus-f" })
                     .click(|this, _, cx| {
-                        this.chrome_compact = !this.chrome_compact;
+                        if !this.show_menu_bar {
+                            this.show_menu_bar = true;
+                            this.chrome_compact = false;
+                        } else {
+                            this.chrome_compact = !this.chrome_compact;
+                        }
                         cx.notify();
                     })
                     .into(),
@@ -1301,24 +1609,35 @@ impl SlideEditor {
                 .children(render_window_controls(window))
                 .into_any_element();
         }
-        div().px(px(8.)).pt(px(2.)).pb(px(6.)).flex_shrink_0().bg(rgb(APP_BG)).child(bar).into_any_element()
+        div().pl(px(mac_inset)).pr(px(8.)).pt(px(2.)).pb(px(6.)).flex_shrink_0().bg(rgb(APP_BG)).child(bar).into_any_element()
     }
 
     /// The sidebar, right of the document: the panel, under the tabs the
-    /// format has for it.
+    /// format has for it. Also records `right_pane` (shown, and whether the toggle can show it), which the title row's
+    /// button and 表示 > サイドバー read.
     pub(crate) fn render_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let editor = cx.entity().downgrade();
-        if !self.sidebar_open {
+        let tabs_of = with_format!(self, sidebar_tabs());
+        let on_request = with_format!(self, sidebar_on_request()) || !tabs_of.is_empty();
+        // Closed, a format with nothing to show on request is asked whether a panel is open (the toggle can show
+        // only that); one that always has something is not asked (its panel would be made for nothing).
+        let panel = if self.sidebar_open || !on_request {
+            SIDEBAR_FOOTER.with(|cell| *cell.borrow_mut() = None);
+            with_format!(self, sidebar(self, window, cx)).or_else(|| crate::shell::chrome_defaults::sidebar(self, window, cx))
+        } else {
+            None
+        };
+        let has_content = panel.is_some() || !tabs_of.is_empty();
+        self.right_pane = RightPane { available: on_request || panel.is_some(), shown: self.sidebar_open && has_content };
+        if !self.right_pane.shown {
             return None;
         }
-        let tabs_of = with_format!(self, sidebar_tabs());
-        let panel = with_format!(self, sidebar(self, window, cx)).or_else(|| crate::shell::chrome_defaults::sidebar(self, window, cx));
         let panel = match panel {
             Some(panel) => panel,
             // Nothing open: the tabs alone, for a format that has them.
-            None if !tabs_of.is_empty() => SidebarPanel { title: "".into(), body: div().into_any_element() },
-            None => return None,
+            None => SidebarPanel { title: "".into(), body: div().into_any_element() },
         };
+        let footer = SIDEBAR_FOOTER.with(|cell| cell.borrow_mut().take());
         // The tabs show with their panels, or with none open; another
         // panel (the name manager, ...) has its own title only.
         let selected = tabs_of.iter().position(|t| crate::shell::i18n::text(t.panel_title) == crate::shell::i18n::text(&panel.title));
@@ -1338,7 +1657,7 @@ impl SlideEditor {
                     .whitespace_nowrap()
                     .text_color(if on { rgb(0x0b57d0) } else { rgb(TEXT_SECONDARY) })
                     .when(on, |d| d.font_weight(FontWeight::MEDIUM).border_b_2().border_color(rgb(0x0b57d0)))
-                    .hover(|s| s.bg(hsla(0.0, 0.0, 0.27, 0.06)))
+                    .hover(|s| s.bg(crate::shell::palette::shade(0.27, 0.06)))
                     .child(crate::shell::i18n::text(tab.label))
                     .on_click(listener(&editor, &handler))
             }))
@@ -1348,12 +1667,13 @@ impl SlideEditor {
             cx.notify();
             window.refresh();
         });
+        let sidebar_scroll = self.sidebar_scroll.clone();
         Some(
             v_flex()
                 .w(px(SIDEBAR_WIDTH))
                 .h_full()
                 .flex_shrink_0()
-                .bg(white())
+                .bg(crate::shell::palette::white())
                 .border_l_1()
                 .border_color(rgb(BORDER))
                 .rounded_tl(px(16.))
@@ -1368,7 +1688,36 @@ impl SlideEditor {
                         .child(title_button("sidebar-close", "close", "_shell.close", Some(close), &editor)),
                 )
                 .children(tabs)
-                .child(div().id("sidebar-body").flex_1().min_h_0().overflow_y_scroll().child(panel.body))
+                .child(
+                    div()
+                        .relative()
+                        .flex_1()
+                        .min_h_0()
+                        .w_full()
+                        .child(
+                            div()
+                                .id("sidebar-body")
+                                .size_full()
+                                .overflow_y_scroll()
+                                .track_scroll(&sidebar_scroll)
+                                .child(panel.body),
+                        )
+                        .child(always_visible_scrollbar_overlay("sidebar-scrollbar", sidebar_scroll, None)),
+                )
+                .when_some(footer, |d, footer| {
+                    d.child(
+                        div()
+                            .id("sidebar-footer")
+                            .flex_shrink_0()
+                            .w_full()
+                            .px(px(18.))
+                            .py(px(10.))
+                            .border_t_1()
+                            .border_color(rgb(BORDER))
+                            .bg(crate::shell::palette::white())
+                            .child(footer),
+                    )
+                })
                 .into_any_element(),
         )
     }
@@ -1390,11 +1739,170 @@ fn title_button_icon(id: &'static str, icon: Icon, tooltip: &'static str, handle
         .items_center()
         .justify_center()
         .rounded_full()
-        .when(enabled, |d| d.cursor_pointer().hover(|s| s.bg(hsla(0.0, 0.0, 0.27, 0.08))))
+        .when(enabled, |d| d.cursor_pointer().hover(|s| s.bg(crate::shell::palette::shade(0.27, 0.08))))
         .child(icon)
         .when_some(handler, |d, h| d.on_click(listener(editor, &h)))
         .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(crate::shell::i18n::text(&tooltip)).build(window, cx))
         .into_any_element()
+}
+
+thread_local! {
+    static CURRENT_TOOLBAR_OPEN: std::cell::Cell<(bool, Option<&'static str>)> = const { std::cell::Cell::new((false, None)) };
+}
+
+pub(crate) fn set_current_toolbar_open(font_size_open: bool, search_open: Option<&'static str>) {
+    CURRENT_TOOLBAR_OPEN.with(|c| c.set((font_size_open, search_open)));
+}
+
+pub(crate) const FONT_SIZE_CANDIDATES: &[f32] = &[
+    6.0, 7.0, 8.0, 9.0, 10.0, 10.5, 11.0, 12.0, 14.0, 16.0, 18.0, 20.0, 22.0, 24.0, 26.0, 28.0, 36.0, 48.0, 72.0,
+];
+
+pub(crate) fn font_size_candidate_label(pt: f32) -> String {
+    if (pt - pt.round()).abs() < 1e-4 {
+        format!("{}", pt.round() as i32)
+    } else {
+        format!("{pt:.1}")
+    }
+}
+
+/// Return the font size candidates matching `query` when `filtering` is active, or all candidates otherwise (#127, #149).
+pub(crate) fn filtered_font_size_candidates(query: &str, filtering: bool) -> Vec<f32> {
+    let trimmed = query.trim();
+    if !filtering || trimmed.is_empty() {
+        return FONT_SIZE_CANDIDATES.to_vec();
+    }
+    let q = trimmed.to_lowercase();
+    FONT_SIZE_CANDIDATES
+        .iter()
+        .copied()
+        .filter(|&pt| font_size_candidate_label(pt).to_lowercase().contains(&q))
+        .collect()
+}
+
+/// Step to the next/previous enabled `MenuItem` index by `delta` (skipping section headers and disabled items) (#127).
+pub(crate) fn step_enabled_menu_index(items: &[MenuItem], current: Option<usize>, delta: isize) -> Option<usize> {
+    let enabled_indices: Vec<usize> = items
+        .iter()
+        .enumerate()
+        .filter_map(|(i, it)| it.enabled().then_some(i))
+        .collect();
+    if enabled_indices.is_empty() {
+        return None;
+    }
+    let cur_pos = current.and_then(|c| {
+        enabled_indices
+            .iter()
+            .position(|&i| i >= c)
+            .or_else(|| Some(enabled_indices.len() - 1))
+    });
+    let next_pos = match cur_pos {
+        Some(pos) => (pos as isize + delta).clamp(0, enabled_indices.len() as isize - 1) as usize,
+        None => {
+            if delta >= 0 {
+                0
+            } else {
+                enabled_indices.len() - 1
+            }
+        }
+    };
+    Some(enabled_indices[next_pos])
+}
+
+fn scroll_row_into_view(handle: &ScrollHandle, row_idx: usize, row_h: f32, viewport_h: f32) {
+    let top = row_idx as f32 * row_h;
+    let bottom = top + row_h;
+    let current_scroll = (-f32::from(handle.offset().y)).max(0.0);
+    let new_scroll = if top < current_scroll {
+        top
+    } else if bottom > current_scroll + viewport_h {
+        (bottom - viewport_h).max(0.0)
+    } else {
+        current_scroll
+    };
+    handle.set_offset(point(px(0.), px(-new_scroll)));
+}
+
+/// Renders an always-visible vertical scrollbar thumb overlay for `handle` whenever content overflows (#125, #149, #151).
+fn always_visible_scrollbar_overlay(
+    id: impl Into<ElementId>,
+    handle: ScrollHandle,
+    known_heights: Option<(f32, f32)>,
+) -> Stateful<Div> {
+    let dragging = Rc::new(std::cell::Cell::new(false));
+    div()
+        .id(id)
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .right_0()
+        .w(px(10.))
+        .child(
+            canvas(
+                |bounds, _, _| bounds,
+                move |bounds, _, window, _| {
+                    let viewport_h = f32::from(bounds.size.height).max(1.0);
+                    let max_off = f32::from(handle.max_offset().y).max(0.0);
+                    let (vh, ch, max_scroll) = if max_off > 0.5 {
+                        (viewport_h, viewport_h + max_off, max_off)
+                    } else if let Some((k_vh, k_ch)) = known_heights
+                        && k_ch > k_vh + 0.5
+                    {
+                        (k_vh, k_ch, k_ch - k_vh)
+                    } else {
+                        return;
+                    };
+                    let shown = (vh / ch).clamp(0.05, 1.0);
+                    let thumb_h = (viewport_h * shown).max(16.0).min(viewport_h);
+                    let cur_scroll = (-f32::from(handle.offset().y)).clamp(0.0, max_scroll);
+                    let frac = if max_scroll > 0.0 { (cur_scroll / max_scroll).clamp(0.0, 1.0) } else { 0.0 };
+                    let thumb_y = bounds.origin.y + px((viewport_h - thumb_h).max(0.0) * frac);
+                    let thumb_bounds = Bounds::new(
+                        point(bounds.origin.x + px(1.5), thumb_y),
+                        size(px(7.), px(thumb_h)),
+                    );
+                    window.paint_quad(
+                        gpui::fill(thumb_bounds, crate::shell::palette::shade(0.0, 0.28)).corner_radii(px(3.5)),
+                    );
+
+                    let scroll_at = {
+                        let handle = handle.clone();
+                        move |y: Pixels, window: &mut Window| {
+                            let ratio = ((f32::from(y - bounds.origin.y) - thumb_h / 2.0) / (viewport_h - thumb_h).max(1.0)).clamp(0.0, 1.0);
+                            handle.set_offset(point(px(0.), px(-ratio * max_scroll)));
+                            window.refresh();
+                        }
+                    };
+                    let drag_down = dragging.clone();
+                    let scroll_down = scroll_at.clone();
+                    window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+                        if phase == DispatchPhase::Capture && event.button == MouseButton::Left && bounds.contains(&event.position) {
+                            drag_down.set(true);
+                            scroll_down(event.position.y, window);
+                            cx.stop_propagation();
+                        }
+                    });
+                    let drag_move = dragging.clone();
+                    let scroll_move = scroll_at;
+                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                        if phase == DispatchPhase::Capture && event.dragging() && drag_move.get() {
+                            scroll_move(event.position.y, window);
+                            cx.stop_propagation();
+                        }
+                    });
+                    let drag_up = dragging.clone();
+                    window.on_mouse_event(move |event: &MouseUpEvent, phase, _, _| {
+                        if phase == DispatchPhase::Capture && event.button == MouseButton::Left {
+                            drag_up.set(false);
+                        }
+                    });
+                },
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full(),
+        )
 }
 
 /// One part of the toolbar.
@@ -1405,9 +1913,8 @@ pub(crate) fn tool_item(item: &ToolItem, index: usize, editor: &WeakEntity<Slide
         ToolItem::Select { id, value, width, tooltip, menu, disabled } => {
             let enabled = !disabled && !menu.is_empty();
             let color: Hsla = if enabled { rgb(TEXT).into() } else { disabled_color() };
-            let (menu, editor) = (Rc::new(menu.clone()), editor.clone());
             let is_font = *id == "font";
-            Button::new(SharedString::from(format!("{id}-{index}")))
+            let button = Button::new(SharedString::from(format!("{id}-{index}")))
                 .ghost()
                 .xsmall()
                 .h(px(28.))
@@ -1424,19 +1931,12 @@ pub(crate) fn tool_item(item: &ToolItem, index: usize, editor: &WeakEntity<Slide
                         .text_color(color)
                         .child(div().truncate().child(if is_font { crate::shell::i18n::font_label(value) } else { value.clone() }))
                         .child(icon("arrow_drop_down", 18.0, if enabled { rgb(ICON).into() } else { disabled_color() })),
-                )
-                .dropdown_menu(move |m, window, cx| {
-                    let mut m = m.min_w(px(220.));
-                    if is_font {
-                        // Limit font dropdown height to: window client height minus toolbar bottom minus 1 item row.
-                        let item_height = px(32.);
-                        let toolbar_bottom = px(108.);
-                        let max_height = (window.viewport_size().height - toolbar_bottom - item_height).max(px(200.));
-                        m = m.max_h(max_height).scrollable(true);
-                    }
-                    fill_menu(m, &menu, &editor, window, cx)
-                })
-                .into_any_element()
+                );
+            if enabled {
+                searchable_dropdown_button(id, button, menu.clone(), false, index, editor)
+            } else {
+                button.into_any_element()
+            }
         }
         ToolItem::FontSize { value, smaller, larger } => {
             let enabled = value.is_some();
@@ -1444,25 +1944,289 @@ pub(crate) fn tool_item(item: &ToolItem, index: usize, editor: &WeakEntity<Slide
             let step = |id: &'static str, name: &'static str, tip: &'static str, handler: &Option<Handler>| {
                 tool_button(&ToolButton { handler: handler.clone(), ..ToolButton::new(id, name, tip) }, index, editor)
             };
+            let current_text = value.clone().unwrap_or_default();
+            let init_val = current_text.to_string();
+            let editor_click = editor.clone();
+            let box_el = div()
+                .id(SharedString::from(format!("font-size-box-{index}")))
+                .min_w(px(36.))
+                .px(px(4.))
+                .h(px(26.))
+                .mx(px(2.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .border_1()
+                .border_color(if enabled { rgb(0x747775).into() } else { disabled_color() })
+                .rounded(px(4.))
+                .text_size(px(14.))
+                .text_color(color)
+                .when(enabled, |d| d.cursor_pointer().hover(|s| s.bg(crate::shell::palette::shade(0.0, 0.06))))
+                .child(current_text.clone());
+            let size_control: AnyElement = if enabled {
+                let init_val_btn = init_val.clone();
+                Button::new(SharedString::from(format!("font-size-trigger-{index}")))
+                    .ghost()
+                    .xsmall()
+                    .p_0()
+                    .h(px(28.))
+                    .child(box_el)
+                    .on_click(move |_, window, cx| {
+                        let init_val_btn = init_val_btn.clone();
+                        editor_click
+                            .update(cx, |this, cx| {
+                                let next_open = !this.font_size_menu_open;
+                                this.font_size_menu_open = next_open;
+                                this.font_size_filtering = false;
+                                this.font_size_selected = None;
+                                this.font_size_scroll.set_offset(Point::default());
+                                if next_open {
+                                    this.toolbar_search_open = None;
+                                    let clean = init_val_btn.trim_end_matches('+').to_string();
+                                    this.font_size_input.update(cx, |input, cx| {
+                                        input.set_value(clean, window, cx);
+                                        input.focus(window, cx);
+                                    });
+                                }
+                                set_current_toolbar_open(this.font_size_menu_open, this.toolbar_search_open);
+                                cx.notify();
+                            })
+                            .ok();
+                    })
+                    .into_any_element()
+            } else {
+                box_el.into_any_element()
+            };
+            let popover_anchor: Option<AnyElement> = enabled.then(|| {
+                let editor_open = editor.clone();
+                let editor_content = editor.clone();
+                let is_open = CURRENT_TOOLBAR_OPEN.with(|c| c.get().0);
+                Popover::new(SharedString::from(format!("font-size-popover-{index}")))
+                    .anchor(Anchor::TopLeft)
+                    .open(is_open)
+                    .trigger(
+                        Button::new(SharedString::from(format!("font-size-anchor-{index}")))
+                            .ghost()
+                            .xsmall()
+                            .p_0()
+                            .w(px(0.))
+                            .min_w(px(0.))
+                            .h(px(28.)),
+                    )
+                    .on_open_change(move |open, window, cx| {
+                        let init_val = init_val.clone();
+                        editor_open
+                            .update(cx, |this, cx| {
+                                this.font_size_menu_open = *open;
+                                this.font_size_filtering = false;
+                                this.font_size_selected = None;
+                                if *open {
+                                    this.toolbar_search_open = None;
+                                    this.font_size_scroll.set_offset(Point::default());
+                                    let clean = init_val.trim_end_matches('+').to_string();
+                                    this.font_size_input.update(cx, |input, cx| {
+                                        input.set_value(clean, window, cx);
+                                        input.focus(window, cx);
+                                    });
+                                }
+                                set_current_toolbar_open(this.font_size_menu_open, this.toolbar_search_open);
+                                cx.notify();
+                            })
+                            .ok();
+                    })
+                    .content(move |_, window, cx| {
+                        let Some(ed) = editor_content.upgrade() else {
+                            return div().into_any_element();
+                        };
+                        let (input, scroll_handle, selected_idx, filtering) = {
+                            let r = ed.read(cx);
+                            (
+                                r.font_size_input.clone(),
+                                r.font_size_scroll.clone(),
+                                r.font_size_selected,
+                                r.font_size_filtering,
+                            )
+                        };
+                        let current_str = ed
+                            .read(cx)
+                            .toolbar_items()
+                            .into_iter()
+                            .find_map(|it| match it {
+                                ToolItem::FontSize { value: Some(v), .. } => Some(v.to_string()),
+                                _ => None,
+                            })
+                            .unwrap_or_default();
+                        let query = input.read(cx).value().to_string();
+                        let candidates = filtered_font_size_candidates(&query, filtering);
+                        let total_candidates = candidates.len();
+                        let row_h = 24.0;
+                        let full_h = (FONT_SIZE_CANDIDATES.len() as f32) * row_h;
+                        let avail_h = (f32::from(window.viewport_size().height) - 160.0).max(144.0);
+                        let list_h = full_h.min((avail_h / row_h).floor().max(4.0) * row_h);
+                        let visible_rows = (list_h / row_h).round().max(1.0) as usize;
+                        let current_clean = current_str.trim_end_matches('+');
+                        let current_match_idx = candidates
+                            .iter()
+                            .position(|&pt| font_size_candidate_label(pt) == current_clean)
+                            .or_else(|| (filtering && !candidates.is_empty()).then_some(0));
+                        let editor_for_list = editor_content.clone();
+                        let editor_for_keys = editor_content.clone();
+                        let scroll_for_keys = scroll_handle.clone();
+                        v_flex()
+                            .w(px(108.))
+                            .p(px(4.))
+                            .gap(px(4.))
+                            .on_mouse_down_stop()
+                            .child(
+                                canvas(
+                                    |_, _, _| {},
+                                    move |_, _, window, _| {
+                                        let ed_key = editor_for_keys.clone();
+                                        let scroll_key = scroll_for_keys.clone();
+                                        window.on_key_event(move |event: &KeyDownEvent, phase, window, cx| {
+                                            if phase != DispatchPhase::Capture {
+                                                return;
+                                            }
+                                            let key = event.keystroke.key.as_str();
+                                            if key == "escape" {
+                                                ed_key
+                                                    .update(cx, |this, cx| {
+                                                        this.font_size_menu_open = false;
+                                                        this.font_size_filtering = false;
+                                                        this.font_size_selected = None;
+                                                        set_current_toolbar_open(false, this.toolbar_search_open);
+                                                        this.focus_handle.focus(window, cx);
+                                                        cx.notify();
+                                                    })
+                                                    .ok();
+                                                window.refresh();
+                                                cx.stop_propagation();
+                                                return;
+                                            }
+                                            if total_candidates == 0 {
+                                                return;
+                                            }
+                                            let page_step = visible_rows.saturating_sub(1).max(1);
+                                            let next_idx = match key {
+                                                "down" => Some(match selected_idx.or(current_match_idx) {
+                                                    Some(i) => (i + 1).min(total_candidates - 1),
+                                                    None => 0,
+                                                }),
+                                                "pagedown" => Some(match selected_idx.or(current_match_idx) {
+                                                    Some(i) => (i + page_step).min(total_candidates - 1),
+                                                    None => page_step.min(total_candidates - 1),
+                                                }),
+                                                "up" => selected_idx.or(current_match_idx).map(|i| i.saturating_sub(1)),
+                                                "pageup" => selected_idx.or(current_match_idx).map(|i| i.saturating_sub(page_step)),
+                                                _ => None,
+                                            };
+                                            if let Some(idx) = next_idx {
+                                                scroll_row_into_view(&scroll_key, idx, row_h, list_h);
+                                                ed_key
+                                                    .update(cx, |this, cx| {
+                                                        this.font_size_selected = Some(idx);
+                                                        cx.notify();
+                                                    })
+                                                    .ok();
+                                                window.refresh();
+                                                cx.stop_propagation();
+                                            }
+                                        });
+                                    },
+                                )
+                                .absolute()
+                                .size_0(),
+                            )
+                            .child(clearable_text_field(&input))
+                            .child(
+                                div()
+                                    .relative()
+                                    .w_full()
+                                    .h(px(list_h))
+                                    .child(
+                                        div()
+                                            .id("font-size-candidates")
+                                            .size_full()
+                                            .overflow_y_scroll()
+                                            .track_scroll(&scroll_handle)
+                                            .flex()
+                                            .flex_col()
+                                            .children(if candidates.is_empty() {
+                                                vec![
+                                                    div()
+                                                        .w_full()
+                                                        .h(px(24.))
+                                                        .px(px(6.))
+                                                        .flex()
+                                                        .items_center()
+                                                        .text_size(px(12.))
+                                                        .text_color(rgb(TEXT_SECONDARY))
+                                                        .child(crate::shell::i18n::text("fix.menu.not-found"))
+                                                        .into_any_element(),
+                                                ]
+                                            } else {
+                                                candidates
+                                                    .into_iter()
+                                                    .enumerate()
+                                                    .map(|(idx, pt)| {
+                                                        let label = font_size_candidate_label(pt);
+                                                        let is_highlighted = match selected_idx {
+                                                            Some(sel) => sel == idx,
+                                                            None => current_match_idx == Some(idx),
+                                                        };
+                                                        let ed_click = editor_for_list.clone();
+                                                        div()
+                                                            .id(("font-size-candidate", idx))
+                                                            .h(px(24.))
+                                                            .px(px(8.))
+                                                            .rounded(px(4.))
+                                                            .flex()
+                                                            .flex_none()
+                                                            .items_center()
+                                                            .justify_between()
+                                                            .cursor_pointer()
+                                                            .text_size(px(13.))
+                                                            .text_color(rgb(TEXT))
+                                                            .when(is_highlighted, |d| {
+                                                                d.bg(crate::shell::palette::shade(0.0, 0.08)).font_weight(FontWeight::MEDIUM)
+                                                            })
+                                                            .hover(|s| s.bg(crate::shell::palette::shade(0.0, 0.08)))
+                                                            .child(label)
+                                                            .on_mouse_down_stop()
+                                                            .on_click(move |_, window, cx| {
+                                                                ed_click
+                                                                    .update(cx, |this, cx| {
+                                                                        this.font_size_menu_open = false;
+                                                                        this.font_size_filtering = false;
+                                                                        this.font_size_selected = None;
+                                                                        set_current_toolbar_open(false, this.toolbar_search_open);
+                                                                        this.set_toolbar_font_size(pt, window, cx);
+                                                                        cx.notify();
+                                                                    })
+                                                                    .ok();
+                                                            })
+                                                            .into_any_element()
+                                                    })
+                                                    .collect()
+                                            }),
+                                    )
+                                    .child(always_visible_scrollbar_overlay(
+                                        "font-size-scrollbar",
+                                        scroll_handle,
+                                        Some((list_h, (total_candidates as f32) * row_h)),
+                                    )),
+                            )
+                            .into_any_element()
+                    })
+                    .into_any_element()
+            });
             h_flex()
+                .h(px(28.))
                 .flex_none()
                 .items_center()
+                .children(popover_anchor)
                 .child(step("font-smaller", "remove", "_shell.decrease-font-size", smaller))
-                .child(
-                    div()
-                        .w(px(36.))
-                        .h(px(26.))
-                        .mx(px(2.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .border_1()
-                        .border_color(if enabled { rgb(0x747775).into() } else { disabled_color() })
-                        .rounded(px(4.))
-                        .text_size(px(14.))
-                        .text_color(color)
-                        .child(value.clone().unwrap_or_default()),
-                )
+                .child(size_control)
                 .child(step("font-larger", "add", "_shell.increase-font-size", larger))
                 .into_any_element()
         }
@@ -1489,7 +2253,7 @@ fn tool_button(b: &ToolButton, index: usize, editor: &WeakEntity<SlideEditor>) -
             }
         })
         .when_some(b.text.clone(), |d, text| d.child(div().px(px(3.)).text_size(px(14.)).text_color(if enabled { rgb(TEXT).into() } else { disabled_color() }).child(crate::shell::i18n::text(&text))))
-        .when(b.menu.is_some(), |d| d.child(div().ml(px(-2.)).child(icon("arrow_drop_down", 16.0, color))));
+        .when(b.menu.is_some() && b.id != "menu-search", |d| d.child(div().ml(px(-2.)).child(icon("arrow_drop_down", 16.0, color))));
     // A split button: the icon (what was last used is done at once) and the ▼ (the menu) are two buttons side by side,
     // each with its own hover and click.
     if let (Some(menu), Some(quick), true) = (&b.menu, b.left_action(), enabled) {
@@ -1544,6 +2308,9 @@ fn tool_button(b: &ToolButton, index: usize, editor: &WeakEntity<SlideEditor>) -
         SegmentRounding::Middle => button.rounded(px(0.)),
         SegmentRounding::Right => button.rounded_r(px(4.)).rounded_l(px(0.)),
     };
+    if enabled && b.searchable {
+        return searchable_dropdown_button(b.id, button, b.menu.clone().unwrap_or_default(), b.single_select, index, editor);
+    }
     match (&b.menu, &b.handler) {
         (Some(menu), _) if enabled => {
             let (menu, editor) = (Rc::new(menu.clone()), editor.clone());
@@ -1552,6 +2319,502 @@ fn tool_button(b: &ToolButton, index: usize, editor: &WeakEntity<SlideEditor>) -
         (_, Some(handler)) if enabled => button.on_click(listener(editor, handler)).into_any_element(),
         _ => button.into_any_element(),
     }
+}
+
+trait MouseDownStopExt: InteractiveElement {
+    fn on_mouse_down_stop(self) -> Self
+    where
+        Self: Sized,
+    {
+        self.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+    }
+}
+impl<E: InteractiveElement> MouseDownStopExt for E {}
+
+/// Flatten `MenuEntry` tree into leaf `MenuItem`s (#98, #103).
+pub(crate) fn flatten_menu_entries(entries: &[MenuEntry]) -> Vec<MenuItem> {
+    let mut out = Vec::new();
+    for entry in entries {
+        match entry {
+            MenuEntry::Item(item) => out.push(item.clone()),
+            MenuEntry::Submenu(sub) => out.extend(flatten_menu_entries(&sub.items)),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Collect all executable leaf `MenuItem`s from `menus`, sorted in ascending order of their display label (#103).
+pub(crate) fn collect_searchable_menu_items(menus: &Menus) -> Vec<MenuItem> {
+    let mut items = Vec::new();
+    for (_, entries) in &menus.menus {
+        for item in flatten_menu_entries(entries) {
+            if item.id == "help.search" || item.id.starts_with("font.section.") {
+                continue;
+            }
+            if item.handler.is_some() && !item.disabled {
+                let mut resolved = item;
+                resolved.label = menu_item_display_label(&resolved);
+                if !resolved.label.is_empty() {
+                    items.push(resolved);
+                }
+            }
+        }
+    }
+    items.sort_by(|a, b| a.label.as_ref().cmp(b.label.as_ref()));
+    items.dedup_by(|a, b| a.label == b.label && a.id == b.id);
+    items
+}
+
+/// Filter `items` by `query` (case-insensitive substring match on the display label) (#98, #103, #127).
+pub(crate) fn filter_menu_items(items: &[MenuItem], query: &str) -> Vec<MenuItem> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return items.to_vec();
+    }
+    let q = trimmed.to_lowercase();
+    items
+        .iter()
+        .filter(|item| {
+            if item.id.starts_with("font.section.") {
+                return false;
+            }
+            let label = menu_item_display_label(item);
+            label.to_lowercase().contains(&q) || item.label.to_lowercase().contains(&q)
+        })
+        .cloned()
+        .collect()
+}
+
+/// Shared TextField with a right-aligned `✕` clear button (`cleanable(true)`) (#98, #127, #149, #150).
+pub(crate) fn clearable_text_field(input: &Entity<gpui_kit::component::input::InputState>) -> gpui_kit::component::input::Input {
+    gpui_kit::component::input::Input::new(input).small().cleanable(true)
+}
+
+/// Shared right-pane row with left-aligned label, right-aligned `clearable_text_field`, and fixed-width unit label
+/// so input left/right edges align vertically across rows (#150, #151).
+pub(crate) fn labeled_input_unit(
+    label: impl Into<SharedString>,
+    input: &Entity<gpui_kit::component::input::InputState>,
+    unit: impl Into<SharedString>,
+) -> Div {
+    h_flex()
+        .w_full()
+        .items_center()
+        .justify_between()
+        .gap(px(8.))
+        .child(div().text_size(px(12.)).text_color(rgb(TEXT)).child(label.into()))
+        .child(
+            h_flex()
+                .flex_none()
+                .items_center()
+                .gap(px(4.))
+                .child(div().w(px(96.)).child(clearable_text_field(input)))
+                .child(div().w(px(36.)).text_size(px(12.)).text_color(rgb(TEXT_SECONDARY)).child(unit.into())),
+        )
+}
+
+/// Render a dropdown button whose popup menu has a `✕`-clearable search TextField at the top,
+/// keeps a fixed width and height (`x, y, w, h` unchanged when filtering), shows `"みつかりません"`
+/// when 0 items match, and supports keyboard navigation (`↑`, `↓`, `PageUp`, `PageDown`, `Enter`)
+/// plus an always-visible scrollbar when scrollable (#98, #103, #125, #126, #127).
+pub(crate) fn searchable_dropdown_button(
+    id: &'static str,
+    trigger_button: Button,
+    entries: Vec<MenuEntry>,
+    single_select: bool,
+    index: usize,
+    editor: &WeakEntity<SlideEditor>,
+) -> AnyElement {
+    let static_items = Rc::new(flatten_menu_entries(&entries));
+    let editor_open = editor.clone();
+    let editor_content = editor.clone();
+    let is_open = CURRENT_TOOLBAR_OPEN.with(|c| c.get().1 == Some(id));
+    // Toolbar buttons (like `menu-search`) open downward (`Anchor::TopLeft` places the popup's top-left at the button's bottom-left);
+    // bottom-bar buttons (like `sheet-list`) open upward (`Anchor::BottomLeft` places the popup's bottom-left at the button's top-left).
+    let anchor = if id == "sheet-list" { Anchor::BottomLeft } else { Anchor::TopLeft };
+
+    Popover::new(SharedString::from(format!("searchable-menu-{id}-{index}")))
+        .anchor(anchor)
+        .open(is_open)
+        .trigger(trigger_button)
+        .on_open_change(move |open, window, cx| {
+            editor_open
+                .update(cx, |this, cx| {
+                    let input = this.ensure_toolbar_search_input(id, window, cx);
+                    let scroll = this.ensure_toolbar_search_scroll(id);
+                    if *open {
+                        this.font_size_menu_open = false;
+                        this.font_size_filtering = false;
+                        this.font_size_selected = None;
+                        this.toolbar_search_open = Some(id);
+                        this.toolbar_search_selected.insert(id, None);
+                        scroll.set_offset(Point::default());
+                        input.update(cx, |state, cx| {
+                            state.set_value("", window, cx);
+                            state.focus(window, cx);
+                        });
+                    } else if this.toolbar_search_open == Some(id) {
+                        this.toolbar_search_open = None;
+                        this.toolbar_search_selected.insert(id, None);
+                    }
+                    set_current_toolbar_open(this.font_size_menu_open, this.toolbar_search_open);
+                    cx.notify();
+                })
+                .ok();
+        })
+        .content(move |_, window, cx| {
+            let Some(ed) = editor_content.upgrade() else {
+                return div().into_any_element();
+            };
+            let (input, scroll_handle, selected_idx) = ed.update(cx, |this, cx| {
+                let input = this.ensure_toolbar_search_input(id, window, cx);
+                let scroll = this.ensure_toolbar_search_scroll(id);
+                let sel = this.toolbar_search_selected.get(id).copied().flatten();
+                (input, scroll, sel)
+            });
+            let all_items: Vec<MenuItem> = if static_items.is_empty() {
+                ed.read(cx).searchable_menu_items_for(id)
+            } else {
+                (*static_items).clone()
+            };
+            let fixed_width = {
+                let mut max_w: f32 = 240.0;
+                for item in &all_items {
+                    let label = menu_item_display_label(item);
+                    let shortcut_w = item.shortcut.map_or(0.0, |s| text_width(&format_shortcut_for_platform(s), 12.0) + 20.0);
+                    let w = 44.0 + text_width(&label, 14.0) + shortcut_w + 24.0;
+                    max_w = max_w.max(w);
+                }
+                max_w.min(420.0)
+            };
+            let row_h = 28.0;
+            let avail_list_h = (f32::from(window.viewport_size().height) - 214.0).max(224.0);
+            let max_rows = ((avail_list_h / row_h).floor() as usize).max(8);
+            let visible_rows = all_items.len().clamp(1, max_rows);
+            let fixed_list_height = (visible_rows as f32) * row_h;
+            let query = input.read(cx).value().to_string();
+            let has_query = !query.trim().is_empty();
+            let matched = filter_menu_items(&all_items, &query);
+            let matched_len = matched.len();
+            let first_enabled_idx = if has_query {
+                matched.iter().position(|it| it.enabled())
+            } else {
+                matched.iter().position(|it| it.checked && it.enabled())
+            };
+            let active_highlight_idx = selected_idx.map(|i| i.min(matched_len.saturating_sub(1))).or(first_enabled_idx);
+            let editor_for_rows = editor_content.clone();
+            let editor_for_keys = editor_content.clone();
+            let input_for_rows = input.clone();
+            let scroll_for_keys = scroll_handle.clone();
+            let matched_for_keys = Rc::new(matched.clone());
+
+            v_flex()
+                .w(px(fixed_width))
+                .p(px(6.))
+                .gap(px(6.))
+                .on_mouse_down_stop()
+                .child(
+                    canvas(
+                        |_, _, _| {},
+                        move |_, _, window, _| {
+                            let ed_key = editor_for_keys.clone();
+                            let scroll_key = scroll_for_keys.clone();
+                            let matched_key = matched_for_keys.clone();
+                            window.on_key_event(move |event: &KeyDownEvent, phase, window, cx| {
+                                if phase != DispatchPhase::Capture {
+                                    return;
+                                }
+                                let key = event.keystroke.key.as_str();
+                                if key == "escape" {
+                                    ed_key
+                                        .update(cx, |this, cx| {
+                                            this.toolbar_search_open = None;
+                                            this.toolbar_search_selected.insert(id, None);
+                                            set_current_toolbar_open(this.font_size_menu_open, None);
+                                            this.focus_handle.focus(window, cx);
+                                            cx.notify();
+                                        })
+                                        .ok();
+                                    window.refresh();
+                                    cx.stop_propagation();
+                                    return;
+                                }
+                                if matched_key.is_empty() {
+                                    return;
+                                }
+                                let page_step = (visible_rows.saturating_sub(1).max(1)) as isize;
+                                let next_idx = match key {
+                                    "down" => step_enabled_menu_index(&matched_key, active_highlight_idx, 1),
+                                    "pagedown" => step_enabled_menu_index(&matched_key, active_highlight_idx, page_step),
+                                    "up" => step_enabled_menu_index(&matched_key, active_highlight_idx, -1),
+                                    "pageup" => step_enabled_menu_index(&matched_key, active_highlight_idx, -page_step),
+                                    _ => None,
+                                };
+                                if let Some(idx) = next_idx {
+                                    scroll_row_into_view(&scroll_key, idx, row_h, fixed_list_height);
+                                    ed_key
+                                        .update(cx, |this, cx| {
+                                            this.toolbar_search_selected.insert(id, Some(idx));
+                                            cx.notify();
+                                        })
+                                        .ok();
+                                    window.refresh();
+                                    cx.stop_propagation();
+                                }
+                            });
+                        },
+                    )
+                    .absolute()
+                    .size_0(),
+                )
+                .child(clearable_text_field(&input))
+                .child(
+                    div()
+                        .relative()
+                        .w_full()
+                        .h(px(fixed_list_height))
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("searchable-menu-list-{id}")))
+                                .size_full()
+                                .overflow_y_scroll()
+                                .track_scroll(&scroll_handle)
+                                .flex()
+                                .flex_col()
+                                .children(if matched.is_empty() {
+                                    vec![
+                                        div()
+                                            .w_full()
+                                            .h(px(28.))
+                                            .px(px(8.))
+                                            .flex()
+                                            .items_center()
+                                            .text_size(px(13.))
+                                            .text_color(rgb(TEXT_SECONDARY))
+                                            .child(crate::shell::i18n::text("fix.menu.not-found"))
+                                            .into_any_element(),
+                                    ]
+                                } else {
+                                    const FONT_ITEMS: [&str; 4] = ["xlsx.font", "pptx.font", "docx.font", "font.recent.item"];
+                                    matched
+                                        .into_iter()
+                                        .enumerate()
+                                        .map(|(row_idx, item)| {
+                                            if item.id.starts_with("font.section.") {
+                                                return div()
+                                                    .id((SharedString::from(format!("searchable-item-{id}")), row_idx))
+                                                    .w_full()
+                                                    .h(px(28.))
+                                                    .px(px(6.))
+                                                    .flex()
+                                                    .flex_none()
+                                                    .items_center()
+                                                    .text_size(px(12.))
+                                                    .font_weight(FontWeight::BOLD)
+                                                    .text_color(rgb(TEXT_SECONDARY))
+                                                    .child(item.label.clone())
+                                                    .on_mouse_down_stop()
+                                                    .into_any_element();
+                                            }
+                                            let is_font_item = FONT_ITEMS.contains(&item.id);
+                                            let is_highlighted = active_highlight_idx == Some(row_idx);
+                                            let enabled = item.enabled();
+                                            let fg: Hsla = if enabled { rgb(TEXT).into() } else { disabled_color() };
+                                            let label = menu_item_display_label(&item);
+                                            let raw_font_name = item.label.to_string();
+                                            let handler = item.handler.clone();
+                                            let ed_click = editor_for_rows.clone();
+                                            let input_click = input_for_rows.clone();
+
+                                            let check_fg: Hsla = if let Some(c) = item.swatch {
+                                                let r = ((c.0 >> 16) & 0xff) as f32 / 255.0;
+                                                let g = ((c.0 >> 8) & 0xff) as f32 / 255.0;
+                                                let b = (c.0 & 0xff) as f32 / 255.0;
+                                                let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+                                                if luma < 0.45 { rgb(0xffffff).into() } else { rgb(0x1f1f1f).into() }
+                                            } else {
+                                                fg
+                                            };
+                                            let left_slot = div()
+                                                .w(px(20.))
+                                                .h(px(row_h))
+                                                .flex_none()
+                                                .rounded(px(0.))
+                                                .when_some(item.swatch, |d, c| d.bg(rgb(c.0)))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .when(item.checked, |d| d.child(icon("check", 16.0, check_fg)))
+                                                .when(!item.checked, |d| {
+                                                    if let Some(ic) = item.icon.filter(|i| !i.is_empty()) {
+                                                        d.child(icon(ic, 16.0, check_fg))
+                                                    } else {
+                                                        d
+                                                    }
+                                                });
+
+                                            let selected_row_bg = single_select && item.checked;
+                                            let label_el = if is_font_item {
+                                                if let Some(preview) = crate::shell::font_preview::get_or_render_preview(&raw_font_name, &label) {
+                                                    let fallback_label = label.clone();
+                                                    div().flex_1().truncate().child(
+                                                        img(preview.image)
+                                                            .w(px(preview.width))
+                                                            .h(px(preview.height))
+                                                            .with_loading(move || div().text_size(px(13.)).text_color(fg).child(fallback_label.clone()).into_any_element()),
+                                                    )
+                                                } else {
+                                                    div().flex_1().truncate().text_size(px(13.)).text_color(fg).child(label)
+                                                }
+                                            } else {
+                                                div().flex_1().truncate().text_size(px(13.)).text_color(fg).child(label)
+                                            };
+
+                                            div()
+                                                .id((SharedString::from(format!("searchable-item-{id}")), row_idx))
+                                                .w_full()
+                                                .h(px(28.))
+                                                .px(px(6.))
+                                                .rounded(px(4.))
+                                                .flex()
+                                                .flex_none()
+                                                .items_center()
+                                                .gap(px(6.))
+                                                .when(selected_row_bg, |d| d.bg(rgb(0xd3e3fd)))
+                                                .when(enabled, |d| {
+                                                    d.cursor_pointer().hover(|s| {
+                                                        s.bg(if selected_row_bg { Hsla::from(rgb(0xc2d7fa)) } else { crate::shell::palette::shade(0.0, 0.08) })
+                                                    })
+                                                })
+                                                .when(is_highlighted && !selected_row_bg, |d| d.bg(crate::shell::palette::shade(0.0, 0.08)))
+                                                .child(left_slot)
+                                                .child(label_el)
+                                                .when_some(item.shortcut, |d, sc| {
+                                                    d.child(div().text_size(px(12.)).text_color(rgb(TEXT_SECONDARY)).child(format_shortcut_for_platform(sc)))
+                                                })
+                                                .on_mouse_down_stop()
+                                                .when_some(handler.filter(|_| enabled), |d, h| {
+                                                    d.on_click(move |_, window, cx| {
+                                                        input_click.update(cx, |s, cx| s.set_value("", window, cx));
+                                                        let ed_inner = ed_click.clone();
+                                                        let h_inner = h.clone();
+                                                        ed_click
+                                                            .update(cx, |this, cx| {
+                                                                this.toolbar_search_open = None;
+                                                                this.toolbar_search_selected.insert(id, None);
+                                                                set_current_toolbar_open(this.font_size_menu_open, None);
+                                                                cx.notify();
+                                                            })
+                                                            .ok();
+                                                        window.defer(cx, move |window, cx| {
+                                                            ed_inner.update(cx, |this, cx| h_inner(this, window, cx)).ok();
+                                                        });
+                                                    })
+                                                })
+                                                .into_any_element()
+                                        })
+                                        .collect()
+                                }),
+                        )
+                        .child(always_visible_scrollbar_overlay(
+                            SharedString::from(format!("searchable-menu-scrollbar-{id}")),
+                            scroll_handle,
+                            Some((fixed_list_height, (matched_len as f32) * row_h)),
+                        )),
+                )
+                .into_any_element()
+        })
+        .into_any_element()
+}
+
+/// Shared radio button indicator circle with primary button blue (`PRIMARY_BUTTON_BG`) inner dot (#106).
+#[allow(dead_code)]
+pub(crate) fn radio_dot(selected: bool) -> Div {
+    div()
+        .w(px(14.))
+        .h(px(14.))
+        .rounded(px(7.))
+        .border_1()
+        .border_color(if selected { rgb(PRIMARY_BUTTON_BG) } else { rgb(0x747775) })
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .when(selected, |d| {
+            d.child(div().w(px(8.)).h(px(8.)).rounded(px(4.)).bg(rgb(PRIMARY_BUTTON_BG)))
+        })
+}
+
+/// Shared left-aligned borderless radio button row with primary button blue inner dot (#106).
+#[allow(dead_code)]
+pub(crate) fn radio_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    selected: bool,
+    disabled: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    let label = label.into();
+    h_flex()
+        .id(id)
+        .gap(px(8.))
+        .py(px(3.))
+        .px(px(4.))
+        .rounded(px(4.))
+        .items_center()
+        .when(!disabled, |d| {
+            d.cursor_pointer()
+                .hover(|s| s.bg(crate::shell::palette::shade(0.0, 0.05)))
+                .on_click(on_click)
+        })
+        .when(disabled, |d| d.opacity(0.5))
+        .child(radio_dot(selected))
+        .child(div().text_size(px(13.)).text_color(rgb(TEXT)).child(label))
+}
+
+/// Shared checkbox indicator square with primary button blue (`PRIMARY_BUTTON_BG`) border and fill when checked (#106, #150).
+#[allow(dead_code)]
+pub(crate) fn checkbox_box(checked: bool) -> Div {
+    div()
+        .w(px(14.))
+        .h(px(14.))
+        .rounded(px(3.))
+        .border_1()
+        .border_color(rgb(PRIMARY_BUTTON_BG))
+        .bg(if checked { rgb(PRIMARY_BUTTON_BG) } else { rgb(0xffffff) })
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .when(checked, |d| d.child(icon("check", 12.0, rgb(0xffffff).into())))
+}
+
+/// Shared left-aligned borderless checkbox row (#106).
+#[allow(dead_code)]
+pub(crate) fn checkbox_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    checked: bool,
+    disabled: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    let label = label.into();
+    h_flex()
+        .id(id)
+        .gap(px(8.))
+        .py(px(3.))
+        .px(px(4.))
+        .rounded(px(4.))
+        .items_center()
+        .when(!disabled, |d| {
+            d.cursor_pointer()
+                .hover(|s| s.bg(crate::shell::palette::shade(0.0, 0.05)))
+                .on_click(on_click)
+        })
+        .when(disabled, |d| d.opacity(0.5))
+        .child(checkbox_box(checked))
+        .child(div().text_size(px(13.)).text_color(rgb(TEXT)).child(label))
 }
 
 /// The colour of the chrome's text, for panels.
@@ -1563,6 +2826,377 @@ pub(crate) fn text_secondary() -> Hsla {
 #[allow(dead_code)]
 pub(crate) fn pressed() -> Hsla {
     rgb(0xd3e3fd).into()
+}
+
+/// Shared 4-button horizontal alignment group for toolbars (`[Left | Center | Right | ▼]`).
+pub(crate) fn align_h_toolbar_items(
+    current: Option<ibis_doc_model::TextAlign>,
+    enabled: bool,
+    on_left: Handler,
+    on_center: Handler,
+    on_right: Handler,
+    menu: Vec<MenuEntry>,
+) -> [ToolItem; 4] {
+    align_h_toolbar_items_with_id("align", current, enabled, on_left, on_center, on_right, menu)
+}
+
+/// Shared 4-button horizontal alignment group for toolbars (`[Left | Center | Right | ▼]`) with custom dropdown id.
+pub(crate) fn align_h_toolbar_items_with_id(
+    dropdown_id: &'static str,
+    current: Option<ibis_doc_model::TextAlign>,
+    enabled: bool,
+    on_left: Handler,
+    on_center: Handler,
+    on_right: Handler,
+    menu: Vec<MenuEntry>,
+) -> [ToolItem; 4] {
+    let mut left = ToolButton::new("align-left", "format_align_left", "_shell.align-left")
+        .segment(SegmentRounding::Left)
+        .on(current == Some(ibis_doc_model::TextAlign::Left))
+        .disabled(!enabled);
+    left.handler = enabled.then_some(on_left);
+    let mut center = ToolButton::new("align-center", "format_align_center", "_shell.align-center")
+        .segment(SegmentRounding::Middle)
+        .on(current == Some(ibis_doc_model::TextAlign::Center))
+        .disabled(!enabled);
+    center.handler = enabled.then_some(on_center);
+    let mut right = ToolButton::new("align-right", "format_align_right", "_shell.align-right")
+        .segment(SegmentRounding::Middle)
+        .on(current == Some(ibis_doc_model::TextAlign::Right))
+        .disabled(!enabled);
+    right.handler = enabled.then_some(on_right);
+    [
+        left.into(),
+        center.into(),
+        right.into(),
+        ToolButton::dropdown(dropdown_id, "_shell.horizontal-alignment")
+            .segment(SegmentRounding::Right)
+            .disabled(!enabled)
+            .menu(menu)
+            .into(),
+    ]
+}
+
+/// Shared 4-button vertical alignment group for toolbars (`[Top | Middle | Bottom | ▼]`).
+pub(crate) fn align_v_toolbar_items(
+    current: Option<ibis_doc_model::VerticalAnchor>,
+    enabled: bool,
+    on_top: Handler,
+    on_middle: Handler,
+    on_bottom: Handler,
+    menu: Vec<MenuEntry>,
+) -> [ToolItem; 4] {
+    align_v_toolbar_items_with_ids(["valign-top", "valign-center", "valign-bottom", "vertical-align"], current, enabled, on_top, on_middle, on_bottom, menu)
+}
+
+/// Shared 4-button vertical alignment group for toolbars (`[Top | Middle | Bottom | ▼]`) with custom dropdown id.
+pub(crate) fn align_v_toolbar_items_with_id(
+    dropdown_id: &'static str,
+    current: Option<ibis_doc_model::VerticalAnchor>,
+    enabled: bool,
+    on_top: Handler,
+    on_middle: Handler,
+    on_bottom: Handler,
+    menu: Vec<MenuEntry>,
+) -> [ToolItem; 4] {
+    align_v_toolbar_items_with_ids(["valign-top", "valign-center", "valign-bottom", dropdown_id], current, enabled, on_top, on_middle, on_bottom, menu)
+}
+
+fn align_v_toolbar_items_with_ids(
+    ids: [&'static str; 4],
+    current: Option<ibis_doc_model::VerticalAnchor>,
+    enabled: bool,
+    on_top: Handler,
+    on_middle: Handler,
+    on_bottom: Handler,
+    menu: Vec<MenuEntry>,
+) -> [ToolItem; 4] {
+    let mut top = ToolButton::new(ids[0], "vertical_align_top", "docx.cell.valign-top")
+        .segment(SegmentRounding::Left)
+        .on(current == Some(ibis_doc_model::VerticalAnchor::Top))
+        .disabled(!enabled);
+    top.handler = enabled.then_some(on_top);
+    let mut middle = ToolButton::new(ids[1], "vertical_align_center", "docx.cell.valign-center")
+        .segment(SegmentRounding::Middle)
+        .on(current == Some(ibis_doc_model::VerticalAnchor::Middle))
+        .disabled(!enabled);
+    middle.handler = enabled.then_some(on_middle);
+    let mut bottom = ToolButton::new(ids[2], "vertical_align_bottom", "docx.cell.valign-bottom")
+        .segment(SegmentRounding::Middle)
+        .on(current == Some(ibis_doc_model::VerticalAnchor::Bottom))
+        .disabled(!enabled);
+    bottom.handler = enabled.then_some(on_bottom);
+    [
+        top.into(),
+        middle.into(),
+        bottom.into(),
+        ToolButton::dropdown(ids[3], "_shell.vertical-alignment")
+            .segment(SegmentRounding::Right)
+            .disabled(!enabled)
+            .menu(menu)
+            .into(),
+    ]
+}
+
+/// Renders the shared 4-button vertical alignment group (`[Top | Middle | Bottom | ▼]`) inside a panel.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn render_align_v_group(
+    current: Option<ibis_doc_model::VerticalAnchor>,
+    enabled: bool,
+    on_top: Handler,
+    on_middle: Handler,
+    on_bottom: Handler,
+    menu: Vec<MenuEntry>,
+    base_index: usize,
+    editor: &WeakEntity<SlideEditor>,
+) -> AnyElement {
+    let items = align_v_toolbar_items_with_ids(
+        ["panel-valign-top", "panel-valign-center", "panel-valign-bottom", "panel-vertical-align"],
+        current,
+        enabled,
+        on_top,
+        on_middle,
+        on_bottom,
+        menu,
+    );
+    let mut row = h_flex().items_center();
+    for (offset, item) in items.iter().enumerate() {
+        row = row.child(tool_item(item, base_index + offset, editor));
+    }
+    row.into_any_element()
+}
+
+/// A color text input paired with a color swatch button that opens a color palette popup.
+pub(crate) fn color_text_field(
+    id: &'static str,
+    input: &Entity<gpui_kit::component::input::InputState>,
+    current_rgb: Option<ibis_doc_model::Rgb>,
+    palette_entries: Vec<MenuEntry>,
+    editor: &WeakEntity<SlideEditor>,
+) -> AnyElement {
+    let swatch = match current_rgb {
+        Some(c) => div()
+            .w(px(14.))
+            .h(px(14.))
+            .rounded(px(2.))
+            .bg(rgb(c.0))
+            .border_1()
+            .border_color(rgb(BORDER)),
+        None => div()
+            .w(px(14.))
+            .h(px(14.))
+            .rounded(px(2.))
+            .bg(rgb(0xffffff))
+            .border_1()
+            .border_color(rgb(BORDER))
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_size(px(10.))
+            .text_color(rgb(0xd93025))
+            .child("×"),
+    };
+    let entries = Rc::new(palette_entries);
+    let ed = editor.clone();
+    let picker_btn = Button::new(SharedString::from(format!("{id}-swatch")))
+        .ghost()
+        .xsmall()
+        .h(px(24.))
+        .px(px(4.))
+        .border_1()
+        .border_color(rgb(BORDER))
+        .rounded(px(4.))
+        .child(
+            h_flex()
+                .items_center()
+                .gap(px(2.))
+                .child(swatch)
+                .child(icon("arrow_drop_down", 14.0, rgb(ICON).into())),
+        )
+        .dropdown_menu(move |m, window, cx| fill_menu(m.min_w(px(220.)), &entries, &ed, window, cx));
+
+    h_flex()
+        .gap_1()
+        .items_center()
+        .w_full()
+        .child(picker_btn)
+        .child(div().flex_1().min_w(px(64.)).child(clearable_text_field(input)))
+        .into_any_element()
+}
+
+/// How a [`SpinnerSpec`] steps when no explicit `steps` table is provided or outside its range.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SpinnerMode {
+    Add,
+    Multiply,
+}
+
+/// Specification for a numeric input with `▲` / `▼` step buttons.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SpinnerSpec {
+    pub step: f32,
+    pub mode: SpinnerMode,
+    pub steps: Option<&'static [f32]>,
+    pub min: Option<f32>,
+    pub max: Option<f32>,
+    pub integer_only: bool,
+}
+
+impl SpinnerSpec {
+    pub const fn new(step: f32) -> Self {
+        Self {
+            step,
+            mode: SpinnerMode::Add,
+            steps: None,
+            min: None,
+            max: None,
+            integer_only: false,
+        }
+    }
+
+    pub const fn steps(mut self, steps: &'static [f32]) -> Self {
+        self.steps = Some(steps);
+        self
+    }
+
+    #[allow(dead_code)]
+    pub const fn mode(mut self, mode: SpinnerMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    pub const fn integer_only(mut self) -> Self {
+        self.integer_only = true;
+        self
+    }
+
+    pub const fn min(mut self, min: f32) -> Self {
+        self.min = Some(min);
+        self
+    }
+
+    #[allow(dead_code)]
+    pub const fn max(mut self, max: f32) -> Self {
+        self.max = Some(max);
+        self
+    }
+
+    pub const fn range(mut self, min: f32, max: f32) -> Self {
+        self.min = Some(min);
+        self.max = Some(max);
+        self
+    }
+
+    pub fn step_value(&self, current: f32, up: bool) -> f32 {
+        let eps = 1e-4_f32;
+        let next = if let Some(table) = self.steps {
+            if up {
+                table.iter().copied().find(|&v| v > current + eps).unwrap_or_else(|| {
+                    let base = table.last().copied().unwrap_or(current).max(current);
+                    match self.mode {
+                        SpinnerMode::Add => base + self.step,
+                        SpinnerMode::Multiply => base * self.step,
+                    }
+                })
+            } else {
+                table.iter().rev().copied().find(|&v| v < current - eps).unwrap_or_else(|| {
+                    let base = table.first().copied().unwrap_or(current).min(current);
+                    match self.mode {
+                        SpinnerMode::Add => base - self.step,
+                        SpinnerMode::Multiply => {
+                            if self.step.abs() > eps {
+                                base / self.step
+                            } else {
+                                base
+                            }
+                        }
+                    }
+                })
+            }
+        } else {
+            match self.mode {
+                SpinnerMode::Add => {
+                    if up {
+                        current + self.step
+                    } else {
+                        current - self.step
+                    }
+                }
+                SpinnerMode::Multiply => {
+                    if up {
+                        current * self.step
+                    } else if self.step.abs() > eps {
+                        current / self.step
+                    } else {
+                        current
+                    }
+                }
+            }
+        };
+        let clamped = match (self.min, self.max) {
+            (Some(lo), Some(hi)) => next.clamp(lo, hi),
+            (Some(lo), None) => next.max(lo),
+            (None, Some(hi)) => next.min(hi),
+            (None, None) => next,
+        };
+        if self.integer_only {
+            clamped.round()
+        } else {
+            (clamped * 100.0).round() / 100.0
+        }
+    }
+
+    pub fn format_value(&self, val: f32) -> String {
+        if self.integer_only || (val - val.round()).abs() < 1e-4 {
+            format!("{}", val.round() as i64)
+        } else if ((val * 10.0) - (val * 10.0).round()).abs() < 1e-3 {
+            format!("{val:.1}")
+        } else {
+            format!("{val:.2}")
+        }
+    }
+}
+
+/// Renders a numeric input field with `▲` / `▼` spinner buttons.
+pub(crate) fn spinner_field<F>(
+    id: &'static str,
+    input: &Entity<gpui_kit::component::input::InputState>,
+    spec: SpinnerSpec,
+    on_step: F,
+    cx: &mut Context<SlideEditor>,
+) -> AnyElement
+where
+    F: Fn(&mut SlideEditor, f32, &mut Window, &mut Context<SlideEditor>) + 'static,
+{
+    let on_step = Rc::new(on_step);
+    let step_btn = |btn_id: String, icon_name: &'static str, up: bool, input: Entity<gpui_kit::component::input::InputState>, on_step: Rc<F>, cx: &mut Context<SlideEditor>| {
+        Button::new(SharedString::from(btn_id))
+            .ghost()
+            .xsmall()
+            .w(px(18.))
+            .h(px(12.))
+            .px(px(0.))
+            .child(icon(icon_name, 12.0, rgb(ICON).into()))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                let raw = input.read(cx).value();
+                let trimmed = raw.trim().trim_end_matches('+').trim();
+                let current = trimmed.parse::<f32>().unwrap_or_else(|_| spec.min.unwrap_or(0.0));
+                let next = spec.step_value(current, up);
+                let formatted = spec.format_value(next);
+                input.update(cx, |s, cx| s.set_value(formatted, window, cx));
+                on_step(this, next, window, cx);
+            }))
+    };
+    let up_btn = step_btn(format!("{id}-up"), "keyboard_arrow_up", true, input.clone(), on_step.clone(), cx);
+    let down_btn = step_btn(format!("{id}-down"), "keyboard_arrow_down", false, input.clone(), on_step, cx);
+
+    h_flex()
+        .gap_1()
+        .items_center()
+        .w_full()
+        .child(div().flex_1().min_w(px(48.)).child(clearable_text_field(input)))
+        .child(v_flex().items_center().justify_center().child(up_btn).child(down_btn))
+        .into_any_element()
 }
 
 
@@ -1669,6 +3303,113 @@ mod tests {
         assert!(super::TITLE_ROW_PADDING_LEFT >= 78.0);
         #[cfg(not(target_os = "macos"))]
         assert_eq!(super::TITLE_ROW_PADDING_LEFT, 14.0);
+    }
+
+    #[test]
+    fn spinner_spec_steps_and_clamps() {
+        let spec = super::SpinnerSpec::new(1.0).range(0.0, 10.0).integer_only();
+        assert_eq!(spec.step_value(5.0, true), 6.0);
+        assert_eq!(spec.step_value(10.0, true), 10.0);
+        assert_eq!(spec.step_value(0.0, false), 0.0);
+
+        const TABLE: &[f32] = &[0.25, 0.5, 0.75, 1.0, 1.5, 2.25, 3.0];
+        let table_spec = super::SpinnerSpec::new(0.5).steps(TABLE).min(0.0);
+        assert_eq!(table_spec.step_value(0.6, true), 0.75);
+        assert_eq!(table_spec.step_value(0.75, true), 1.0);
+        assert_eq!(table_spec.step_value(0.75, false), 0.5);
+    }
+
+    #[test]
+    fn searchable_menu_sorting_filtering_and_window_menu_width() {
+        assert_eq!(MenuId::Window.key(), "menu.window");
+        let mut menus = Menus::default();
+        menus.items_mut(MenuId::File).push(
+            MenuItem::new("b", "コピー")
+                .on(|_, _, _| {})
+                .into(),
+        );
+        menus.items_mut(MenuId::Edit).push(
+            MenuItem::new("a", "切り取り")
+                .on(|_, _, _| {})
+                .into(),
+        );
+        let collected = super::collect_searchable_menu_items(&menus);
+        assert_eq!(collected.len(), 2);
+        assert!(collected[0].label.as_ref() <= collected[1].label.as_ref());
+
+        let filtered = super::filter_menu_items(&collected, "切り");
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "a");
+        assert!(super::filter_menu_items(&collected, "存在しない").is_empty());
+
+        let w = super::menu_width_for_entries(&[
+            MenuItem::new("short", "短い").into(),
+            MenuItem::new("long", "とても長いメニュー項目のラベル表示テスト").shortcut("⌥⇧⌘W").into(),
+        ]);
+        assert!(w > 280.0);
+    }
+
+    #[test]
+    fn shortcuts_dirty_state_and_single_select_work() {
+        assert_eq!(super::format_shortcut_for_target("⌘O", true), "⌘O");
+        assert_eq!(super::format_shortcut_for_target("⌘O", false), "Ctrl+O");
+        assert_eq!(super::format_shortcut_for_target("⌘⇧S", false), "Ctrl+Shift+S");
+        assert_eq!(super::format_shortcut_for_target("⌥⌘S", false), "Ctrl+Alt+S");
+        assert_eq!(super::format_shortcut_for_target("⌘⌫", false), "Ctrl+Backspace");
+        assert_eq!(super::format_shortcut_for_target("⌘↩", false), "Ctrl+Enter");
+
+        let btn = ToolButton::new("sheet-list", "menu", "").searchable().single_select();
+        assert!(btn.searchable && btn.single_select);
+
+        let mut doc = ibis_doc_model::Document::new(ibis_doc_model::Presentation::new());
+        assert!(!doc.is_dirty());
+        let slide = doc.presentation().slides[0].id;
+        let shape = doc.ids().new_shape_id();
+        doc.execute(vec![ibis_doc_model::Command::InsertShape {
+            slide,
+            index: 0,
+            shape: ibis_doc_model::Shape::text_box(shape, ibis_doc_model::EmuRect::new(0, 0, 100, 50), "a"),
+        }])
+        .unwrap();
+        assert!(doc.is_dirty());
+        doc.mark_clean();
+        assert!(!doc.is_dirty());
+        assert!(doc.undo());
+        assert!(doc.is_dirty());
+        assert!(doc.redo());
+        assert!(!doc.is_dirty());
+    }
+
+    #[test]
+    fn font_and_font_size_filtering_and_keyboard_stepping_work() {
+        let all_sizes = super::filtered_font_size_candidates("11", false);
+        assert_eq!(all_sizes.len(), super::FONT_SIZE_CANDIDATES.len());
+
+        let cleared_sizes = super::filtered_font_size_candidates("", true);
+        assert_eq!(cleared_sizes.len(), super::FONT_SIZE_CANDIDATES.len());
+
+        let filtered_10 = super::filtered_font_size_candidates("10", true);
+        assert_eq!(filtered_10, vec![10.0, 10.5]);
+
+        let items = vec![
+            MenuItem::new("font.section.recent", "履歴").disabled(true),
+            MenuItem::new("font.recent.item", "Arial").on(|_, _, _| {}),
+            MenuItem::new("font.section.system", "システムフォント").disabled(true),
+            MenuItem::new("xlsx.font", "Calibri").on(|_, _, _| {}),
+            MenuItem::new("xlsx.font", "Times New Roman").on(|_, _, _| {}),
+        ];
+        let unfiltered = super::filter_menu_items(&items, "");
+        assert_eq!(unfiltered.len(), 5);
+
+        let filtered_font = super::filter_menu_items(&items, "cal");
+        assert_eq!(filtered_font.len(), 1);
+        assert_eq!(filtered_font[0].label.as_ref(), "Calibri");
+
+        assert_eq!(super::step_enabled_menu_index(&items, None, 1), Some(1));
+        assert_eq!(super::step_enabled_menu_index(&items, Some(1), 1), Some(3));
+        assert_eq!(super::step_enabled_menu_index(&items, Some(3), 1), Some(4));
+        assert_eq!(super::step_enabled_menu_index(&items, Some(4), -1), Some(3));
+        assert_eq!(super::step_enabled_menu_index(&items, Some(3), -1), Some(1));
     }
 }
 

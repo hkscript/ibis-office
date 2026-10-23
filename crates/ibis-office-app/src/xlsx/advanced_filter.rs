@@ -235,7 +235,7 @@ impl SlideEditor {
                         .into_any_element(),
                 )),
         );
-        body = body.child(mark("list-input", Input::new(&p.list_range).small().into_any_element()));
+        body = body.child(mark("list-input", Input::new(&p.list_range).small().cleanable(true).into_any_element()));
 
         body = body.child(
             h_flex()
@@ -252,7 +252,7 @@ impl SlideEditor {
                         .into_any_element(),
                 )),
         );
-        body = body.child(mark("criteria-input", Input::new(&p.criteria_range).small().into_any_element()));
+        body = body.child(mark("criteria-input", Input::new(&p.criteria_range).small().cleanable(true).into_any_element()));
 
         if copy_to_other {
             body = body.child(
@@ -270,7 +270,7 @@ impl SlideEditor {
                             .into_any_element(),
                     )),
             );
-            body = body.child(mark("copy-to-input", Input::new(&p.copy_to_range).small().into_any_element()));
+            body = body.child(mark("copy-to-input", Input::new(&p.copy_to_range).small().cleanable(true).into_any_element()));
         }
 
         // Unique records checkbox

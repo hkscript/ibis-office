@@ -12,7 +12,7 @@
 use crate::shell::chrome::SidebarPanel;
 use crate::shell::editor::SlideEditor;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::{Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{Sizable as _, v_flex};
 use gpui_kit::*;
 use ibis_doc_model::{CellRange, CellValue, Sheet, SlideId};
 
@@ -803,45 +803,49 @@ impl SlideEditor {
             let on = p.kind == kind;
             body = body.child(mark(
                 id,
-                Button::new(id)
-                    .small()
-                    .label(format!("{} {}", if on { "◉" } else { "○" }, crate::shell::i18n::text(label)))
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                crate::xlsx::toggle::radio_row(
+                    id,
+                    on,
+                    false,
+                    crate::shell::i18n::text(label),
+                    cx.listener(move |this, _, _, cx| {
                         if let Some(p) = this.wb_mut().panels.goto_special.as_mut() {
                             p.kind = kind;
                         }
                         cx.notify();
-                    }))
-                    .into_any_element(),
+                    }),
+                )
+                .into_any_element(),
             ));
             // The types under 定数 and 数式, as in Excel's dialog.
             if on && (kind == Special::Formulas || kind == Special::Constants) {
                 let types = p.types;
-                let check = |on: bool, name: &str| format!("{} {}", if on { "☑" } else { "☐" }, crate::shell::i18n::text(name));
                 type Flip = fn(&mut Types);
-                let toggle = |id: &'static str, label: String, flip: Flip| {
+                let toggle = |id: &'static str, checked: bool, name: &'static str, flip: Flip| {
                     mark(
                         id,
-                        Button::new(id)
-                            .small()
-                            .label(label)
-                            .on_click(cx.listener(move |this, _, _, cx| {
+                        crate::xlsx::toggle::toggle_row(
+                            id,
+                            checked,
+                            crate::shell::i18n::text(name),
+                            cx.listener(move |this, _, _, cx| {
                                 if let Some(p) = this.wb_mut().panels.goto_special.as_mut() {
                                     flip(&mut p.types);
                                 }
                                 cx.notify();
-                            }))
-                            .into_any_element(),
+                            }),
+                        )
+                        .into_any_element(),
                     )
                 };
                 body = body.child(
-                    h_flex()
-                        .gap_1()
-                        .flex_wrap()
-                        .child(toggle("numbers", check(types.numbers, "_xlsx.numbers"), |t| t.numbers = !t.numbers))
-                        .child(toggle("text", check(types.text, "fix.goto-special.text"), |t| t.text = !t.text))
-                        .child(toggle("logicals", check(types.logicals, "fix.goto-special.logicals"), |t| t.logicals = !t.logicals))
-                        .child(toggle("errors", check(types.errors, "fix.goto-special.errors"), |t| t.errors = !t.errors)),
+                    v_flex()
+                        .pl_4()
+                        .gap_0p5()
+                        .child(toggle("numbers", types.numbers, "_xlsx.numbers", |t| t.numbers = !t.numbers))
+                        .child(toggle("text", types.text, "fix.goto-special.text", |t| t.text = !t.text))
+                        .child(toggle("logicals", types.logicals, "fix.goto-special.logicals", |t| t.logicals = !t.logicals))
+                        .child(toggle("errors", types.errors, "fix.goto-special.errors", |t| t.errors = !t.errors)),
                 );
             }
             // Scope radio options for Conditional formats and Data validation
@@ -849,33 +853,40 @@ impl SlideEditor {
                 let scope = p.scope;
                 let same_label = if kind == Special::Conditional { "_xlsx.same-conditional-format" } else { "_xlsx.same-data-validation" };
                 body = body.child(
-                    h_flex()
-                        .gap_1()
+                    v_flex()
+                        .pl_4()
+                        .gap_0p5()
                         .child(mark(
                             "scope-all",
-                            Button::new("scope-all")
-                                .small()
-                                .label(format!("{} {}", if scope == Scope::All { "◉" } else { "○" }, crate::shell::i18n::text("_xlsx.all")))
-                                .on_click(cx.listener(|this, _, _, cx| {
+                            crate::xlsx::toggle::radio_row(
+                                "scope-all",
+                                scope == Scope::All,
+                                false,
+                                crate::shell::i18n::text("_xlsx.all"),
+                                cx.listener(|this, _, _, cx| {
                                     if let Some(p) = this.wb_mut().panels.goto_special.as_mut() {
                                         p.scope = Scope::All;
                                     }
                                     cx.notify();
-                                }))
-                                .into_any_element(),
+                                }),
+                            )
+                            .into_any_element(),
                         ))
                         .child(mark(
                             "scope-same",
-                            Button::new("scope-same")
-                                .small()
-                                .label(format!("{} {}", if scope == Scope::Same { "◉" } else { "○" }, crate::shell::i18n::text(same_label)))
-                                .on_click(cx.listener(|this, _, _, cx| {
+                            crate::xlsx::toggle::radio_row(
+                                "scope-same",
+                                scope == Scope::Same,
+                                false,
+                                crate::shell::i18n::text(same_label),
+                                cx.listener(|this, _, _, cx| {
                                     if let Some(p) = this.wb_mut().panels.goto_special.as_mut() {
                                         p.scope = Scope::Same;
                                     }
                                     cx.notify();
-                                }))
-                                .into_any_element(),
+                                }),
+                            )
+                            .into_any_element(),
                         )),
                 );
             }
@@ -883,52 +894,61 @@ impl SlideEditor {
             if on && (kind == Special::Precedents || kind == Special::Dependents) {
                 let trace_level = p.trace_level;
                 body = body.child(
-                    h_flex()
-                        .gap_1()
+                    v_flex()
+                        .pl_4()
+                        .gap_0p5()
                         .child(mark(
                             "trace-direct",
-                            Button::new("trace-direct")
-                                .small()
-                                .label(format!("{} {}", if trace_level == TraceLevel::DirectOnly { "◉" } else { "○" }, crate::shell::i18n::text("_xlsx.direct-only")))
-                                .on_click(cx.listener(|this, _, _, cx| {
+                            crate::xlsx::toggle::radio_row(
+                                "trace-direct",
+                                trace_level == TraceLevel::DirectOnly,
+                                false,
+                                crate::shell::i18n::text("_xlsx.direct-only"),
+                                cx.listener(|this, _, _, cx| {
                                     if let Some(p) = this.wb_mut().panels.goto_special.as_mut() {
                                         p.trace_level = TraceLevel::DirectOnly;
                                     }
                                     cx.notify();
-                                }))
-                                .into_any_element(),
+                                }),
+                            )
+                            .into_any_element(),
                         ))
                         .child(mark(
                             "trace-all",
-                            Button::new("trace-all")
-                                .small()
-                                .label(format!("{} {}", if trace_level == TraceLevel::AllLevels { "◉" } else { "○" }, crate::shell::i18n::text("_xlsx.all-levels")))
-                                .on_click(cx.listener(|this, _, _, cx| {
+                            crate::xlsx::toggle::radio_row(
+                                "trace-all",
+                                trace_level == TraceLevel::AllLevels,
+                                false,
+                                crate::shell::i18n::text("_xlsx.all-levels"),
+                                cx.listener(|this, _, _, cx| {
                                     if let Some(p) = this.wb_mut().panels.goto_special.as_mut() {
                                         p.trace_level = TraceLevel::AllLevels;
                                     }
                                     cx.notify();
-                                }))
-                                .into_any_element(),
+                                }),
+                            )
+                            .into_any_element(),
                         )),
                 );
             }
         }
-        body = body
-            .child(div().text_size(px(12.)).child(SharedString::from(p.message.clone())))
-            .child(mark("apply", Button::new("goto-special-apply").primary().small().label(crate::shell::i18n::text("fix.goto-special.select")).on_click(cx.listener(|this, _, _, cx| this.apply_goto_special(cx))).into_any_element()))
-            .child(mark(
-                "close",
-                Button::new("goto-special-close")
-                    .small()
-                    .label(crate::shell::i18n::text("_shell.close"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.wb_mut().panels.goto_special = None;
-                        cx.notify();
-                    }))
-                    .into_any_element(),
-            ));
-        Some(SidebarPanel { title: "fix.goto-special.go-special".into(), body: body.into_any_element() })
+        if !p.message.is_empty() {
+            body = body.child(div().text_size(px(12.)).child(SharedString::from(p.message.clone())));
+        }
+        let footer = mark(
+            "apply",
+            Button::new("goto-special-apply")
+                .primary()
+                .small()
+                .label(crate::shell::i18n::text("fix.goto-special.select"))
+                .on_click(cx.listener(|this, _, _, cx| this.apply_goto_special(cx)))
+                .into_any_element(),
+        );
+        Some(SidebarPanel::with_footer(
+            "fix.goto-special.go-special",
+            body.into_any_element(),
+            footer,
+        ))
     }
 }
 

@@ -12,6 +12,7 @@ use gpui_kit::component::scroll::{ScrollableElement as _, ScrollbarAxis};
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::{Block, EMU_PER_POINT, EmuRect, EmuSize, FlowAlign, FlowDocument, FlowRunKind, ShapeKind};
 
 use crate::docx::editing::{self as ed, Move};
@@ -295,6 +296,7 @@ impl SlideEditor {
     /// The workspace of a document: the pages near the view (the others
     /// are not built, so a long document scrolls fast), each with a shadow.
     pub(crate) fn render_document_workspace(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_docx_edited_box_resource();
         let entity = cx.entity();
         let content = self.workspace_content();
         let muted = cx.theme().muted;
@@ -435,8 +437,9 @@ impl SlideEditor {
 
         div()
             .id("workspace")
-            .key_context(ed::TEXT_CONTEXT)
+            .when(!self.doc_state().is_some_and(|s| s.box_edit.is_some()), |d| d.key_context(ed::TEXT_CONTEXT))
             .track_focus(&self.focus_handle)
+            .capture_key_down(cx.listener(Self::on_text_key))
             .map(|d| Self::text_actions(d, &mut *cx))
 
             // The wheel scrolls the pages; it turns none.
@@ -615,25 +618,24 @@ impl SlideEditor {
                     .top(px(page_top))
                     .w(px(w))
                     .h(px(h))
-                    .bg(rgb(if self.resources.dark_page { 0x262626 } else { 0xffffff }))
+                    .bg(crate::shell::palette::doc(if self.resources.dark_page { 0x262626 } else { 0xffffff }))
                     .when(show_white_space, |d| d.shadow_md())
-                    .when(!show_white_space, |d| d.border_1().border_color(rgb(0xd0d0d0)))
+                    .when(!show_white_space, |d| d.border_1().border_color(crate::shell::palette::doc(0xd0d0d0)))
                     .children(shapes)
                     .children(gridlines_element)
                     .children(formatting_marks_element)
                     .children(self.selection_rects(&lines, index, selection, k))
-                    .children(self.render_mini_toolbar(index, k, cx))
-                    .children(self.text_box_overlay(index, k))
+                    .children(self.text_box_overlay(index, k, cx))
                     .children(self.doc_state().map(|s| s.extra_selections.clone()).unwrap_or_default().into_iter().flat_map(|r| self.selection_rects(&lines, index, Some(r), k)).collect::<Vec<_>>())
-                    .children(caret.and_then(|c| {
+                    .children(caret.filter(|_| !self.doc_state().is_some_and(|s| s.box_edit.is_some() || s.shape_selected)).and_then(|c| {
                         let line = Self::line_of(&lines, c)?;
                         let b = self.caret_box(&lines, c)?;
                         Some((line.vertical, b))
                     }).filter(|(_, b)| b.0 == index).map(|(vertical, (_, x, y, h))| {
                         let caret = if vertical {
-                            div().absolute().left(px(x * k)).top(px(y * k - 0.5)).w(px(h * k)).h(px(1.5)).bg(rgb(0x000000))
+                            div().absolute().left(px(x * k)).top(px(y * k - 0.5)).w(px(h * k)).h(px(1.5)).bg(crate::shell::palette::doc(0x000000))
                         } else {
-                            div().absolute().left(px(x * k - 0.5)).top(px(y * k)).w(px(1.5)).h(px(h * k)).bg(rgb(0x000000))
+                            div().absolute().left(px(x * k - 0.5)).top(px(y * k)).w(px(1.5)).h(px(h * k)).bg(crate::shell::palette::doc(0x000000))
                         };
                         match &marked {
                             // Text being composed, underlined at the caret.
@@ -644,9 +646,9 @@ impl SlideEditor {
                                 .h(px(h * k))
                                 .flex()
                                 .items_end()
-                                .bg(rgb(0xffffff))
+                                .bg(crate::shell::palette::doc(0xffffff))
                                 .border_b_1()
-                                .border_color(rgb(0x000000))
+                                .border_color(crate::shell::palette::doc(0x000000))
                                 .map(|d| match &marked_font {
                                     Some((font, size)) => d.font_family(font.family.clone()).font_weight(font.weight).when(font.style == FontStyle::Italic, |d| d.italic()).text_size(px((size * k).max(8.0))),
                                     None => d.text_size(px((h * k * 0.7).max(8.0))),
@@ -658,12 +660,13 @@ impl SlideEditor {
                     }))
                     .on_mouse_down(MouseButton::Left, cx.listener(move |this, event: &MouseDownEvent, window, cx| this.on_page_down(index, event, window, is_top, cx)))
                     .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| this.on_page_move(index, event, is_top, cx)))
-                    .on_mouse_up(MouseButton::Left, cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    .on_mouse_up(MouseButton::Left, cx.listener(|this, _: &MouseUpEvent, window, cx| {
                         if let Some(state) = this.doc_state_mut() {
                             state.dragging = false;
                         }
                         this.end_docx_ink(cx);
                         this.end_shape_drag(cx);
+                        this.sync_text_box_panel(window, cx);
                         this.end_draw_table(cx);
                         this.finish_doc_format_brush(cx);
                     }))
@@ -779,7 +782,7 @@ impl SlideEditor {
     }
 
     /// Where on page `index` a window point is, in points.
-    fn page_point_pane(&self, index: usize, position: Point<Pixels>, is_top: bool) -> Option<(f32, f32)> {
+    pub(crate) fn page_point_pane(&self, index: usize, position: Point<Pixels>, is_top: bool) -> Option<(f32, f32)> {
         let (origin, k) = self.page_origin_pane(index, is_top)?;
         Some((f32::from(position.x - origin.x) / k, f32::from(position.y - origin.y) / k))
     }
@@ -806,6 +809,9 @@ impl SlideEditor {
     fn on_page_down_one(&mut self, index: usize, event: &MouseDownEvent, window: &mut Window, is_top: bool, cx: &mut Context<Self>) {
         cx.stop_propagation();
         self.doc_split_active = is_top;
+        if self.doc_state().is_some_and(|s| s.box_edit.is_some()) {
+            self.commit_box_edit(window, cx);
+        }
         self.focus_handle.focus(window, cx);
         let Some((x, y)) = self.page_point_pane(index, event.position, is_top) else { return };
         if event.click_count == 1 {
@@ -821,9 +827,27 @@ impl SlideEditor {
         if event.click_count == 1 && self.begin_draw_table(index, x, y, cx) {
             return;
         }
+        // A double click on a floating text box edits its text in place.
+        if event.click_count == 2 && !event.modifiers.platform && !event.modifiers.shift && self.begin_box_edit_or_handle(index, x, y, window, cx) {
+            self.sync_text_box_panel(window, cx);
+            return;
+        }
+        // Shift-click on a shape adds/toggles it in the multi-shape selection.
+        if event.click_count == 1 && !event.modifiers.platform && event.modifiers.shift && self.shift_click_shape(index, x, y, cx) {
+            self.sync_text_box_panel(window, cx);
+            return;
+        }
         // A press on a floating text box selects it and moves it with the mouse.
         if event.click_count == 1 && !event.modifiers.platform && !event.modifiers.shift && self.begin_shape_drag(index, x, y, cx) {
+            self.sync_text_box_panel(window, cx);
             return;
+        }
+        if let Some(state) = self.doc_state_mut() {
+            if state.shape_selected || !state.selected_shapes.is_empty() {
+                state.shape_selected = false;
+                state.selected_shapes.clear();
+                cx.notify();
+            }
         }
         let Some(pos) = self.position_at(index, x, y) else { return };
         // ⌘-click follows a link to its bookmark (a table of contents' entry).
@@ -1036,6 +1060,11 @@ impl SlideEditor {
             .on_action(cx.listener(|this, _: &ed::ToggleBold, _, cx| this.toggle_bold(cx)))
             .on_action(cx.listener(|this, _: &ed::ToggleItalic, _, cx| this.toggle_italic(cx)))
             .on_action(cx.listener(|this, _: &ed::ToggleUnderline, _, cx| this.toggle_underline(cx)))
+            .on_action(cx.listener(|this, _: &ed::ToggleDoubleUnderline, _, cx| this.toggle_underline_kind(ibis_doc_model::UnderlineStyle::Double, cx)))
+            .on_action(cx.listener(|this, _: &ed::ToggleWordUnderline, _, cx| this.toggle_underline_kind(ibis_doc_model::UnderlineStyle::Words, cx)))
+            .on_action(cx.listener(|this, _: &ed::InsertFootnote, _, cx| this.insert_note(false, cx)))
+            .on_action(cx.listener(|this, _: &ed::InsertEndnote, _, cx| this.insert_note(true, cx)))
+            .on_action(cx.listener(|this, _: &ed::ToggleBulletList, _, cx| this.toggle_list(true, cx)))
             .on_action(cx.listener(|this, _: &ed::ToggleStrike, _, cx| this.toggle_strike(cx)))
             .on_action(cx.listener(|this, _: &ed::ToggleCaps, _, cx| this.toggle_caps(cx)))
             .on_action(cx.listener(|this, _: &ed::ToggleSmallCaps, _, cx| this.toggle_small_caps(cx)))

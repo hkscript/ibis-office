@@ -445,7 +445,7 @@ impl SlideEditor {
                             .into_any_element(),
                     )),
             )
-            .child(mark("timeline", Input::new(&p.timeline).small().into_any_element()));
+            .child(mark("timeline", Input::new(&p.timeline).small().cleanable(true).into_any_element()));
         body = body
             .child(
                 h_flex()
@@ -462,10 +462,10 @@ impl SlideEditor {
                             .into_any_element(),
                     )),
             )
-            .child(mark("values", Input::new(&p.values).small().into_any_element()));
-        body = body.child(caption("xlsx.forecast.field.start")).child(mark("start", Input::new(&p.start).small().into_any_element()));
-        body = body.child(caption("xlsx.forecast.field.end")).child(mark("end", Input::new(&p.end).small().into_any_element()));
-        body = body.child(caption("xlsx.forecast.field.confidence")).child(mark("confidence", Input::new(&p.confidence).small().into_any_element()));
+            .child(mark("values", Input::new(&p.values).small().cleanable(true).into_any_element()));
+        body = body.child(caption("xlsx.forecast.field.start")).child(mark("start", Input::new(&p.start).small().cleanable(true).into_any_element()));
+        body = body.child(caption("xlsx.forecast.field.end")).child(mark("end", Input::new(&p.end).small().cleanable(true).into_any_element()));
+        body = body.child(caption("xlsx.forecast.field.confidence")).child(mark("confidence", Input::new(&p.confidence).small().cleanable(true).into_any_element()));
 
         // 季節性
         body = body.child(caption("xlsx.forecast.field.seasonality")).child(
@@ -475,7 +475,7 @@ impl SlideEditor {
                 .child(toggle("seasonality-manual", p.seasonality_manual, "xlsx.forecast.seasonality-manual", Rc::new(|p| p.seasonality_manual = true))),
         );
         if p.seasonality_manual {
-            body = body.child(mark("seasonality", Input::new(&p.seasonality).small().into_any_element()));
+            body = body.child(mark("seasonality", Input::new(&p.seasonality).small().cleanable(true).into_any_element()));
         }
 
         // 欠損ポイントの補完

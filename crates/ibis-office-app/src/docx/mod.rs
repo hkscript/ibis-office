@@ -50,7 +50,14 @@ pub(crate) mod flow_layout;
 pub(crate) mod input;
 pub(crate) mod page_view;
 #[cfg(all(any(target_os = "macos", target_os = "linux"), feature = "scenarios"))]
+#[path = "../tests/docx/scenarios.rs"]
 pub(crate) mod scenarios;
+#[cfg(all(target_os = "macos", feature = "scenarios"))]
+#[path = "../tests/docx/corpus_report.rs"]
+pub(crate) mod corpus_report;
+#[cfg(test)]
+#[path = "../tests/docx/layout_tests.rs"]
+mod layout_tests;
 pub(crate) mod toolbar;
 pub(crate) mod accessibility;
 pub(crate) mod goto;
@@ -78,6 +85,7 @@ use std::sync::Arc;
 
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::{FlowDocument, FlowPos, InsertFormat, Presentation, SlideId};
 
 use crate::shell::chrome::{Menus, ToolItem};
@@ -165,8 +173,14 @@ pub(crate) struct State {
     pub(crate) text_box: Option<text_box_panel::TextBoxState>,
     /// 差し込み印刷's panel and its data (宛先一覧).
     pub(crate) merge: Option<merge_panel::MergeState>,
+    /// A floating text box whose text is being edited in place.
+    pub(crate) box_edit: Option<text_box_panel::BoxEdit>,
     /// A floating text box being dragged.
     pub(crate) shape_drag: Option<text_box_panel::ShapeDrag>,
+    /// Whether the floating shape at the caret is currently selected (showing handles/outline).
+    pub(crate) shape_selected: bool,
+    /// Additional shapes selected via Shift+Click (alongside the primary shape at `caret`).
+    pub(crate) selected_shapes: Vec<FlowPos>,
     /// 記号と特殊文字's panel, while it is the one shown.
     pub(crate) symbol: Option<symbol_panel::SymbolState>,
     /// 数式 (Math) panel, while it is the one shown.
@@ -253,9 +267,9 @@ impl FormatEditor for Document {
         FormatState::Document(State { characters, caret, laid_out: presentation.flow.clone(), ..State::default() })
     }
 
-    /// At 100%, as in Word.
+    /// At 141% by default (#154).
     fn initial_zoom(_: &SlideEditor) -> Option<f32> {
-        Some(1.0)
+        Some(1.41)
     }
 
     fn workspace_content(editor: &SlideEditor, workspace: Size<Pixels>) -> WorkspaceContent {
@@ -624,7 +638,7 @@ impl FormatEditor for Document {
                     .bg(hsla(0.0, 0.0, 0.1, 0.75))
                     .hover(|h| h.bg(hsla(0.0, 0.0, 0.1, 0.9)))
                     .text_size(px(12.))
-                    .text_color(rgb(0xffffff))
+                    .text_color(crate::shell::palette::doc(0xffffff))
                     .cursor_pointer()
                     .child(crate::shell::i18n::text("docx.focus.exit"))
                     .on_click(cx.listener(|this, _, window, cx| {
@@ -659,11 +673,21 @@ impl FormatEditor for Document {
     }
 
     fn replace_text_in_range(editor: &mut SlideEditor, range: Option<Range<usize>>, text: &str, window: &mut Window, cx: &mut Context<SlideEditor>) {
-        editor.doc_replace_text_in_range(range, text, window, cx)
+        let auto_started = if !text.is_empty() && editor.doc_state().is_some_and(|s| s.shape_selected && s.box_edit.is_none()) {
+            editor.text_box_at_caret().filter(|i| i.has_text).is_some_and(|info| editor.start_box_edit_at(info.at, window, cx))
+        } else {
+            false
+        };
+        editor.doc_replace_text_in_range(if auto_started { None } else { range }, text, window, cx)
     }
 
     fn replace_and_mark_text_in_range(editor: &mut SlideEditor, range: Option<Range<usize>>, text: &str, selected: Option<Range<usize>>, window: &mut Window, cx: &mut Context<SlideEditor>) {
-        editor.doc_replace_and_mark_text_in_range(range, text, selected, window, cx)
+        let auto_started = if !text.is_empty() && editor.doc_state().is_some_and(|s| s.shape_selected && s.box_edit.is_none()) {
+            editor.text_box_at_caret().filter(|i| i.has_text).is_some_and(|info| editor.start_box_edit_at(info.at, window, cx))
+        } else {
+            false
+        };
+        editor.doc_replace_and_mark_text_in_range(if auto_started { None } else { range }, text, selected, window, cx)
     }
 
     fn bounds_for_range(editor: &mut SlideEditor, range: Range<usize>, element: Bounds<Pixels>, window: &mut Window, cx: &mut Context<SlideEditor>) -> Option<Bounds<Pixels>> {
@@ -787,6 +811,7 @@ impl SlideEditor {
             state.characters = characters;
             state.caret = valid(state.caret).or(first);
             state.anchor = valid(state.anchor);
+            state.selected_shapes.retain(|&p| valid(Some(p)).is_some());
         }
         self.normalize_visible_selection();
     }
@@ -892,7 +917,7 @@ impl SlideEditor {
                                             .py(px(6.))
                                             .rounded_md()
                                             .bg(rgb(0x1a73e8))
-                                            .text_color(rgb(0xffffff))
+                                            .text_color(crate::shell::palette::doc(0xffffff))
                                             .text_size(px(13.))
                                             .cursor_pointer()
                                             .child(crate::shell::i18n::text("docx.comments.alert-no-selection.ok"))
@@ -975,7 +1000,7 @@ impl SlideEditor {
                                             .py(px(6.))
                                             .rounded_md()
                                             .bg(rgb(0xd93025))
-                                            .text_color(rgb(0xffffff))
+                                            .text_color(crate::shell::palette::doc(0xffffff))
                                             .text_size(px(13.))
                                             .cursor_pointer()
                                             .hover(|h| h.bg(rgb(0xb3261e)))

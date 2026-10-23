@@ -77,6 +77,14 @@ impl SlideEditor {
                 )
             })
         });
+        let is_workbook = self.is_workbook();
+        let (left_texts, right_texts) = if is_workbook && !texts.is_empty() {
+            let right = texts.split_off(1);
+            (texts, right)
+        } else {
+            (texts, Vec::new())
+        };
+        let right_layout = self.status_layout.clone();
         h_flex()
             .relative()
             .h(px(26.))
@@ -103,9 +111,27 @@ impl SlideEditor {
                     }
                 }
             }))
-            .children(texts)
+            .children(left_texts)
             .child(div().flex_1().child(hint))
-            .child(self.render_zoom(cx))
+            .child(
+                h_flex()
+                    .relative()
+                    .gap_4()
+                    .items_center()
+                    // Where the right-aligned summary + zoom controls begin:
+                    // the sheet tabs' scrollbar ends before it.
+                    .child(crate::shell::editor::bounds_observer(move |bounds, window, _| {
+                        let mut now = right_layout.get();
+                        let was = now[2];
+                        now[2] = f32::from(bounds.left());
+                        right_layout.set(now);
+                        if (was - now[2]).abs() > 0.5 {
+                            window.refresh();
+                        }
+                    }))
+                    .children(right_texts)
+                    .child(self.render_zoom(cx)),
+            )
             .children(tab_scrollbar)
     }
 
@@ -115,22 +141,10 @@ impl SlideEditor {
         let zoom = self.current_zoom();
         // A little slack, so a zoom rounded onto a limit still counts as there.
         let (at_min, at_max) = (zoom <= MIN_ZOOM * 1.001, zoom >= MAX_ZOOM * 0.999);
-        let layout = self.status_layout.clone();
         h_flex()
             .relative()
             .gap_1()
             .items_center()
-            // Where the zoom controls begin (the − button's left edge): the
-            // sheet tabs' scrollbar ends before it.
-            .child(crate::shell::editor::bounds_observer(move |bounds, window, _| {
-                let mut now = layout.get();
-                let was = now[2];
-                now[2] = f32::from(bounds.left());
-                layout.set(now);
-                if (was - now[2]).abs() > 0.5 {
-                    window.refresh();
-                }
-            }))
             .child(
                 zoom_step_button("zoom-out", IconName::Minus, "view.zoom-out", at_min)
                     .when(!at_min, |d| d.on_click(cx.listener(|this, _, window, cx| this.step_zoom(false, window, cx)))),

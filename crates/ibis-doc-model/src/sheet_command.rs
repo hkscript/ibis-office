@@ -519,6 +519,9 @@ pub(crate) fn apply(presentation: &mut Presentation, command: SheetCommand) -> R
         crate::form_control::refresh_controls(presentation);
         crate::chart_refresh::refresh_charts(presentation);
     }
+    if result.is_ok() {
+        sync_sheet_book_context(presentation);
+    }
     result
 }
 
@@ -1433,7 +1436,12 @@ fn set_cells(presentation: &mut Presentation, slide: SlideId, edits: Vec<CellEdi
         let anchors: Vec<((u32, u32), CellRange)> = sheet
             .spills
             .iter()
-            .filter(|(a, r)| changed.iter().any(|&(row, column)| (row, column) != **a && inside(r, row, column)))
+            .filter(|(a, r)| {
+                let blocked_1x1 = r.first_row == r.last_row
+                    && r.first_column == r.last_column
+                    && sheet.cell(a.0, a.1).is_some_and(|c| c.value == CellValue::Error(crate::sheet::CellError::Spill));
+                blocked_1x1 || changed.iter().any(|&(row, column)| (row, column) != **a && inside(r, row, column))
+            })
             .map(|(a, r)| (*a, *r))
             .collect();
         let typed: Vec<(u32, u32)> = edits.iter().filter(|e| !matches!(e.input, CellInput::Clear)).map(|e| (e.row, e.column)).collect();
@@ -1516,7 +1524,7 @@ fn spill(sheet: &mut Sheet, anchor: (u32, u32), value: CellValue, spill: Option<
     };
     let range = CellRange { first_row: anchor.0, first_column: anchor.1, last_row: anchor.0 + rows - 1, last_column: anchor.1 + columns - 1 };
     let in_old = |row: u32, column: u32| !was_blocked && (old.first_row..=old.last_row).contains(&row) && (old.first_column..=old.last_column).contains(&column);
-    let off_sheet = range.last_row as usize >= sheet.rows.len() || range.last_column as usize >= sheet.columns.len();
+    let off_sheet = range.last_row >= 1_048_576 || range.last_column >= 16_384;
     let blocked = off_sheet
         || (range.first_row..=range.last_row).any(|row| {
             (range.first_column..=range.last_column).any(|column| {
@@ -1527,6 +1535,14 @@ fn spill(sheet: &mut Sheet, anchor: (u32, u32), value: CellValue, spill: Option<
     if blocked {
         sheet.spills.insert(anchor, range);
         return (CellValue::Error(crate::sheet::CellError::Spill), changed);
+    }
+    if range.last_row as usize >= sheet.rows.len() {
+        let def_h = if sheet.default_row > 0 { sheet.default_row } else { 20 * crate::EMU_PER_POINT };
+        sheet.rows.resize(range.last_row as usize + 1, def_h);
+    }
+    if range.last_column as usize >= sheet.columns.len() {
+        let def_w = if sheet.default_column > 0 { sheet.default_column } else { 54 * crate::EMU_PER_POINT };
+        sheet.columns.resize(range.last_column as usize + 1, def_w);
     }
     for (i, v) in values.iter().enumerate() {
         let (row, column) = (anchor.0 + i as u32 / columns, anchor.1 + i as u32 % columns);
@@ -5462,15 +5478,87 @@ fn unmerge(presentation: &mut Presentation, slide: SlideId, range: CellRange) ->
     Ok(inverse)
 }
 
+/// Synchronize `Sheet::book_context` on every slide's worksheet so single-sheet
+/// evaluators (such as conditional formatting) have up-to-date defined names,
+/// sheet names/indices, `date1904`, and cross-sheet cell snapshots.
+pub fn sync_sheet_book_context(presentation: &mut Presentation) {
+    let defined_names: std::sync::Arc<[crate::sheet::DefinedName]> =
+        crate::sheet_calc::collect_defined_names(presentation).into();
+    let date1904 = presentation.workbook.as_deref().is_some_and(|w| w.date1904);
+
+    let mut sheets_vec: Vec<(String, crate::sheet::Cells)> = Vec::new();
+    let mut slide_meta: std::collections::HashMap<SlideId, (usize, String)> = std::collections::HashMap::new();
+
+    match presentation.workbook.as_deref() {
+        Some(wb) => {
+            for (idx, ws) in wb.sheets.iter().enumerate() {
+                let cells = match ws.slide {
+                    Some(id) => presentation
+                        .slide(id)
+                        .and_then(crate::sheet_calc::sheet_of_slide)
+                        .map(|s| s.cells.clone())
+                        .unwrap_or_default(),
+                    None => ws.hidden.as_ref().map(|s| s.cells.clone()).unwrap_or_default(),
+                };
+                if let Some(id) = ws.slide {
+                    slide_meta.insert(id, (idx, ws.name.clone()));
+                }
+                sheets_vec.push((ws.name.clone(), cells));
+            }
+        }
+        None => {
+            for (i, slide) in presentation.slides.iter().enumerate() {
+                if let Some(sheet) = crate::sheet_calc::sheet_of_slide(slide) {
+                    let name = slide.name.clone().unwrap_or_else(|| format!("Sheet{}", i + 1));
+                    let idx = sheets_vec.len();
+                    slide_meta.insert(slide.id, (idx, name.clone()));
+                    sheets_vec.push((name, sheet.cells.clone()));
+                }
+            }
+        }
+    }
+
+    let sheets: std::sync::Arc<[(String, crate::sheet::Cells)]> = sheets_vec.into();
+
+    for (slide_pos, slide) in presentation.slides.iter_mut().enumerate() {
+        let (sheet_index, sheet_name) = slide_meta.get(&slide.id).cloned().unwrap_or_else(|| {
+            (slide_pos, slide.name.clone().unwrap_or_else(|| format!("Sheet{}", slide_pos + 1)))
+        });
+        let Some(shape) = slide.shapes.iter_mut().find(|sh| matches!(sh.kind, ShapeKind::Sheet(_))) else {
+            continue;
+        };
+        let ShapeKind::Sheet(sheet_arc) = &mut shape.kind else {
+            continue;
+        };
+        let new_ctx = crate::sheet::SheetBookContext {
+            sheet_name,
+            sheet_index,
+            defined_names: defined_names.clone(),
+            date1904,
+            sheets: sheets.clone(),
+        };
+        if !sheet_arc.book_context.exact_eq(&new_ctx) {
+            let sheet = Arc::make_mut(sheet_arc);
+            if !sheet.conditional.is_empty() || !sheet.conditional_x14.is_empty() {
+                sheet.cells.bump_content_id();
+            }
+            sheet.book_context = new_ctx;
+        }
+    }
+}
+
 /// Calculate the formula cells that have no value (a file written by a
 /// program that does not calculate has none cached), and what they feed.
 pub fn calculate_missing_values(presentation: &mut Presentation) -> Result<(), EditError> {
+    sync_sheet_book_context(presentation);
     let view = crate::sheet_calc::BookView::new(presentation);
     let mut missing = view.formula_cells_without_value();
     let images: Vec<_> = view.image_formula_cells().into_iter().filter(|c| !missing.contains(c)).collect();
     missing.extend(images);
     drop(view);
-    recalculate_cells_deep(presentation, &missing, 0, true)
+    let res = recalculate_cells_deep(presentation, &missing, 0, true);
+    sync_sheet_book_context(presentation);
+    res
 }
 
 /// Calculate again the given formula cells and what depends on them.
@@ -8091,6 +8179,7 @@ mod tests {
             background: crate::drawing::Fill::None,
             border: None,
             plot_background: crate::drawing::Fill::None,
+            plot_border: None,
             disp_blanks_as: None,
             plot_vis_only: true,
             data_table: None,

@@ -80,6 +80,17 @@ pub(crate) fn read_in(space: Node, colors: &Colors, legacy_border: bool) -> Opti
         ChartText::default()
     };
     let base = text_style(child(space, "txPr"), &default_text, colors);
+    let style = child(space, "style")
+        .or_else(|| path(space, &["AlternateContent", "Fallback", "style"]))
+        .or_else(|| path(space, &["AlternateContent", "Choice", "style"]))
+        .and_then(|n| attr(n, "val"))
+        .and_then(|v| {
+            let num = v.trim().parse::<u32>().ok()?;
+            Some(if num > 100 { num - 100 } else { num })
+        });
+    let mono_accent = style
+        .filter(|s| (1..=48).contains(s) && (2..=7).contains(&((s - 1) % 8)))
+        .map(|s| ((s - 1) % 8 - 1) as usize);
 
     let mut groups = Vec::new();
     let mut series_index = 0usize;
@@ -150,7 +161,7 @@ pub(crate) fn read_in(space: Node, colors: &Colors, legacy_border: bool) -> Opti
                 let index = val_f64(ser, "idx").map(|v| v as usize).unwrap_or(if retained_only { retained_index } else { series_index });
                 retained_index += 1;
                 if !retained_only { series_index += 1; }
-                let mut series = read_series(ser, index, line_like, vary, &base, colors, &mut last_categories);
+                let mut series = read_series(ser, index, line_like, vary, &base, colors, mono_accent, &mut last_categories);
                 // Excel for Mac draws no marker for a series of an unformatted
                 // chart whose `c:marker` names a symbol but gives it no `spPr`
                 // (measured on a user's private workbook: four line
@@ -159,6 +170,9 @@ pub(crate) fn read_in(space: Node, colors: &Colors, legacy_border: bool) -> Opti
                     if let Some(m) = series.marker.as_mut() {
                         m.symbol = MarkerSymbol::None;
                     }
+                }
+                if matches!(kind, ChartType::Line) && series.marker.is_none() && val_bool(node, "marker").unwrap_or(false) {
+                    series.marker = Some(auto_marker(index, colors, mono_accent));
                 }
                 let scatter = matches!(kind, ChartType::Scatter { .. } | ChartType::Bubble { .. });
                 if scatter {
@@ -177,7 +191,7 @@ pub(crate) fn read_in(space: Node, colors: &Colors, legacy_border: bool) -> Opti
                     // ones (marker-only styles, and lines with markers).
                     let style = val(node, "scatterStyle").unwrap_or("marker");
                     if series.marker.is_none() && matches!(kind, ChartType::Scatter { .. }) && !matches!(style, "line" | "smooth" | "none") {
-                        series.marker = Some(auto_marker(index, colors));
+                        series.marker = Some(auto_marker(index, colors, mono_accent));
                     }
                     if matches!(kind, ChartType::Bubble { .. }) {
                         series.stroke = None;
@@ -197,21 +211,30 @@ pub(crate) fn read_in(space: Node, colors: &Colors, legacy_border: bool) -> Opti
             })
             .collect();
         let axes = children(node, "axId").filter(|a| a.tag_name().namespace() == Some(CHART_NS)).filter_map(|a| unqualified_val(a).and_then(|v| v.parse::<u32>().ok())).collect();
-        let of_pie = node.has_tag_name("ofPieChart").then(|| OfPieSettings {
-            split: match val(node, "splitType") {
-                Some("cust") => Some(OfPieSplit::Custom),
-                Some("percent") => Some(OfPieSplit::Percent),
-                Some("pos") => Some(OfPieSplit::Position),
-                Some("val") => Some(OfPieSplit::Value),
-                _ => None,
-            },
-            split_position: val(node, "splitPos").and_then(|v| v.parse().ok()).map(Number),
-            second_size: val(node, "secondPieSize").and_then(|v| v.parse().ok()),
-            gap_width: val(node, "gapWidth").and_then(|v| v.parse().ok()),
-            vary_colors: child(node, "varyColors").and_then(|n| attr_bool(n, "val").or_else(|| attr(n, "val").is_none().then_some(true))),
-            custom_points: child(node, "custSplit").map(|n| children(n, "secondPiePt").map(|p| attr(p, "val").and_then(|v| v.parse().ok())).collect()),
-            connector: child(node, "serLines").map(|n| path(n, &["spPr", "ln"]).and_then(|ln| stroke(ln, colors))),
-        });
+        let of_pie = if node.has_tag_name("ofPieChart") {
+            Some(OfPieSettings {
+                split: match val(node, "splitType") {
+                    Some("cust") => Some(OfPieSplit::Custom),
+                    Some("percent") => Some(OfPieSplit::Percent),
+                    Some("pos") => Some(OfPieSplit::Position),
+                    Some("val") => Some(OfPieSplit::Value),
+                    _ => None,
+                },
+                split_position: val(node, "splitPos").and_then(|v| v.parse().ok()).map(Number),
+                second_size: val(node, "secondPieSize").and_then(|v| v.parse().ok()),
+                gap_width: val(node, "gapWidth").and_then(|v| v.parse().ok()),
+                vary_colors: child(node, "varyColors").and_then(|n| attr_bool(n, "val").or_else(|| attr(n, "val").is_none().then_some(true))),
+                custom_points: child(node, "custSplit").map(|n| children(n, "secondPiePt").map(|p| attr(p, "val").and_then(|v| v.parse().ok())).collect()),
+                connector: child(node, "serLines").map(|n| path(n, &["spPr", "ln"]).and_then(|ln| stroke(ln, colors))),
+            })
+        } else if matches!(node.tag_name().name(), "barChart" | "bar3DChart") {
+            child(node, "serLines").map(|n| OfPieSettings {
+                connector: Some(path(n, &["spPr", "ln"]).and_then(|ln| stroke(ln, colors))),
+                ..OfPieSettings::default()
+            })
+        } else {
+            None
+        };
         let three_d = node.tag_name().name().ends_with("3DChart") && !node.has_tag_name("surface3DChart");
         let three_d = three_d.then(|| {
             let view = child(chart, "view3D");
@@ -233,6 +256,10 @@ pub(crate) fn read_in(space: Node, colors: &Colors, legacy_border: bool) -> Opti
         .filter(|n| n.tag_name().namespace() == Some(CHART_NS) && matches!(n.tag_name().name(), "catAx" | "valAx" | "dateAx" | "serAx"))
         .map(|n| read_axis(n, &base, colors, legacy, legacy_border && excel_wrote))
         .collect();
+    // A category axis of several levels (`c:multiLvlStrRef`): the outer levels, over the labels of the innermost.
+    if let Some(axis) = axes.iter_mut().find(|a| a.kind == AxisKind::Category && !a.deleted) {
+        axis.category_levels = outer_levels(plot);
+    }
 
     // A category axis with a minimum or maximum (1-based category numbers)
     // shows only those categories.
@@ -358,6 +385,7 @@ pub(crate) fn read_in(space: Node, colors: &Colors, legacy_border: bool) -> Opti
                 series.categories = series.categories.iter().enumerate().filter(|(i, _)| kept(*i)).map(|(_, c)| c.clone()).collect();
                 series.point_fills = series.point_fills.iter().filter_map(|(i, f)| Some((new_index(*i)?, f.clone()))).collect();
                 series.point_strokes = series.point_strokes.iter().filter_map(|(i, f)| Some((new_index(*i)?, f.clone()))).collect();
+                series.point_explosions = series.point_explosions.iter().filter_map(|(i, e)| Some((new_index(*i)?, *e))).collect();
                 if let Some(labels) = &mut series.labels {
                     labels.points = labels
                         .points
@@ -419,11 +447,16 @@ pub(crate) fn read_in(space: Node, colors: &Colors, legacy_border: bool) -> Opti
                 .collect::<Vec<_>>()
                 .join("\n"),
             None => {
-                let series: Vec<&Series> = groups.iter().flat_map(|g| &g.series).collect();
-                if series.len() != 1 {
-                    return None;
+                if let Some(tx) = child(t, "tx") {
+                    cache_points(tx).0.into_iter().flatten().collect::<Vec<_>>().join("\n")
+                } else {
+                    let series: Vec<&Series> = groups.iter().flat_map(|g| &g.series).collect();
+                    if series.len() == 1 && !series[0].name.is_empty() {
+                        series[0].name.clone()
+                    } else {
+                        "Chart Title".to_string()
+                    }
                 }
-                series[0].name.clone()
             }
         };
         let at = path(t, &["layout", "manualLayout"]).and_then(|m| Some((fraction(val_f64(m, "x")?), fraction(val_f64(m, "y")?))));
@@ -440,7 +473,12 @@ pub(crate) fn read_in(space: Node, colors: &Colors, legacy_border: bool) -> Opti
     };
     let background = background.or(legacy.then_some(Fill::Solid(Color::WHITE)));
 
-    let (plot_background, _) = shape_props(child(plot, "spPr"), colors);
+    let (plot_background, plot_border) = shape_props(child(plot, "spPr"), colors);
+    let plot_border = plot_border.flatten();
+    // A 3-D chart's walls (`c:backWall`, else `c:sideWall`) are its plot's ground.
+    let plot_background = plot_background.or_else(|| {
+        ["backWall", "sideWall"].into_iter().find_map(|wall| child(chart, wall).and_then(|w| shape_props(child(w, "spPr"), colors).0))
+    });
     let disp_blanks_as = child(chart, "dispBlanksAs").and_then(|n| attr(n, "val")).and_then(|v| match v {
         "span" => Some(ibis_doc_model::DispBlanksAs::Span),
         "zero" => Some(ibis_doc_model::DispBlanksAs::Zero),
@@ -454,14 +492,6 @@ pub(crate) fn read_in(space: Node, colors: &Colors, legacy_border: bool) -> Opti
         show_outline: val_bool(dt, "showOutline").unwrap_or(true),
         show_keys: val_bool(dt, "showKeys").unwrap_or(false),
     });
-    let style = child(space, "style")
-        .or_else(|| path(space, &["AlternateContent", "Fallback", "style"]))
-        .or_else(|| path(space, &["AlternateContent", "Choice", "style"]))
-        .and_then(|n| attr(n, "val"))
-        .and_then(|v| {
-            let num = v.trim().parse::<u32>().ok()?;
-            Some(if num > 100 { num - 100 } else { num })
-        });
     let pivot_source = child(space, "pivotSource")
         .or_else(|| child(chart, "pivotSource"))
         .and_then(|ps| child(ps, "name"))
@@ -476,6 +506,7 @@ pub(crate) fn read_in(space: Node, colors: &Colors, legacy_border: bool) -> Opti
         background: background.unwrap_or_default(),
         border: border.flatten(),
         plot_background: plot_background.unwrap_or_default(),
+        plot_border,
         disp_blanks_as,
         plot_vis_only,
         data_table,
@@ -569,7 +600,15 @@ fn fill(node: Node, colors: &Colors) -> Option<Fill> {
             let scaled = lin.and_then(|l| attr(l, "scaled")).map_or(false, |v| v == "1" || v == "true");
             (!stops.is_empty()).then_some(Fill::Linear { angle, scaled, stops })
         }
-        "pattFill" => child(node, "fgClr").and_then(|c| colors.in_parent(c, None)).map(Fill::Solid),
+        "pattFill" => {
+            let fg = child(node, "fgClr").and_then(|c| colors.in_parent(c, None)).unwrap_or(Color::BLACK);
+            let bg = child(node, "bgClr").and_then(|c| colors.in_parent(c, None)).unwrap_or(Color::WHITE);
+            let preset = attr(node, "prst").unwrap_or("pct5");
+            Some(match ibis_doc_model::pattern_tile(preset) {
+                Some(_) => Fill::Pattern { preset: preset.to_string(), foreground: fg, background: bg },
+                None => Fill::Solid(fg),
+            })
+        }
         _ => None,
     }
 }
@@ -625,6 +664,29 @@ fn run_style(rpr: Node, base: &ChartText, colors: &Colors) -> ChartText {
 }
 
 /// Category labels or values of a `c:cat` / `c:val` / `c:tx`, by point index.
+/// The outer levels of the first series' categories of several levels (`c:multiLvlStrCache`: its first `c:lvl` is
+/// the innermost, which is what the series' categories are), nearest first: each level's groups as (first
+/// category, how many categories, name) for the groups that start at a named point and run to the next one.
+fn outer_levels(plot: Node) -> Vec<Vec<(usize, usize, String)>> {
+    let Some(cache) = plot.descendants().find(|n| n.is_element() && n.tag_name().name() == "multiLvlStrCache") else { return Vec::new() };
+    let total = val_f64(cache, "ptCount").unwrap_or(0.0).max(0.0) as usize;
+    children(cache, "lvl")
+        .skip(1)
+        .map(|lvl| {
+            let mut starts: Vec<(usize, String)> = children(lvl, "pt")
+                .filter_map(|pt| Some((attr_i64(pt, "idx")?.max(0) as usize, child(pt, "v")?.text()?.to_string())))
+                .collect();
+            starts.sort_by_key(|(i, _)| *i);
+            (0..starts.len())
+                .map(|k| {
+                    let end = starts.get(k + 1).map_or(total, |next| next.0);
+                    (starts[k].0, end.saturating_sub(starts[k].0).max(1), starts[k].1.clone())
+                })
+                .collect()
+        })
+        .collect()
+}
+
 fn cache_points(node: Node) -> (Vec<Option<String>>, Option<String>) {
     let cache = node.descendants().find(|n| {
         n.is_element() && matches!(n.tag_name().name(), "strCache" | "numCache" | "strLit" | "numLit" | "lvl")
@@ -646,8 +708,8 @@ fn cache_points(node: Node) -> (Vec<Option<String>>, Option<String>) {
     (points, format)
 }
 
-fn default_color(index: usize, colors: &Colors) -> Color {
-    colors.named(&format!("accent{}", index % 6 + 1))
+fn default_color(index: usize, colors: &Colors, mono_accent: Option<usize>) -> Color {
+    colors.named(&format!("accent{}", mono_accent.unwrap_or(index % 6 + 1)))
 }
 
 /// The colour of point `index` when the colours vary by point: the six
@@ -655,7 +717,7 @@ fn default_color(index: usize, colors: &Colors) -> Color {
 /// round 76 % of the colour, the third mixed with white at 77 %, then 53 %,
 /// 54 %, …).
 fn varied_color(index: usize, colors: &Colors) -> Color {
-    let base = default_color(index, colors);
+    let base = default_color(index, colors, None);
     let round = index / 6;
     if round == 0 {
         return base;
@@ -681,7 +743,7 @@ fn varied_color(index: usize, colors: &Colors) -> Color {
 /// formatting thousands of dates for each takes long).
 type LastCategories = Option<((Vec<Option<String>>, Option<String>, bool), Vec<String>)>;
 
-fn read_series(ser: Node, index: usize, line_like: bool, vary: bool, base: &ChartText, colors: &Colors, last: &mut LastCategories) -> Series {
+fn read_series(ser: Node, index: usize, line_like: bool, vary: bool, base: &ChartText, colors: &Colors, mono_accent: Option<usize>, last: &mut LastCategories) -> Series {
     let name = child(ser, "tx").map(|t| cache_points(t).0.into_iter().flatten().collect::<Vec<_>>().join(" ")).unwrap_or_default();
     // Numeric categories (such as dates) are shown with their format code.
     let categories = child(ser, "cat")
@@ -710,7 +772,7 @@ fn read_series(ser: Node, index: usize, line_like: bool, vary: bool, base: &Char
     let values = values.into_iter().map(|v| v.and_then(|t| t.trim().parse().ok()).map(Number)).collect::<Vec<_>>();
 
     let (fill, stroke_props) = shape_props(child(ser, "spPr"), colors);
-    let accent = default_color(index, colors);
+    let accent = default_color(index, colors, mono_accent);
     let (fill, stroke) = if line_like {
         // A line series is drawn by its outline; 2.25 pt in the theme colour by default.
         // A line without a width stated is 2.25 pt, as without a line at all.
@@ -740,6 +802,10 @@ fn read_series(ser: Node, index: usize, line_like: bool, vary: bool, base: &Char
 
     let mut point_strokes: Vec<(usize, Option<Stroke>)> = children(ser, "dPt")
         .filter_map(|p| Some((val_f64(p, "idx")? as usize, shape_props(child(p, "spPr"), colors).1?)))
+        .collect();
+    let explosion = val_f64(ser, "explosion").unwrap_or(0.0).clamp(0.0, 400.0) as u32;
+    let point_explosions: Vec<(usize, u32)> = children(ser, "dPt")
+        .filter_map(|p| Some((val_f64(p, "idx")? as usize, val_f64(p, "explosion")?.clamp(0.0, 400.0) as u32)))
         .collect();
     let mut point_fills: Vec<(usize, Fill)> = children(ser, "dPt")
         .filter_map(|p| {
@@ -793,7 +859,8 @@ fn read_series(ser: Node, index: usize, line_like: bool, vary: bool, base: &Char
         };
         Marker { source: Some(source), symbol, size: axis_val(m, "size").and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(5.0).clamp(2.0, 72.0) as u32, fill }
     });
-    let labels = child(ser, "dLbls").and_then(|d| read_labels(d, base, colors));
+    let cell_range = dlbl_range_cache(ser);
+    let labels = child(ser, "dLbls").and_then(|d| read_labels_with_range(d, base, colors, &cell_range));
     let trendline = child(ser, "trendline").map(|t| {
         let kind = axis_val(t, "trendlineType")
             .and_then(TrendlineType::from_ooxml_str)
@@ -839,6 +906,14 @@ fn read_series(ser: Node, index: usize, line_like: bool, vary: bool, base: &Char
             .unwrap_or(false);
         let value = val_f64(e, "val").map(Number);
         let stroke = shape_props(child(e, "spPr"), colors).1.flatten();
+        let numbers_of = |tag: &str| -> Vec<Option<Number>> {
+            child(e, tag)
+                .map(cache_points)
+                .map(|(pts, _)| pts.into_iter().map(|p| p.and_then(|t| t.trim().parse::<f64>().ok()).filter(|v| v.is_finite()).map(Number)).collect())
+                .unwrap_or_default()
+        };
+        let plus = numbers_of("plus");
+        let minus = numbers_of("minus");
         ErrorBars {
             direction,
             bar_type,
@@ -846,6 +921,8 @@ fn read_series(ser: Node, index: usize, line_like: bool, vary: bool, base: &Char
             no_end_cap,
             value,
             stroke,
+            plus,
+            minus,
         }
     });
     Series {
@@ -857,6 +934,8 @@ fn read_series(ser: Node, index: usize, line_like: bool, vary: bool, base: &Char
         stroke,
         point_fills,
         point_strokes,
+        explosion,
+        point_explosions,
         marker,
         labels,
         trendline,
@@ -869,15 +948,15 @@ fn read_series(ser: Node, index: usize, line_like: bool, vary: bool, base: &Char
 
 /// The marker PowerPoint gives a series that names none (`c:marker` left
 /// out): by the series' number, a diamond, a square, a triangle, then
-/// circles, 5 pt, in the series' colour.
-fn auto_marker(index: usize, colors: &Colors) -> Marker {
+/// circles, 7 pt, in the series' colour.
+fn auto_marker(index: usize, colors: &Colors, mono_accent: Option<usize>) -> Marker {
     let symbol = match index % 4 {
         0 => MarkerSymbol::Diamond,
         1 => MarkerSymbol::Square,
         2 => MarkerSymbol::Triangle,
         _ => MarkerSymbol::Circle,
     };
-    Marker { source: None, symbol, size: 5, fill: Fill::Solid(default_color(index, colors)) }
+    Marker { source: None, symbol, size: 7, fill: Fill::Solid(default_color(index, colors, mono_accent)) }
 }
 
 fn label_position(value: &str) -> LabelPosition {
@@ -894,15 +973,40 @@ fn label_position(value: &str) -> LabelPosition {
     }
 }
 
+fn dlbl_range_cache(ser: Node) -> std::collections::HashMap<usize, String> {
+    let Some(cache) = ser.descendants().find(|n| n.is_element() && n.tag_name().name() == "dlblRangeCache") else {
+        return std::collections::HashMap::new();
+    };
+    children(cache, "pt")
+        .filter_map(|pt| {
+            let idx: usize = attr(pt, "idx")?.trim().parse().ok()?;
+            let v = child(pt, "v").and_then(|v| v.text()).unwrap_or("").to_string();
+            Some((idx, v))
+        })
+        .collect()
+}
+
+#[cfg(test)]
 fn read_labels(node: Node, base: &ChartText, colors: &Colors) -> Option<DataLabels> {
+    read_labels_with_range(node, base, colors, &std::collections::HashMap::new())
+}
+
+fn read_labels_with_range(node: Node, base: &ChartText, colors: &Colors, cell_range: &std::collections::HashMap<usize, String>) -> Option<DataLabels> {
     if val_bool(node, "delete").unwrap_or(false) {
         return None;
     }
     let style = text_style(child(node, "txPr"), base, colors);
+    let (fill, border) = shape_props(child(node, "spPr"), colors);
+    let fill = fill.unwrap_or_default();
+    let border = border.flatten();
     let format = child(node, "numFmt")
         .filter(|f| !attr_bool(*f, "sourceLinked").unwrap_or(false))
         .and_then(|f| attr(f, "formatCode"))
         .map(str::to_string);
+    let series_show_value = val_bool(node, "showVal").unwrap_or(false);
+    let series_show_percent = val_bool(node, "showPercent").unwrap_or(false);
+    let series_show_category = val_bool(node, "showCatName").unwrap_or(false);
+    let series_show_series_name = val_bool(node, "showSerName").unwrap_or(false);
     let points = children(node, "dLbl")
         .filter_map(|d| {
             let index = val_f64(d, "idx")? as usize;
@@ -913,39 +1017,54 @@ fn read_labels(node: Node, base: &ChartText, colors: &Colors) -> Option<DataLabe
                 .map(|m| (fraction(val_f64(m, "x").unwrap_or(0.0)), fraction(val_f64(m, "y").unwrap_or(0.0))))
                 .unwrap_or((0, 0));
             let rich = path(d, &["tx", "rich"]);
-            let text = rich.map(rich_pieces);
+            let text = rich.map(|r| rich_pieces(r, cell_range.get(&index).map(String::as_str)));
             let first_run = rich.and_then(|r| r.descendants().find(|n| n.is_element() && n.tag_name().name() == "rPr"));
             let point_style = first_run
                 .map(|rpr| run_style(rpr, &text_style(child(d, "txPr"), &style, colors), colors))
                 .or_else(|| child(d, "txPr").map(|t| text_style(Some(t), &style, colors)));
+            let (point_fill, point_border) = shape_props(child(d, "spPr"), colors);
+            let show_value = val_bool(d, "showVal");
+            let show_percent = val_bool(d, "showPercent");
+            let show_category = val_bool(d, "showCatName");
+            let show_series_name = val_bool(d, "showSerName");
             // A point's label may be switched off with showVal = 0 and nothing else.
-            let shows_anything = ["showVal", "showPercent", "showCatName", "showSerName"]
-                .iter()
-                .any(|name| val_bool(d, name).unwrap_or(false));
+            let shows_anything = show_value.unwrap_or(series_show_value)
+                || show_percent.unwrap_or(series_show_percent)
+                || show_category.unwrap_or(series_show_category)
+                || show_series_name.unwrap_or(series_show_series_name);
             Some(PointLabel {
                 index,
                 deleted: text.is_none() && !shows_anything,
+                show_value,
+                show_percent,
+                show_category,
+                show_series_name,
                 offset,
                 text,
                 style: point_style,
+                fill: point_fill,
+                border: point_border,
                 position: val(d, "dLblPos").map(label_position),
             })
         })
         .collect();
     Some(DataLabels {
-        show_value: val_bool(node, "showVal").unwrap_or(false),
-        show_percent: val_bool(node, "showPercent").unwrap_or(false),
-        show_category: val_bool(node, "showCatName").unwrap_or(false),
-        show_series_name: val_bool(node, "showSerName").unwrap_or(false),
+        show_value: series_show_value,
+        show_percent: series_show_percent,
+        show_category: series_show_category,
+        show_series_name: series_show_series_name,
+        separator: child(node, "separator").and_then(|s| s.text()).map(str::to_string),
         position: val(node, "dLblPos").map(label_position),
         format,
         style,
+        fill,
+        border,
         points,
     })
 }
 
 /// The text of a rich data label, fields kept as fields.
-fn rich_pieces(rich: Node) -> Vec<LabelPiece> {
+fn rich_pieces(rich: Node, cell_range: Option<&str>) -> Vec<LabelPiece> {
     let mut pieces = Vec::new();
     for (i, p) in children(rich, "p").enumerate() {
         if i > 0 {
@@ -959,6 +1078,11 @@ fn rich_pieces(rich: Node) -> Vec<LabelPiece> {
                     Some("PERCENTAGE") => LabelPiece::Percent,
                     Some("CATEGORYNAME") => LabelPiece::Category,
                     Some("SERIESNAME") => LabelPiece::SeriesName,
+                    Some("CELLRANGE") => LabelPiece::Text(
+                        cell_range
+                            .map(str::to_string)
+                            .unwrap_or_else(|| child(n, "t").and_then(|t| t.text()).unwrap_or("").to_string()),
+                    ),
                     _ => LabelPiece::Text(child(n, "t").and_then(|t| t.text()).unwrap_or("").to_string()),
                 }),
                 "br" => pieces.push(LabelPiece::Text("\n".into())),
@@ -1058,11 +1182,15 @@ fn read_axis(node: Node, base: &ChartText, colors: &Colors, legacy: bool, legacy
         format: child(node, "numFmt").and_then(|f| attr(f, "formatCode")).unwrap_or("General").to_string(),
         show_labels: val(node, "tickLblPos") != Some("none"),
         labels_high: val(node, "tickLblPos") == Some("high"),
+        labels_low: val(node, "tickLblPos") == Some("low"),
         // −60 000 000 is "not set"; the chart's own layout decides.
         label_rotation: path(node, &["txPr", "bodyPr"])
             .and_then(|b| attr_i64(b, "rot"))
             .filter(|r| *r != -60_000_000)
             .unwrap_or(0) as i32,
+        fixed_label_rotation: path(node, &["txPr", "bodyPr"])
+            .and_then(|b| attr_i64(b, "rot"))
+            .is_some_and(|r| r != -60_000_000),
         label_skip: label_skip(node),
         date: node.has_tag_name((CHART_NS, "dateAx")),
         time: None,
@@ -1101,5 +1229,118 @@ fn read_axis(node: Node, base: &ChartText, colors: &Colors, legacy: bool, legacy
             (!text.trim().is_empty()).then_some(ChartTitle { text, style, at })
         }),
         stagger_labels: false,
+        title_rotation: child(node, "title").and_then(|t| path(t, &["tx", "rich", "bodyPr"])).and_then(|b| attr_i64(b, "rot")).map(|r| r as i32),
+        category_levels: Vec::new(),
     }
 }
+
+#[cfg(test)]
+mod label_separator_tests {
+    use super::read_labels;
+    use crate::theme::Colors;
+    use ibis_doc_model::ChartText;
+
+    #[test]
+    fn separator_is_read_as_written() {
+        let xml = r#"<c:dLbls xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:showVal val="1"/><c:showPercent val="1"/><c:separator>
+</c:separator></c:dLbls>"#;
+        let doc = roxmltree::Document::parse(xml).unwrap();
+        let labels = read_labels(doc.root_element(), &ChartText::default(), &Colors::new(&crate::theme::Theme::default(), None, &[])).unwrap();
+        assert_eq!(labels.separator.as_deref(), Some("\n"));
+    }
+}
+
+#[cfg(test)]
+mod multi_level_axis_tests {
+    use super::read_in;
+    use crate::theme::Colors;
+    use ibis_doc_model::{AxisKind, LineDash};
+
+    fn read(xml: &str) -> ibis_doc_model::Chart {
+        let doc = roxmltree::Document::parse(xml).unwrap();
+        read_in(doc.root_element(), &Colors::new(&crate::theme::Theme::default(), None, &[]), false).expect("a chart")
+    }
+
+    const HEAD: &str = r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><c:chart><c:plotArea>"#;
+
+    /// GitHub #22 (xlsx 109): a year over its months (`c:multiLvlStrRef`), a value axis' title set upright at its
+    /// own place, and the plot area's outline.
+    #[test]
+    fn a_category_axis_of_two_levels_a_horizontal_axis_title_and_a_plot_outline() {
+        let chart = read(&format!(
+            r#"{HEAD}<c:barChart><c:barDir val="col"/><c:grouping val="clustered"/><c:ser><c:idx val="0"/><c:order val="0"/>
+            <c:cat><c:multiLvlStrRef><c:f>S!$A$1:$B$3</c:f><c:multiLvlStrCache><c:ptCount val="3"/>
+              <c:lvl><c:pt idx="0"><c:v>7月</c:v></c:pt><c:pt idx="1"><c:v>8月</c:v></c:pt><c:pt idx="2"><c:v>1月</c:v></c:pt></c:lvl>
+              <c:lvl><c:pt idx="0"><c:v>2025年</c:v></c:pt><c:pt idx="2"><c:v>2026年</c:v></c:pt></c:lvl>
+            </c:multiLvlStrCache></c:multiLvlStrRef></c:cat>
+            <c:val><c:numRef><c:f>S!$C$1:$C$3</c:f><c:numCache><c:ptCount val="3"/><c:pt idx="0"><c:v>1</c:v></c:pt><c:pt idx="1"><c:v>2</c:v></c:pt><c:pt idx="2"><c:v>3</c:v></c:pt></c:numCache></c:numRef></c:val></c:ser>
+            <c:axId val="1"/><c:axId val="2"/></c:barChart>
+            <c:catAx><c:axId val="1"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:crossAx val="2"/></c:catAx>
+            <c:valAx><c:axId val="2"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/>
+              <c:title><c:tx><c:rich><a:bodyPr rot="0" vert="horz"/><a:p><a:r><a:t>％</a:t></a:r></a:p></c:rich></c:tx>
+                <c:layout><c:manualLayout><c:xMode val="edge"/><c:yMode val="edge"/><c:x val="0.0146"/><c:y val="0.0526"/></c:manualLayout></c:layout></c:title>
+              <c:crossAx val="1"/></c:valAx>
+            <c:spPr><a:noFill/><a:ln w="12700"><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:ln></c:spPr>
+            </c:plotArea></c:chart></c:chartSpace>"#
+        ));
+        let category = chart.axes.iter().find(|a| a.kind == AxisKind::Category).unwrap();
+        assert_eq!(category.category_levels, vec![vec![(0, 2, "2025年".to_string()), (2, 1, "2026年".to_string())]]);
+        // The series' categories are the innermost level's.
+        assert_eq!(chart.groups[0].series[0].categories, vec!["7月", "8月", "1月"]);
+        let value = chart.axes.iter().find(|a| a.kind == AxisKind::Value).unwrap();
+        assert_eq!(value.title_rotation, Some(0));
+        assert!(value.title.as_ref().is_some_and(|t| t.at.is_some()));
+        assert_eq!(chart.plot_border.as_ref().map(|b| b.width), Some(12700));
+    }
+
+    /// GitHub #22 (xlsx 111): a series' line of `a:prstDash` "dash" keeps its dash.
+    #[test]
+    fn a_series_line_keeps_its_dash() {
+        let chart = read(&format!(
+            r#"{HEAD}<c:lineChart><c:grouping val="standard"/><c:ser><c:idx val="0"/><c:order val="0"/>
+            <c:spPr><a:ln w="12700"><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill><a:prstDash val="dash"/></a:ln></c:spPr>
+            <c:val><c:numLit><c:ptCount val="2"/><c:pt idx="0"><c:v>1</c:v></c:pt><c:pt idx="1"><c:v>2</c:v></c:pt></c:numLit></c:val></c:ser>
+            <c:axId val="1"/><c:axId val="2"/></c:lineChart>
+            <c:catAx><c:axId val="1"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:crossAx val="2"/></c:catAx>
+            <c:valAx><c:axId val="2"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:crossAx val="1"/></c:valAx>
+            </c:plotArea></c:chart></c:chartSpace>"#
+        ));
+        assert_eq!(chart.groups[0].series[0].stroke.as_ref().map(|s| s.dash), Some(LineDash::Dash));
+    }
+
+    /// Every line type (`a:prstDash`) of a series' line, a value axis' gridlines and the axes' lines is read, at each
+    /// of the places the chart draws a line from.
+    #[test]
+    fn every_dash_type_is_read_for_a_series_the_gridlines_and_the_axes() {
+        let types = [
+            ("solid", LineDash::Solid), ("dot", LineDash::Dot), ("dash", LineDash::Dash), ("lgDash", LineDash::LgDash),
+            ("dashDot", LineDash::DashDot), ("lgDashDot", LineDash::LgDashDot), ("lgDashDotDot", LineDash::LgDashDotDot),
+            ("sysDash", LineDash::SysDash), ("sysDot", LineDash::SysDot), ("sysDashDot", LineDash::SysDashDot),
+            ("sysDashDotDot", LineDash::SysDashDotDot),
+        ];
+        for (name, want) in types {
+            let ln = |width: i64| format!(r#"<c:spPr><a:ln w="{width}"><a:solidFill><a:srgbClr val="808080"/></a:solidFill><a:prstDash val="{name}"/></a:ln></c:spPr>"#);
+            let chart = read(&format!(
+                r#"{HEAD}<c:lineChart><c:grouping val="standard"/><c:ser><c:idx val="0"/><c:order val="0"/>{series}
+                <c:val><c:numLit><c:ptCount val="2"/><c:pt idx="0"><c:v>1</c:v></c:pt><c:pt idx="1"><c:v>2</c:v></c:pt></c:numLit></c:val></c:ser>
+                <c:axId val="1"/><c:axId val="2"/></c:lineChart>
+                <c:catAx><c:axId val="1"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/>{cat_line}<c:crossAx val="2"/></c:catAx>
+                <c:valAx><c:axId val="2"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/>
+                  <c:majorGridlines>{grid}</c:majorGridlines>{val_line}<c:crossAx val="1"/></c:valAx>
+                </c:plotArea></c:chart></c:chartSpace>"#,
+                series = ln(12_700), cat_line = ln(9_525), grid = ln(3_175), val_line = ln(6_350),
+            ));
+            let dash = |s: &Option<ibis_doc_model::Stroke>| s.as_ref().map(|s| s.dash);
+            assert_eq!(dash(&chart.groups[0].series[0].stroke), Some(want), "series {name}");
+            let cat = chart.axes.iter().find(|a| a.kind == AxisKind::Category).unwrap();
+            let val = chart.axes.iter().find(|a| a.kind == AxisKind::Value).unwrap();
+            assert_eq!(dash(&cat.line), Some(want), "category axis {name}");
+            assert_eq!(dash(&val.line), Some(want), "value axis {name}");
+            assert_eq!(dash(&val.gridlines), Some(want), "gridlines {name}");
+            // Each at its own width.
+            assert_eq!(val.gridlines.as_ref().map(|s| s.width), Some(3_175), "gridlines' width {name}");
+            assert_eq!(chart.groups[0].series[0].stroke.as_ref().map(|s| s.width), Some(12_700), "series' width {name}");
+        }
+    }
+}
+

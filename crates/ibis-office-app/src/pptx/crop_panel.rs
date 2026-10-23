@@ -6,6 +6,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::{Command, Crop, ShapeId, ShapeKind, SlideId};
 use crate::shell::chrome::SidebarPanel;
 use crate::shell::editor::SlideEditor;
@@ -73,7 +74,7 @@ impl SlideEditor {
         let mut body = v_flex().gap_2().px(px(18.)).py(px(8.))
             .child(div().text_size(px(12.)).child(crate::shell::i18n::text("pptx.crop-panel.keeps-picture-frame-negative")));
         for (label, field) in [crate::shell::i18n::text("pptx.crop-panel.left-percent"), crate::shell::i18n::text("pptx.crop-panel.top-percent"), crate::shell::i18n::text("pptx.crop-panel.right-percent"), crate::shell::i18n::text("pptx.crop-panel.bottom-percent")].into_iter().zip(fields) {
-            body = body.child(div().text_size(px(13.)).child(label)).child(Input::new(&field).small());
+            body = body.child(div().text_size(px(13.)).child(label)).child(Input::new(&field).small().cleanable(true));
         }
         if let Some(error) = error { body = body.child(div().text_size(px(12.)).text_color(rgb(0xb3261e)).child(error)); }
         body = body.child(h_flex().gap_1()

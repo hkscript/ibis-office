@@ -150,7 +150,7 @@ impl SlideEditor {
                             .into_any_element(),
                     )),
             )
-            .child(mark("xlsx.data-table.row-input", Input::new(&p.row_input).small().into_any_element()))
+            .child(mark("xlsx.data-table.row-input", Input::new(&p.row_input).small().cleanable(true).into_any_element()))
             .child(
                 h_flex()
                     .items_center()
@@ -166,7 +166,7 @@ impl SlideEditor {
                             .into_any_element(),
                     )),
             )
-            .child(mark("xlsx.data-table.column-input", Input::new(&p.column_input).small().into_any_element()))
+            .child(mark("xlsx.data-table.column-input", Input::new(&p.column_input).small().cleanable(true).into_any_element()))
             .child(div().text_size(px(12.)).child(SharedString::from(p.message.clone())))
             .child(
                 h_flex()

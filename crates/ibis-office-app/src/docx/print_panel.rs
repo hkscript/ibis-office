@@ -549,6 +549,12 @@ impl SlideEditor {
 
     /// 印刷設定サイドバーパネルの描画
     pub(crate) fn doc_print_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
+        self.doc_state()?.print_panel.as_ref()?;
+        self.render_doc_print_panel(cx)
+    }
+
+    #[inline(never)]
+    fn render_doc_print_panel(&mut self, cx: &mut Context<Self>) -> Option<SidebarPanel> {
         let (settings, input, error) = {
             let s = self.doc_state()?;
             let panel = s.print_panel.as_ref()?;
@@ -640,7 +646,7 @@ impl SlideEditor {
                 v_flex()
                     .pl_4()
                     .gap_1()
-                    .child(Input::new(&input).small())
+                    .child(Input::new(&input).small().cleanable(true))
                     .child(div().text_xs().text_color(cx.theme().muted_foreground).child(text("docx.print-panel.custom-hint").to_string())),
             );
         }

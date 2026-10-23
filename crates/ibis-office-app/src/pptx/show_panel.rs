@@ -6,6 +6,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::*;
+use crate::shell::palette::rgb;
 use ibis_doc_model::{Command, ShowProperties, ShowSlideRange, ShowType};
 use crate::shell::chrome::SidebarPanel;
 use crate::shell::editor::SlideEditor;
@@ -220,9 +221,9 @@ impl SlideEditor {
             .child(
                 h_flex().gap_2().items_center()
                     .child(div().text_size(px(12.)).child(crate::shell::i18n::text("pptx.animation-ui.from")))
-                    .child(div().w(px(60.)).child(Input::new(&from).small()))
+                    .child(div().w(px(60.)).child(Input::new(&from).small().cleanable(true)))
                     .child(div().text_size(px(12.)).child(crate::shell::i18n::text("pptx.show-panel.to")))
-                    .child(div().w(px(60.)).child(Input::new(&to).small()))
+                    .child(div().w(px(60.)).child(Input::new(&to).small().cleanable(true)))
             )
             .child(Button::new("pptx-show-range-custom-show").small().ghost().label(if range_kind == ShowRangeKind::Custom { crate::shell::i18n::text("_pptx.custom-show") } else { crate::shell::i18n::text("_pptx.custom-show") }).on_click(cx.listener(|e, _, _, cx| {
                 let first_id = e.presentation().custom_shows.first().map(|s| s.id);
