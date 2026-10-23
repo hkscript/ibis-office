@@ -357,6 +357,7 @@ pub(crate) fn all() -> Vec<(&'static str, fn())> {
         ("xlsx::xsc23_sort", xsc23_sort),
         ("xlsx::xsc24_filter", xsc24_filter),
         ("xlsx::xsc24_filter_panel", xsc24_filter_panel),
+        ("xlsx::xsc_filter_large_region", xsc_filter_large_region),
         ("xlsx::xsc05_threaded_comments", xsc05_threaded_comments),
         ("xlsx::xsc26_make_table", xsc26_make_table),
         ("xlsx::xsc26_table_filter", xsc26_table_filter),
@@ -10049,6 +10050,34 @@ fn xsc24_filter_panel() {
     let saved = s.reopen();
     let sheet = sheet_of_slide(&saved.slides[0]).unwrap().clone();
     assert_eq!(sheet.auto_filter.clone().map(|f| f.columns), Some(vec![(0, ColumnFilter::Period("thisMonth".into()))]));
+}
+
+/// Creating a filter on a wide, long region must not rescan every side while
+/// growing it: that made the UI thread spend minutes on a 42,000-row sheet.
+fn xsc_filter_large_region() {
+    use std::fmt::Write as _;
+    let dir = crate::shell::scenario::repo_root().join("target/scenario-input");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut csv = String::from("A,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P,Q,R,S,T,U\n");
+    for row in 0..3000 {
+        for column in 0..21 {
+            if column > 0 {
+                csv.push(',');
+            }
+            write!(csv, "r{row}c{column}").unwrap();
+        }
+        csv.push('\n');
+    }
+    std::fs::write(dir.join("xsc-filter-large-region.csv"), csv).unwrap();
+    let mut s = Scenario::open("target/scenario-input/xsc-filter-large-region.csv");
+    s.click_cell("A1");
+    let started = crate::clock::Instant::now();
+    s.menu("xlsx.filter");
+    let took = started.elapsed().as_millis();
+    eprintln!("xsc_filter_large_region: create {took} ms");
+    assert!(took < 1000, "creating the filter took {took} ms");
+    let range = s.with(|e, _| sheet_of_slide(e.slide()).unwrap().auto_filter.as_ref().map(|f| f.range));
+    assert_eq!(range, Some(CellRange { first_row: 0, last_row: 3000, first_column: 0, last_column: 20 }));
 }
 
 /// XSC-23: the shops sorted by April, descending (rows move with their

@@ -8,7 +8,7 @@
 //! date periods), and the list of the column's values with a search box,
 //! (すべて選択) and (空白セル), then OK or キャンセル.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -179,25 +179,43 @@ fn color_label(color: Option<Rgb>, cell: bool) -> String {
 
 pub(crate) type Action = Rc<dyn Fn(&mut SlideEditor, &mut Window, &mut Context<SlideEditor>)>;
 
+/// Whether `positions` (sorted) has an entry from `first` through `last`.
+fn has_position_in_span(positions: &[u32], first: u32, last: u32) -> bool {
+    let at = positions.partition_point(|&position| position < first);
+    positions.get(at).is_some_and(|&position| position <= last)
+}
+
 impl SlideEditor {
     /// The table around the selected cell (the cells next to each other with something in them).
     pub(crate) fn current_region(&self) -> Option<CellRange> {
         let (column, row) = self.current_cell()?;
         let (_, sheet) = self.current_sheet()?;
-        let filled = |r: u32, c: u32| sheet.cell(r, c).is_some_and(|x| !x.value.is_empty() || x.formula.is_some());
+        // The cells are row-major. Index their rows and columns once, so each
+        // side of a growing region is a binary search rather than a scan of
+        // the whole side.
+        let mut by_row: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut by_column: HashMap<u32, Vec<u32>> = HashMap::new();
+        for cell in sheet.cells.iter().filter(|cell| !cell.value.is_empty() || cell.formula.is_some()) {
+            by_row.entry(cell.row).or_default().push(cell.column);
+            by_column.entry(cell.column).or_default().push(cell.row);
+        }
         let mut r = CellRange { first_row: row, first_column: column, last_row: row, last_column: column };
         loop {
             let mut grown = r;
-            if r.first_row > 0 && (r.first_column..=r.last_column).any(|c| filled(r.first_row - 1, c)) {
+            if r.first_row > 0
+                && by_row.get(&(r.first_row - 1)).is_some_and(|columns| has_position_in_span(columns, r.first_column, r.last_column))
+            {
                 grown.first_row -= 1;
             }
-            if (r.first_column..=r.last_column).any(|c| filled(r.last_row + 1, c)) {
+            if by_row.get(&(r.last_row + 1)).is_some_and(|columns| has_position_in_span(columns, r.first_column, r.last_column)) {
                 grown.last_row += 1;
             }
-            if r.first_column > 0 && (r.first_row..=r.last_row).any(|x| filled(x, r.first_column - 1)) {
+            if r.first_column > 0
+                && by_column.get(&(r.first_column - 1)).is_some_and(|rows| has_position_in_span(rows, r.first_row, r.last_row))
+            {
                 grown.first_column -= 1;
             }
-            if (r.first_row..=r.last_row).any(|x| filled(x, r.last_column + 1)) {
+            if by_column.get(&(r.last_column + 1)).is_some_and(|rows| has_position_in_span(rows, r.first_row, r.last_row)) {
                 grown.last_column += 1;
             }
             if grown == r {
