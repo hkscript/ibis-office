@@ -764,7 +764,7 @@ fn page_setup(sect: Node) -> PageSetup {
     if let Some(start) = child(sect, "pgNumType").and_then(|n| wattr(n, "start")).and_then(|v| v.parse().ok()) {
         page.first_page = start;
     }
-    page.direction = child(sect, "textDirection").and_then(|n| wattr(n, "val")).map_or_default(ibis_doc_model::CellDirection::from_name);
+    page.direction = child(sect, "textDirection").and_then(|n| wattr(n, "val")).map(ibis_doc_model::CellDirection::from_name).unwrap_or_default();
     if let Some(n) = child(sect, "lnNumType") {
         page.line_numbers = Some(ibis_doc_model::LineNumbers {
             count_by: wattr(n, "countBy").and_then(|v| v.parse().ok()).unwrap_or(1).max(1),
@@ -3234,7 +3234,7 @@ fn parse_floating_anchor(holder: Node) -> Option<ibis_doc_model::FloatingAnchor>
                     p
                 });
                 self.blocks(tc, &tc_path, rels, style_id.as_deref(), &mut blocks);
-                cells.push(FlowCell { id: cell_id, own_borders, span, merge, blocks, borders: [None; 4], shading, shading_fill, shading_pattern, shading_color, anchor, margins: cell_margin, diagonals, style_fill: None, direction: tc_pr.and_then(|p| wval(p, "textDirection")).map_or_default(ibis_doc_model::CellDirection::from_name), no_wrap: tc_pr.and_then(|p| toggle(p, "noWrap")).unwrap_or(false) });
+                cells.push(FlowCell { id: cell_id, own_borders, span, merge, blocks, borders: [None; 4], shading, shading_fill, shading_pattern, shading_color, anchor, margins: cell_margin, diagonals, style_fill: None, direction: tc_pr.and_then(|p| wval(p, "textDirection")).map(ibis_doc_model::CellDirection::from_name).unwrap_or_default(), no_wrap: tc_pr.and_then(|p| toggle(p, "noWrap")).unwrap_or(false) });
             }
             rows.push(FlowRow { id: row_id, height, header, cant_split, cells });
         }
