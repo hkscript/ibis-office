@@ -65,9 +65,11 @@ cp crates/ibis-office-app/data/artborders/OfficeOpenXML-WordprocessingMLArtBorde
 
 python3 scripts/gen-web-licenses.py linux
 DOC="$STAGE/share/doc/ibisOffice"
-cp publish/LICENSE "$DOC/LICENSE"
-cp publish/COMMERCIAL-LICENSE.md "$DOC/COMMERCIAL-LICENSE.md"
-[[ -f publish/NOTICE ]] && cp publish/NOTICE "$DOC/NOTICE"
+# The licence files are in publish/ here, at the top in the public repository (GitHub).
+LIC=publish; [[ -f $LIC/LICENSE ]] || LIC=.
+cp "$LIC/LICENSE" "$DOC/LICENSE"
+cp "$LIC/COMMERCIAL-LICENSE.md" "$DOC/COMMERCIAL-LICENSE.md"
+[[ -f $LIC/NOTICE ]] && cp "$LIC/NOTICE" "$DOC/NOTICE"
 cp crates/ibis-office-app/linux/license.md "$DOC/third-party-licenses.md"
 cp crates/ibis-office-app/fonts/carlito/OFL.txt "$DOC/Carlito-OFL.txt"
 
