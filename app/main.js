@@ -2,7 +2,69 @@
 // Copyright (c) ibis inc.
 // Additional terms under AGPL-3.0 section 7(b): see NOTICE.
 // Boots the wasm editor. `pkg/` is produced by scripts/build-web.sh.
-import init, { run } from './pkg/ibis_office_app.js';
+import init, { run, set_embed_options } from './pkg/ibis_office_app.js';
+/** `?name=1` / `?name=true` / `?name` is on; `0`, `false` is off; absent is `undefined`. */
+function flag(params, name) {
+    if (!params.has(name)) {
+        return undefined;
+    }
+    const value = (params.get(name) ?? '').toLowerCase();
+    return !(value === '0' || value === 'false' || value === 'no' || value === 'off');
+}
+/** The embedding options: JavaScript's over the URL's, and everything off by default. */
+function embedOptions() {
+    const params = new URLSearchParams(location.search);
+    const js = window.ibisOfficeOptions ?? {};
+    const view = js.view ?? flag(params, 'view') ?? false;
+    return {
+        close: js.close ?? flag(params, 'close') ?? false,
+        download: js.download ?? flag(params, 'download') ?? false,
+        view,
+        menuBar: js.menuBar ?? flag(params, 'menuBar') ?? flag(params, 'menubar') ?? true,
+        toolBar: js.toolBar ?? flag(params, 'toolBar') ?? flag(params, 'toolbar') ?? true,
+        targetOrigin: js.targetOrigin ?? params.get('origin') ?? '',
+        eventTarget: js.eventTarget,
+    };
+}
+/** The origin messages to the parent window go to, or `null` for nowhere. */
+function parentOrigin(option) {
+    if (option) {
+        return option;
+    }
+    try {
+        return document.referrer ? new URL(document.referrer).origin : null;
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * Called from Rust when the close or the download button is pressed: the
+ * page that embeds the editor gets a CustomEvent ('ibisoffice:close', or
+ * 'ibisoffice:download' with `{ name, bytes, blob }`) on `window` (or the
+ * `eventTarget` given), and, in an iframe, a message to the parent window
+ * (`{ source: 'ibisoffice', type: 'close' | 'download', name, bytes }`).
+ */
+function embedAction(kind, name, bytes) {
+    const options = embedOptions();
+    const detail = kind === 'download' && bytes ? { name, bytes, blob: new Blob([bytes]) } : {};
+    (options.eventTarget ?? window).dispatchEvent(new CustomEvent(`ibisoffice:${kind}`, { detail }));
+    if (window.parent !== window) {
+        const origin = parentOrigin(options.targetOrigin);
+        if (origin === null) {
+            console.warn('ibisOffice: no target origin for the parent window (set ?origin=… or ibisOfficeOptions.targetOrigin); nothing was posted to it.');
+            return;
+        }
+        // The parent gets its own copy of the bytes (transferred), so the event's listeners keep theirs.
+        if (kind === 'download' && bytes) {
+            const copy = bytes.slice().buffer;
+            window.parent.postMessage({ source: 'ibisoffice', type: kind, name, bytes: copy }, origin, [copy]);
+        }
+        else {
+            window.parent.postMessage({ source: 'ibisoffice', type: kind }, origin);
+        }
+    }
+}
 /** Show the browser's file picker. Resolves to `null` when cancelled. */
 function pickFile() {
     return new Promise((resolve, reject) => {
@@ -147,6 +209,7 @@ function showStatus(text) {
     }
 }
 window.ibisOfficePickFile = pickFile;
+window.ibisOfficeEmbedAction = embedAction;
 if (!('gpu' in navigator)) {
     showStatus(ja
         ? 'このブラウザは WebGPU に対応していません。最新の Chrome、Edge、Safari をお使いください。'
@@ -159,6 +222,8 @@ else {
         // may live under a path, as on GitHub Pages). The base must be absolute:
         // the icon loader fetches with reqwest, which rejects relative URLs.
         const base = new URL('.', location.href).href.replace(/\/$/, '');
+        const embed = embedOptions();
+        set_embed_options(embed.close, embed.download, embed.view, embed.menuBar, embed.toolBar);
         run(base, file?.name, file?.bytes);
         status?.remove();
     }
